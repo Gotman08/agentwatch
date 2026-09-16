@@ -87,7 +87,8 @@ def render_markdown(report: dict[str, Any]) -> str:
              f"- Client : `{s['client']}` ; session `{s['session_id']}` ; modele : `{s['model'] or 'non observe'}` ({s['model_source']})",
              f"- Projet : `{s['project_dir'] or 'inconnu'}` ; periode : {s['first_time']} -> {s['last_time']}",
              f"- Tours : {s['turns']} ; epoques de contexte : {s['context_epochs']} ; agents : {', '.join(s['agents']) or 'aucun'}",
-             f"- Version du client a la configuration : {s.get('client_version_at_configure') or 'inconnue'} ; AgentWatch {report['agentwatch_version']} ; schema {report['schema_version']}",
+             f"- Version de l'executable `{s['client']}` du PATH lors de `configure` : {s.get('client_version_at_configure') or 'inconnue'} "
+             f"(la version reellement executee n'est pas transmise aux hooks) ; AgentWatch {report['agentwatch_version']} ; schema {report['schema_version']}",
              ""]
     if s.get("warnings"):
         lines.append("Avertissements de lecture : " + " ; ".join(s["warnings"][:5]))

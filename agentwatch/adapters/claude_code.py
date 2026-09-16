@@ -230,7 +230,8 @@ class ClaudeCodeAdapter:
         if isinstance(dur, (int, float)) and not isinstance(dur, bool):
             ev["duration_ms"], ev["duration_source"] = int(dur), "client"
         elif isinstance(resp, dict) and isinstance(resp.get("durationMs"), (int, float)):
-            ev["duration_ms"], ev["duration_source"] = int(resp["durationMs"]), "client_mcp_durationMs"
+            # * Observe en direct sur Glob (2.1.270) ; documente aussi pour certains outils MCP.
+            ev["duration_ms"], ev["duration_source"] = int(resp["durationMs"]), "client_durationMs"
         if isinstance(resp, dict):
             ev["output_truncated"] = resp.get("truncated") if isinstance(resp.get("truncated"), bool) else None
             if ev["tool_category"] == S.CAT_SHELL:
