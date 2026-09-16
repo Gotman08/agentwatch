@@ -146,6 +146,26 @@ class CrossToolRedundancyTests(unittest.TestCase):
         self.assertEqual((f[0].evidence["operation"], f[0].confidence), ("mcp_read", "medium"))
         self.assertIn("MCP", f[0].confidence_rationale)
 
+    def test_mcp_read_ignores_local_writes_but_degrades_on_same_server_effects(self) -> None:
+        s = Synth(self.home, session_id="mcp2")
+        s.session_start(); s.user_prompt()
+        for _ in range(4):
+            s.mcp("romeo", "romeo_status", {}, "cluster ok")
+            s.edit("src/a.c", "x", "y")                  # ecriture locale : sans effet sur le cluster
+            s.bash("make", "built")
+        f = s.findings(["redundant_reads"])
+        self.assertEqual(len(f), 1)
+        self.assertEqual((f[0].evidence["operation"], len(f[0].calls), f[0].confidence), ("mcp_read", 4, "medium"))
+        s2 = Synth(self.home, session_id="mcp3")
+        s2.session_start(); s2.user_prompt()
+        s2.mcp("romeo", "romeo_status", {}, "idle")
+        s2.mcp("romeo", "submit_job", {"script": "x"}, "queued")   # effet possible sur le meme serveur
+        s2.mcp("romeo", "romeo_status", {}, "idle")
+        f2 = s2.findings(["redundant_reads"])
+        self.assertEqual(len(f2), 1)
+        self.assertEqual(f2[0].confidence, "medium")
+        self.assertTrue(any("effet possible sur le meme serveur" in r for v in f2[0].evidence["pair_verdicts"] for r in v["reasons"]))
+
     def test_low_confidence_only_is_not_an_opportunity(self) -> None:
         s = Synth(self.home, session_id="low1")
         s.session_start(); s.user_prompt()

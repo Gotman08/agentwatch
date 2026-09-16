@@ -38,7 +38,8 @@ OP_MCP_READ = "mcp_read"
 READ_LIKE_OPS = {OP_READ, OP_SEARCH, OP_LIST, OP_VCS_READ, OP_MCP_READ}
 # * Outils MCP dont le nom annonce une lecture : comparables entre eux, avec une confiance
 #   plafonnee (un serveur peut renvoyer un etat volatil ou avoir des effets non declares).
-_MCP_READ_VERBS = re.compile(r"(?i)(^|_)(get|list|read|search|find|status|show|info|quota|check|query|describe|fetch|lookup|explore)(_|$)")
+_MCP_READ_VERBS = re.compile(r"(?i)(^|_)(get|list|read|search|find|status|show|info|quota|check|selfcheck|self_check|health|ping|"
+                             r"version|whoami|query|describe|fetch|lookup|explore|diagnose|forecast|efficiency|output)(_|$)")
 RUN_LIKE_OPS = {OP_RUN_TESTS, OP_BUILD, OP_RUN_SCRIPT}
 
 _READ_HEADS = {"cat", "type", "get-content", "gc", "less", "more", "nl", "head", "tail", "sed", "bat"}

@@ -150,7 +150,9 @@ def render_markdown(report: dict[str, Any]) -> str:
         lines += ["Unites de travail refaites (meme operation, meme cible, tous outils confondus) :", "",
                   "| Operation | Cible | Fois | Outils | Agents | Contenus distincts obtenus |", "|---|---|---|---|---|---|"]
         for w in wu[:15]:
-            lines.append(f"| {w['op']} | {str(w['target'])[:60]} | {w['calls']} | {', '.join(w['tools'])} | {w['agents']} | "
+            target = str(w["target"]).replace("|", "\\|").replace("\n", " ")
+            shown = target if len(target) <= 110 else target[:110] + "..."
+            lines.append(f"| {w['op']} | {shown} | {w['calls']} | {', '.join(w['tools'])} | {w['agents']} | "
                          f"{_fmt(w['distinct_contents'])} |")
         lines.append("")
         lines.append("Un travail refait n'est pas forcement inutile : voir les signalements et leurs contre-indications.")

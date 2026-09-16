@@ -83,6 +83,12 @@ def _assess_pair(prev: Call, cur: Call, between: list[Call], case_insensitive: b
         reasons.append(f"resultats differents ({basis}) : la cible a change entre les deux appels")
     path_based = prev.op in (I.OP_READ, I.OP_SEARCH, I.OP_LIST)
     for w in between:
+        if prev.op == I.OP_MCP_READ:
+            # * Ressource distante : une ecriture locale ne la modifie pas ; seul un appel MCP
+            #   non-lecture vers le meme serveur peut l'avoir changee (degrade, n'exclut pas).
+            if w.category == S.CAT_MCP and w.op != I.OP_MCP_READ and w.mcp_server == prev.mcp_server:
+                degrade.append(f"appel MCP a effet possible sur le meme serveur (#{w.seq} {w.tool_name})")
+            continue
         if w.is_write_like and ((not path_based) or _touches(w, prev.op_target, case_insensitive)):
             reasons.append(f"modification intermediaire observee (appel #{w.seq} {w.tool_name})")
             break
@@ -158,7 +164,8 @@ def _detect_reads(calls: list[Call], window_calls: int, window_seconds: int, cas
             conf, why = B.CONFIDENCE_LOW, "contenu non comparable et appel a effet inconnu intercale : repetition a examiner"
         if first.op == I.OP_MCP_READ and conf == B.CONFIDENCE_HIGH:
             conf = B.CONFIDENCE_MEDIUM
-            why += " ; outil MCP : l'etat renvoye peut etre volatil et le serveur peut avoir des effets non declares"
+            why += (" ; outil MCP : l'etat renvoye peut etre volatil et le serveur peut avoir des effets non declares ; "
+                    "les ecritures locales intercalees ne sont pas considerees comme modifiant une ressource distante")
         cross_tool = len(tools) > 1
         title = f"{first.op} de {first.op_target!r} repete {n} fois via {', '.join(tools)}"
         if first.op == I.OP_UNKNOWN:
@@ -168,6 +175,9 @@ def _detect_reads(calls: list[Call], window_calls: int, window_seconds: int, cas
             "Aucune verification necessaire n'a ete observee, mais l'intention du modele n'est pas visible.",
             B.LIMIT_CONTEXT_UNKNOWN, B.LIMIT_EXTERNAL_CHANGES,
         ]
+        if first.op == I.OP_MCP_READ:
+            counter.append("Interroger un etat distant en attendant un changement (polling) est parfois voulu ; "
+                           "un contenu identique a chaque fois montre seulement qu'aucune information nouvelle n'a ete obtenue.")
         if cross_tool:
             counter.append("Le meme travail a ete fait par des outils differents : la forme differait, pas la tache.")
         if any(c.evidence.get("result_count") == 0 for c in members):
