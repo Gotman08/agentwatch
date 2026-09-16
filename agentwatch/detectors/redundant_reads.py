@@ -194,7 +194,8 @@ def _detect_reads(calls: list[Call], window_calls: int, window_seconds: int, cas
             evidence={
                 "operation": first.op, "target": first.op_target, "params": first.op_params, "tools_used": tools,
                 "same_result_basis": sorted({v.get("same_result_basis", "") for v in verdicts}),
-                "statuses": [c.status for c in members], "intervening_notable_calls": cl["between"],
+                "statuses": [c.status for c in members],
+                "intervening_notable_calls": [{"count": len(b), "first_seqs": b[:5]} for b in cl["between"]],
                 "context_epoch": first.context_epoch, "agent": first.agent_key, "pair_verdicts": verdicts,
             },
             explanation=(f"La meme unite de travail ({first.op} sur {first.op_target!r}, memes parametres) a ete refaite {n} fois "
@@ -203,8 +204,11 @@ def _detect_reads(calls: list[Call], window_calls: int, window_seconds: int, cas
             counter_indications=counter, missing_data=missing, observed_cost=B.observed_cost(members[1:]),
             proposal={
                 "type": "reuse_previous_result",
-                "text": ("Reutiliser le resultat de la premiere fois tant qu'aucune modification de la cible n'est observee ; "
-                         "si une verification est voulue, preferer une lecture ciblee (plage ou filtre) et un seul outil."),
+                "text": (("Pour un etat distant : attendre un evenement (ex. wait_for_job) ou espacer les interrogations, "
+                          "et reutiliser le dernier etat tant qu'aucune action n'a ete soumise au serveur.")
+                         if first.op == I.OP_MCP_READ else
+                         ("Reutiliser le resultat de la premiere fois tant qu'aucune modification de la cible n'est observee ; "
+                          "si une verification est voulue, preferer une lecture ciblee (plage ou filtre) et un seul outil.")),
                 "requires_judgment": "Decider si la repetition etait une verification intentionnelle.",
             },
             validation_protocol=[
