@@ -74,8 +74,8 @@ def _same_result(a: Call, b: Call) -> tuple[bool | None, str]:
 def _assess_pair(prev: Call, cur: Call, between: list[Call], case_insensitive: bool) -> dict[str, Any]:
     reasons: list[str] = []
     degrade: list[str] = []
-    if prev.status in _FAILED:
-        reasons.append("premier appel en echec : relecture legitime (voir detecteur B)")
+    if prev.status in _FAILED or (prev.evidence.get("error_hint") and prev.error_signature):
+        reasons.append("premier appel en echec (ou reponse decrivant une panne) : relecture legitime, voir detecteur B")
     if cur.status in _FAILED:
         reasons.append("second appel en echec : pas une repetition reussie")
     same, basis = _same_result(prev, cur)
@@ -187,12 +187,35 @@ def _detect_reads(calls: list[Call], window_calls: int, window_seconds: int, cas
             missing.append("empreinte de contenu absente pour au moins un appel (pas d'evenement de fin, ou reponse sans texte)")
         if any(c.duration_ms is None for c in members):
             missing.append("duree inconnue pour certains appels")
+        # * Le "pourquoi" observable : ce qui precedait chaque repetition (echec, appel MCP a effet,
+        #   ecriture, rien de notable). Un echec juste avant est un motif valable de re-verification.
+        triggers: list[dict[str, Any]] = []
+        for m in members[1:]:
+            prev_call = next((c for c in reversed(calls[: m.seq]) if c.agent_key == m.agent_key), None)
+            if prev_call is None:
+                triggers.append({"seq": m.seq, "preceded_by": None, "kind": "unknown"})
+                continue
+            if prev_call.status in _FAILED or prev_call.evidence.get("error_hint"):
+                kind_t = "after_failure"
+            elif prev_call.category == S.CAT_MCP and prev_call.op != I.OP_MCP_READ:
+                kind_t = "after_mcp_action"
+            elif prev_call.is_write_like:
+                kind_t = "after_write"
+            elif prev_call.op_key == m.op_key:
+                kind_t = "immediate_repeat"
+            else:
+                kind_t = "no_notable_trigger"
+            triggers.append({"seq": m.seq, "preceded_by": f"#{prev_call.seq} {prev_call.tool_name} ({prev_call.status})", "kind": kind_t})
+        trigger_kinds = sorted({t["kind"] for t in triggers})
+        if "after_failure" in trigger_kinds:
+            counter.append("Au moins une repetition suit directement un echec : re-verifier apres un echec est un motif valable.")
         findings.append(B.Finding(
             rule_id=RULE_ID, rule_version=RULE_VERSION, kind="repeated_read" if not cross_tool else "repeated_read_cross_tool",
             title=title, confidence=conf, confidence_rationale=why + ". " + B.LIMIT_HEURISTIC,
             calls=[c.key for c in members], call_refs=B.refs(members),
             evidence={
                 "operation": first.op, "target": first.op_target, "params": first.op_params, "tools_used": tools,
+                "triggers": triggers, "trigger_kinds": trigger_kinds,
                 "same_result_basis": sorted({v.get("same_result_basis", "") for v in verdicts}),
                 "statuses": [c.status for c in members],
                 "intervening_notable_calls": [{"count": len(b), "first_seqs": b[:5]} for b in cl["between"]],

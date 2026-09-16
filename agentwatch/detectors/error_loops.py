@@ -38,6 +38,9 @@ _CAUSE_HINTS: list[tuple[str, str]] = [
     ("import", "dependance ou chemin d'import incorrect"),
     ("connection", "service reseau ou serveur MCP indisponible"),
     ("refused", "service reseau ou serveur MCP indisponible"),
+    ("ssh", "connexion distante rompue : corriger la session (reconnexion, cle, VPN) plutot que relancer"),
+    ("session", "session distante perdue : relancer ne la retablit pas"),
+    ("interrompu", "service distant interrompu : attendre ou reconnecter, pas relancer a l'identique"),
     ("exit code", "commande en echec : voir le code de sortie"),
 ]
 
@@ -51,10 +54,13 @@ def _hypotheses(signature: str | None) -> list[str]:
 
 
 def _is_failure(c: Call) -> bool:
-    """Echec signale par le client, ou echec probable (statut non expose + indice textuel)."""
+    """Echec signale par le client, ou echec probable : statut non expose (Codex) ou reponse MCP
+    'reussie' dont le texte ressemble a une erreur, dans les deux cas avec un indice textuel."""
     if c.status in _FAIL or c.status == S.STATUS_DENIED:
         return True
-    return c.status == S.STATUS_UNKNOWN and bool(c.evidence.get("error_hint")) and bool(c.error_signature)
+    if not (c.evidence.get("error_hint") and c.error_signature):
+        return False
+    return c.status == S.STATUS_UNKNOWN or (c.status == S.STATUS_SUCCESS and c.category == S.CAT_MCP)
 
 
 def _loop_key(c: Call) -> str:
@@ -75,6 +81,12 @@ def _correction_between(a: Call, b: Call, calls: list[Call], case_insensitive: b
                 paths.add(k)
     for w in calls[a.seq + 1: b.seq]:
         if w.agent_key != a.agent_key:
+            continue
+        if a.category == S.CAT_MCP:
+            # * Echec d'un outil MCP (ressource distante) : une ecriture locale ne le corrige pas ;
+            #   seul un autre appel MCP non-lecture vers le meme serveur peut avoir agi.
+            if w.category == S.CAT_MCP and w.mcp_server == a.mcp_server and w.op != "mcp_read" and w.tool_name != a.tool_name:
+                unknown.append(f"#{w.seq} {w.tool_name} (action MCP sur le meme serveur)")
             continue
         if w.is_write_like:
             touched = set()
@@ -162,6 +174,13 @@ def detect(view: SessionView, cfg: dict[str, Any]) -> list[B.Finding]:
             if conf == B.CONFIDENCE_HIGH:
                 conf = B.CONFIDENCE_MEDIUM
             why += " ; statut d'execution non expose par le client, echec infere du texte de sortie (indice heuristique)"
+        elif any(c.status == S.STATUS_SUCCESS and c.evidence.get("error_hint") for c in chain):
+            # ? Serveur MCP qui renvoie une panne comme un resultat normal (isError=false).
+            kind = kind + "_probable" if kind == "persistent" else kind
+            if conf == B.CONFIDENCE_HIGH:
+                conf = B.CONFIDENCE_MEDIUM
+            why += (" ; le serveur MCP a renvoye ces reponses comme des succes (isError=false) alors que leur texte "
+                    "decrit une panne : echec infere du texte (indice heuristique)")
         members = chain + ([later_success] if later_success else [])
         findings.append(B.Finding(
             rule_id=RULE_ID, rule_version=RULE_VERSION, kind=kind,
@@ -194,6 +213,10 @@ def detect(view: SessionView, cfg: dict[str, Any]) -> list[B.Finding]:
                 "hypotheses": _hypotheses(first.error_signature),
                 "text": ("Verifier la precondition (chemin, dependance, permission, delai) avant de relancer, "
                          "ou limiter le nombre de tentatives identiques dans les instructions du projet."),
+                "tooling": ((["Cote serveur MCP : renvoyer les pannes avec isError=true et un code stable (ex. SSH_SESSION_LOST) ; "
+                              "fournir un outil d'attente/reconnexion avec delai plutot que de laisser le client interroger l'etat ; "
+                              "apres N echecs identiques, le dire explicitement dans la reponse."])
+                            if first.category == S.CAT_MCP else []),
             },
             validation_protocol=[
                 "Relire le resume d'erreur masque et confirmer que la signature designe bien la meme cause.",

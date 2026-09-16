@@ -188,6 +188,11 @@ class CodexAdapter:
         ev["warnings"].extend(warns)
         if err:
             ev["error_summary"] = err
+        elif ev["tool_category"] == S.CAT_MCP and status == S.STATUS_SUCCESS:
+            hint = base.mcp_error_hint(resp)
+            if hint:
+                ev["evidence"]["error_hint"] = "mcp response text looks like an error although isError=false (heuristic)"
+                ev["error_summary"] = hint[: int(cfg.get("max_error_chars", 400))]
         elif status == S.STATUS_ERROR:
             text = _output_text(resp)
             if text:

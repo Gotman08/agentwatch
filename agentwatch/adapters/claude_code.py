@@ -234,6 +234,13 @@ class ClaudeCodeAdapter:
         ev["warnings"].extend(warns)
         if err:
             ev["error_summary"] = err
+        if ev["tool_category"] == S.CAT_MCP and status == S.STATUS_SUCCESS and not err:
+            hint = base.mcp_error_hint(resp)
+            if hint:
+                # * Le statut reste celui du client (succes) ; l'indice permet a l'analyse de
+                #   traiter l'appel comme un echec probable et d'en tirer une signature.
+                ev["evidence"]["error_hint"] = "mcp response text looks like an error although isError=false (heuristic)"
+                ev["error_summary"] = hint[: int(cfg.get("max_error_chars", 400))]
         # * Observe en direct (2.1.270) : la cle est `duration_ms` ; la documentation cite `duration`.
         dur = payload.get("duration_ms", payload.get("duration"))
         if isinstance(dur, (int, float)) and not isinstance(dur, bool):

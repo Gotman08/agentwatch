@@ -166,6 +166,34 @@ class CrossToolRedundancyTests(unittest.TestCase):
         self.assertEqual(f2[0].confidence, "medium")
         self.assertTrue(any("effet possible sur le meme serveur" in r for v in f2[0].evidence["pair_verdicts"] for r in v["reasons"]))
 
+    def test_mcp_failure_returned_as_success_is_an_error_loop_not_a_redundancy(self) -> None:
+        s = Synth(self.home, session_id="mcpfail")
+        s.session_start(); s.user_prompt()
+        for _ in range(4):
+            s.mcp("romeo", "romeo_status", {}, "session SSH interrompue : aucun message")   # isError=false, texte de panne
+            s.bash("make", "built")
+        fa = s.findings(["redundant_reads"])
+        fb = s.findings(["error_loops"])
+        self.assertTrue(all(f.kind == "repeated_run" for f in fa), "une reponse decrivant une panne n'est pas une lecture reussie a reutiliser (seuls les make repetes restent)")
+        self.assertEqual(len(fb), 1)
+        self.assertEqual((fb[0].kind, fb[0].confidence, len(fb[0].calls)), ("persistent_probable", "medium", 4))
+        self.assertTrue(any("ssh" in h.lower() or "session" in h.lower() for h in fb[0].proposal["hypotheses"]))
+        self.assertTrue(fb[0].proposal["tooling"], "recommandation cote serveur MCP")
+        self.assertIn("isError=false", fb[0].confidence_rationale)
+
+    def test_redundancy_reports_triggers(self) -> None:
+        s = Synth(self.home, session_id="trig")
+        s.session_start(); s.user_prompt()
+        s.read("a.py", "A")
+        s.bash("python check.py", fail="Exit code 1: boom")
+        s.read("a.py", "A")
+        s.read("a.py", "A")
+        f = s.findings(["redundant_reads"])
+        self.assertEqual(len(f), 1)
+        kinds = [t["kind"] for t in f[0].evidence["triggers"]]
+        self.assertEqual(kinds, ["after_failure", "immediate_repeat"])
+        self.assertTrue(any("motif valable" in c for c in f[0].counter_indications))
+
     def test_low_confidence_only_is_not_an_opportunity(self) -> None:
         s = Synth(self.home, session_id="low1")
         s.session_start(); s.user_prompt()

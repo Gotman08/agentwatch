@@ -183,6 +183,26 @@ def content_fingerprint(text: str | None, fp: Any) -> dict[str, Any] | None:
     return {"method": "hmac-sha256-normalized-text", "value": fp(norm), "chars": len(norm)}
 
 
+import re as _re
+
+# * Observe en direct (serveur MCP romeo) : une panne SSH renvoyee comme un resultat normal
+#   (isError=false, texte "session SSH interrompue"). Sans cet indice, 22 pannes identiques
+#   passent pour 22 lectures reussies, pour le client comme pour l'observateur.
+MCP_ERROR_TEXT_RE = _re.compile(
+    r"(?im)^.*\b(?:error|erreur|exception|traceback|failed|failure|echec|échec|timeout|timed out|refused|unreachable|"
+    r"unavailable|indisponible|interrompue?|interrupted|denied|refusé|impossible|not found|introuvable|no such|"
+    r"connection (?:lost|closed|reset)|session .*(?:lost|closed|interrompue))\b.*$")
+
+
+def mcp_error_hint(resp: Any) -> str | None:
+    """Premiere ligne d'une reponse MCP 'reussie' qui ressemble a une erreur, sinon None."""
+    text = primary_text(resp)
+    if not text:
+        return None
+    m = MCP_ERROR_TEXT_RE.search(text[:2000])
+    return m.group(0).strip() if m else None
+
+
 def response_keys(resp: Any) -> list[str] | None:
     if isinstance(resp, dict):
         return sorted(str(k) for k in list(resp)[:40])
