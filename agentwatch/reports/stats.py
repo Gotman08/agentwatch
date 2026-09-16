@@ -123,7 +123,7 @@ def work_units(view: SessionView, limit: int = 25) -> list[dict[str, Any]]:
     for c in view.calls:
         if c.op in ("other", "agent") or not c.op_key:
             continue
-        g = groups.setdefault(c.op_key, {"op": c.op, "target": c.op_target if c.op != "unknown" else c.target, "calls": 0,
+        g = groups.setdefault(c.op_key, {"op": c.op, "target": c.op_target or c.target, "calls": 0,
                                          "tools": set(), "agents": set(), "statuses": {}, "content_fps": set(), "seqs": []})
         g["calls"] += 1
         g["tools"].add(c.tool_name or "?")

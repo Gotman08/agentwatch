@@ -24,7 +24,7 @@ independante de l'outil et de la forme de commande :
 | `vcs_read` | `git status/diff/log/show/branch/rev-parse/ls-files/blame` |
 | `run_tests` | `pytest`, `python -m pytest`, `python -m unittest`, `npm test`, `cargo test`, `go test`, `ctest`, ... |
 | `build` | `make`, `cmake`, `msbuild`, `cargo build`, `npm run build`, `dotnet build`, `tsc`, ... |
-| `run_script` | `python script.py ...`, `node script.js ...` |
+| `run_script` | `python script.py ...`, `node script.js ...`, `python -m paquet ...` (cible `module:paquet`) |
 | `edit`, `write`, `mcp`, `agent`, `web` | outils natifs |
 | `unknown` | toute commande hors liste blanche, ou tube contenant un filtre inconnu |
 

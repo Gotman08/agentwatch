@@ -129,7 +129,7 @@ du hook au moment de `configure`, donc les hooks ne dependent pas de l'environne
 | `configure --client X [--apply]` | installer les hooks (dry-run par defaut) |
 | `uninstall --client X [--apply]` | retirer les hooks AgentWatch |
 | `sessions [--client X] [--json]` | lister les sessions enregistrees |
-| `report --session ID` ou `report --latest` `[--format markdown|json] [--out F]` | analyser une session (ou la derniere) |
+| `report --session ID` ou `report --latest` `[--format auto|markdown|json|rich|html|svg] [--out F]` | analyser une session (ou la derniere) ; `auto` = Rich dans un terminal si installe, sinon Markdown |
 | `self-test [--runs N]` | scenarios synthetiques + hook reel en sous-processus |
 | `bench [--runs N]` | mesurer la surcharge du hook |
 | `replay --client X <fichiers>` | reanalyser des payloads enregistres (rien n'est execute) |
@@ -138,6 +138,18 @@ du hook au moment de `configure`, donc les hooks ne dependent pas de l'environne
 | `feedback --finding ID --mark relevant|false-positive|clear` | marquer un signalement |
 | `import-usage <fichier.jsonl>` | importer des observations d'usage (tokens) |
 | `ingest --client X` | commande interne appelee par les hooks |
+
+## Affichage enrichi (optionnel)
+
+```bash
+pip install rich
+```
+
+Avec Rich installe, `report --latest` dans un terminal interactif affiche des panneaux
+colores par confiance, des tableaux et des barres proportionnelles (appels, volumes,
+durees). `--format html` ou `--format svg` avec `--out` exportent ce rendu ; `--format
+markdown` et `--format json` restent les sorties canoniques et ne dependent de rien.
+Le hook n'importe jamais Rich (verifie par un test).
 
 ## Reglages utiles (config.json)
 

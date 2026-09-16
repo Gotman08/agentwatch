@@ -88,6 +88,8 @@ def _shell_intent(call: Call) -> Intent:
         first = _tokens(segments[0])
     if eff_cwd != call.cwd:
         call = _with_cwd(call, eff_cwd)
+        residual = " && ".join(segments)
+        unknown = Intent(OP_UNKNOWN, residual, {}, "shell", f"cmd:{eff_cwd or ''}::{residual}")
     if not first:
         return unknown
     head = os.path.basename(first[0]).lower().removesuffix(".exe")
@@ -165,6 +167,11 @@ def _shell_intent(call: Call) -> Intent:
         after = rest[rest.index(args[0]) + 1:]          # * options comprises : elles font partie de la tache
         params = {"args": after[:8], "cwd": call.cwd}
         return Intent(OP_RUN_SCRIPT, script, params, "shell", f"{OP_RUN_SCRIPT}:{script}:{N.canonical_json(params)}")
+    if head in {"python", "python3", "py"} and len(rest) >= 2 and rest[0] == "-m" and not rest[1].startswith("-"):
+        # * `python -m paquet.module ...` : un module executable est une tache au meme titre qu'un script.
+        module = f"module:{rest[1]}"
+        params = {"args": rest[2:10], "cwd": call.cwd}
+        return Intent(OP_RUN_SCRIPT, module, params, "shell", f"{OP_RUN_SCRIPT}:{call.cwd or ''}:{module}:{N.canonical_json(params)}")
     return unknown
 
 

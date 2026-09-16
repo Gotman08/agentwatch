@@ -170,7 +170,23 @@ def cmd_report(args: argparse.Namespace) -> int:
             raise SystemExit("precisez --session <id> ou --latest")
         client, skey = _resolve_session(store, args.session, args.client)
     report = _analyse(home, cfg, client, skey)
-    text = json.dumps(report, indent=2, ensure_ascii=False) if args.format == "json" else render_markdown(report)
+    fmt = args.format
+    if fmt == "auto":
+        # * Rich (optionnel) dans un terminal interactif, Markdown partout ailleurs (tubes, fichiers).
+        from agentwatch.reports.rich_view import rich_available
+        fmt = "rich" if rich_available() and sys.stdout.isatty() and not args.out else "markdown"
+    if fmt in ("rich", "html", "svg"):
+        from agentwatch.reports import rich_view
+        if not rich_view.rich_available():
+            raise SystemExit("le format demande necessite Rich : pip install rich (ou pip install agentwatch[rich])")
+        if fmt == "rich" and not args.out:
+            rich_view.render_to_terminal(report)
+            return 0
+        text = rich_view.export(report, "text" if fmt == "rich" else fmt, width=args.width)
+    elif fmt == "json":
+        text = json.dumps(report, indent=2, ensure_ascii=False)
+    else:
+        text = render_markdown(report)
     if args.out:
         Path(args.out).write_text(text, encoding="utf-8")
         _out(f"rapport ecrit : {args.out}")
@@ -441,7 +457,9 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--session", help="identifiant (complet ou prefixe) ou cle de dossier")
     s.add_argument("--latest", action="store_true", help="derniere session enregistree (filtre --client possible)")
     s.add_argument("--client", choices=SUPPORTED_CLIENTS)
-    s.add_argument("--format", default="markdown", choices=("markdown", "json"))
+    s.add_argument("--format", default="auto", choices=("auto", "markdown", "json", "rich", "html", "svg"),
+                   help="auto = rich dans un terminal si Rich est installe, sinon markdown ; html/svg = rendu Rich exporte")
+    s.add_argument("--width", type=int, default=120, help="largeur du rendu Rich exporte (html/svg/rich vers fichier)")
     s.add_argument("--out", help="fichier de sortie (sinon stdout)")
     s.set_defaults(func=cmd_report)
 

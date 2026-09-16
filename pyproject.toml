@@ -11,6 +11,10 @@ requires-python = ">=3.11"
 license = { text = "MIT" }
 dependencies = []
 
+[project.optional-dependencies]
+# * Affichage terminal enrichi et exports HTML/SVG du rapport ; jamais charge par le hook.
+rich = ["rich>=13"]
+
 [project.scripts]
 agentwatch = "agentwatch.cli:main"
 
