@@ -27,6 +27,8 @@ RULE_VERSION = "1.0"
 def _shape(c: Call) -> str:
     """Signature structurelle d'un appel : OPERATION normalisee (pas l'outil), forme de la cible,
     noms des parametres. Read et `cat` ont la meme forme ; `pytest` et `python -m pytest` aussi."""
+    if c.op in ("mcp", "mcp_read"):
+        return f"{c.op}|{c.mcp_server}/{c.mcp_tool}|" + ",".join(sorted(k for k in c.op_params if not k.startswith("_")))
     if c.op not in ("unknown", "other"):
         t = str(c.op_target or "")
         base = os.path.basename(t)

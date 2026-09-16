@@ -207,6 +207,8 @@ def _detect_reads(calls: list[Call], window_calls: int, window_seconds: int, cas
                 kind_t = "no_notable_trigger"
             triggers.append({"seq": m.seq, "preceded_by": f"#{prev_call.seq} {prev_call.tool_name} ({prev_call.status})", "kind": kind_t})
         trigger_kinds = sorted({t["kind"] for t in triggers})
+        trigger_counts = {k: sum(1 for t in triggers if t["kind"] == k) for k in trigger_kinds}
+        triggers = triggers[:8] + ([{"more": len(triggers) - 8}] if len(triggers) > 8 else [])
         if "after_failure" in trigger_kinds:
             counter.append("Au moins une repetition suit directement un echec : re-verifier apres un echec est un motif valable.")
         findings.append(B.Finding(
@@ -215,7 +217,7 @@ def _detect_reads(calls: list[Call], window_calls: int, window_seconds: int, cas
             calls=[c.key for c in members], call_refs=B.refs(members),
             evidence={
                 "operation": first.op, "target": first.op_target, "params": first.op_params, "tools_used": tools,
-                "triggers": triggers, "trigger_kinds": trigger_kinds,
+                "triggers": triggers, "trigger_kinds": trigger_kinds, "trigger_counts": trigger_counts,
                 "same_result_basis": sorted({v.get("same_result_basis", "") for v in verdicts}),
                 "statuses": [c.status for c in members],
                 "intervening_notable_calls": [{"count": len(b), "first_seqs": b[:5]} for b in cl["between"]],

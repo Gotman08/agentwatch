@@ -273,6 +273,7 @@ def make_error_signature(text: str | None, limit: int = 160) -> str | None:
     """Signature d'erreur : premiere ligne significative, nombres/hex/chemins remplaces."""
     if not text:
         return None
+    text = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", "", text)   # caracteres de controle invisibles
     lines = [c.strip() for c in text.strip().splitlines() if c.strip()]
     if not lines:
         return None
