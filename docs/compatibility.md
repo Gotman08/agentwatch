@@ -38,12 +38,13 @@ test reel ci-dessous).
 | Installation des hooks (diff, apply, idempotence, retrait, reglages etrangers preserves) | teste sur fixture (unittest) ; forme exec `command`+`args` verifiee reellement sur 2.1.270 | teste sur fixture ; commande PowerShell `& '...'` verifiee reellement via surcharges `-c` (equivalentes a `hooks.json`) |
 | `SessionStart` / `SessionEnd` | **verifie reellement** (2.1.270 : cles `cwd, hook_event_name, session_id, source, transcript_path` ; fin : `reason`) | **verifie reellement** |
 | `UserPromptSubmit` / `Stop` | **verifie reellement** (`prompt`, `prompt_id`, `permission_mode`) ; `Stop` non observe (echec d'authentification avant reponse) | **verifie reellement** |
-| `PreToolUse` / `PostToolUse` (shell) | documente + teste sur fixture ; **indisponible en direct** (authentification CLI requise) | **verifie reellement** : outil `Bash`, `tool_use_id` = `exec-<uuid>`, `turn_id`, `model` sur chaque evenement, `transcript_path`, `permission_mode` |
+| `PreToolUse` / `PostToolUse` (shell) | **verifie reellement** depuis une session de l'application de bureau (2.1.270) : `Bash`, `Write`, `Read`, `Glob`, `Grep` ; `tool_use_id` = `toolu_...` ; `durationMs` observe sur `Glob` | **verifie reellement** : outil `Bash`, `tool_use_id` = `exec-<uuid>`, `turn_id`, `model` sur chaque evenement, `transcript_path`, `permission_mode` |
+| Rechargement des hooks a chaud | **verifie reellement** (2.1.270) : un `.claude/settings.local.json` ecrit par `configure --apply` est pris en compte dans la session en cours, sans redemarrage | non teste |
 | `PostToolUseFailure` | documente + teste sur fixture (`error`, `is_interrupt`) | n'existe pas (documente) |
 | Code de sortie d'une commande | absent (documente : `stdout`, `stderr`, `interrupted`) | **absent, verifie reellement** : `tool_response` est une chaine de sortie sans code ; AgentWatch laisse le statut `unknown` et pose un indice textuel d'erreur (heuristique) |
 | Appel MCP | documente (`mcp__<serveur>__<outil>`) + teste sur fixture | **verifie reellement** avec `tests/mcp_test_server.py` : `tool_response = {content, isError}` ; en mode `exec` il a fallu `mcp_servers.<id>.default_tools_approval_mode="approve"` (sinon refus « approval policy is never » et appel sans fin) |
 | Duree fournie par le client | partiel : `duration` sur `PostToolUse` a partir de 2.1.267 (documente, non observe) | absent |
-| Sous-agents | documente (`agent_id`, `agent_type`) + fixture | documente (`SubagentStart/Stop`) + fixture |
+| Sous-agents | **verifie reellement** (2.1.270 : `SubagentStart`/`SubagentStop` avec `agent_type`, `agent_id` sur chaque appel du sous-agent, contexte separe du fil principal) | documente (`SubagentStart/Stop`) + fixture |
 | Compaction / reprise | documente (`PreCompact`, `PostCompact`, `session_start_type`) + fixture | documente + fixture |
 | Interruptions | documente (`is_interrupt`) + fixture | evenement `Interrupt` de session (documente + fixture) ; pas de statut par appel |
 | Commandes longues / polling | un appel = un debut + une fin ; aucun evenement intermediaire (documente) | idem |
@@ -121,8 +122,15 @@ stdin tronque par `max_stdin_bytes`.
   le projet soit marque de confiance.
 - Codex : l'approbation d'un hook via `/hooks` (interface interactive) n'a pas ete
   exercee ; en `exec` elle a ete contournee par `--dangerously-bypass-hook-trust`.
-- Claude Code : tout ce qui suit l'authentification (appels d'outils, `PostToolUse`,
-  `PostToolUseFailure`, `duration`, sous-agents, compaction).
+- Claude Code en sous-processus (`claude -p`) : impossible faute d'authentification ;
+  en revanche une session de l'application de bureau (2.1.270) observee en direct le
+  2026-09-16 a fourni : 20 evenements, 9 appels du fil principal (Bash, Write, Glob) et
+  4 appels d'un sous-agent `Explore` (Read x3, Grep), `UserPromptSubmit`, `Stop`,
+  `SubagentStart`/`SubagentStop`, cout dans le hook 17,6 ms median avec `pythonw.exe`.
+  Restent non observes : `PostToolUseFailure`, `PostToolUse.duration`, compaction,
+  interruptions. Le lien entre un sous-agent et l'appel `Agent` qui l'a lance n'est pas
+  fourni par les hooks ; d'autres identifiants d'agent apparaissent avec un seul
+  `SubagentStop` sans type ni appel (agents auxiliaires internes probables).
 - `pythonw.exe` : verifie avec des tubes stdin/stdout crees par Python ; non observe
   lance par Codex ou Claude Code eux-memes.
 
