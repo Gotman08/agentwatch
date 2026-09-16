@@ -25,7 +25,8 @@ hooks du client ──stdin JSON──▶ agentwatch/hook_entry.py (python -I, ~
 | `adapters/base.py` | parametres autorises, cibles, deduction de statut | oui |
 | `core/schema.py` | schema versionne (`SCHEMA_VERSION = "1.0"`), constantes | oui |
 | `core/normalize.py` | categories d'outils, chemins, commandes shell, signatures d'erreur | oui |
-| `core/correlate.py` | evenements -> appels (`Call`) et marqueurs (`SessionView`) | non |
+| `core/correlate.py` | evenements -> appels (`Call`), marqueurs, agents (`SessionView`) | non |
+| `core/intent.py` | appel -> unite de travail (operation normalisee, cible, parametres) independante de l'outil ; liste blanche de formes shell, `cd ... &&` gere, reste `unknown` | non |
 | `detectors/*.py` | quatre regles independantes, seuils configurables | non |
 | `reports/*.py` | statistiques, matrice de couverture, Markdown, JSON, retours locaux | non |
 | `installer/*.py` | diff / apply / remove des hooks, sauvegardes | non |

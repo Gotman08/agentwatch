@@ -138,6 +138,16 @@ def render_markdown(report: dict[str, Any]) -> str:
                      f"{_fmt(t['output_bytes'])} ({t['output_known_for']}) | {_fmt(t['client_duration_median_ms'])} ({t['client_duration_n']}) | "
                      f"{_fmt(t['reconstructed_duration_median_ms'])} ({t['reconstructed_duration_n']}) |")
     lines.append("")
+    wu = [w for w in st.get("work_units", []) if w["repeated"]]
+    if wu:
+        lines += ["Unites de travail refaites (meme operation, meme cible, tous outils confondus) :", "",
+                  "| Operation | Cible | Fois | Outils | Agents | Contenus distincts obtenus |", "|---|---|---|---|---|---|"]
+        for w in wu[:15]:
+            lines.append(f"| {w['op']} | {str(w['target'])[:60]} | {w['calls']} | {', '.join(w['tools'])} | {w['agents']} | "
+                         f"{_fmt(w['distinct_contents'])} |")
+        lines.append("")
+        lines.append("Un travail refait n'est pas forcement inutile : voir les signalements et leurs contre-indications.")
+        lines.append("")
     if st["error_signatures"]:
         lines.append("Signatures d'erreur les plus frequentes :")
         lines += [f"- {e['count']}x `{e['signature']}`" for e in st["error_signatures"]]

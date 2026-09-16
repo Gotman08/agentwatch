@@ -71,6 +71,13 @@ class Call:
     warnings: list[str] = field(default_factory=list)
     evidence: dict[str, Any] = field(default_factory=dict)
     usage: dict[str, Any] | None = None
+    content_fingerprint: str | None = None
+    # * Unite de travail (core/intent.py) : operation normalisee independante de l'outil.
+    op: str = "unknown"
+    op_target: str | None = None
+    op_params: dict[str, Any] = field(default_factory=dict)
+    op_key: str = ""
+    op_source: str = "tool"
     ambiguous: bool = False
     has_start: bool = False
     has_end: bool = False
@@ -105,6 +112,7 @@ class Call:
     def summary(self) -> dict[str, Any]:
         return {
             "seq": self.seq, "call_id": self.call_id, "tool": self.tool_name, "category": self.category,
+            "op": self.op, "op_target": self.op_target,
             "target": self.target, "status": self.status, "start_time": self.start_time,
             "end_time": self.end_time, "agent": self.agent_key, "turn_index": self.turn_index,
             "duration_ms": self.duration_ms, "duration_source": self.duration_source,
@@ -290,6 +298,8 @@ def build_session(events: list[dict[str, Any]], cfg: dict[str, Any]) -> SessionV
     view.epochs = epoch + 1
     view.agents = list(agents)
     view.agent_infos = _build_agents(view)
+    from agentwatch.core.intent import attach_intents  # import tardif : intent depend de Call
+    attach_intents(calls)
     return view
 
 
@@ -412,6 +422,7 @@ def _apply_tool_event(ev: dict[str, Any], phase: str, ns: int, agent: str, epoch
         call.output_truncated = ev.get("output_truncated")
         rf = (ev.get("result_fingerprint") or {}).get("value")
         call.result_fingerprint = rf
+        call.content_fingerprint = (ev.get("content_fingerprint") or {}).get("value") if isinstance(ev.get("content_fingerprint"), dict) else None
         rs = ev.get("resource_state") or {}
         call.resource_revision = rs.get("revision")
         if isinstance(ev.get("result_paths"), list):

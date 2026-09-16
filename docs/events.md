@@ -1,7 +1,8 @@
-# Schema d'evenement (version 1.0)
+# Schema d'evenement (version 1.1)
 
 Chaque evenement est un objet JSON ecrit par le hook. Toute donnee absente vaut `null` ;
-un statut absent est `unknown`, jamais `success`.
+un statut absent est `unknown`, jamais `success`. Les evenements 1.0 restent lus (le
+champ ajoute en 1.1, `content_fingerprint`, vaut alors `null`).
 
 | Champ | Type | Sens |
 |---|---|---|
@@ -24,6 +25,7 @@ un statut absent est `unknown`, jamais `success`.
 | `target`, `target_kind` | str/null | cible normalisee : `path` (relative au projet), `command` (texte normalise, masque), `pattern`, `url` (sans requete), `mcp`, `patch`, `unknown` |
 | `params` | objet | parametres autorises (liste par outil) ; autres cles : `_fp` = empreinte courte de la valeur |
 | `input_fingerprint`, `result_fingerprint` | {method, value}/null | HMAC-SHA256 du JSON canonique |
+| `content_fingerprint` | {method, value, chars}/null | schema 1.1 : HMAC du texte principal normalise (contenu lu, stdout, resultats, blocs MCP) ; identique entre outils pour un meme texte |
 | `status` | str/null | `success`, `error`, `denied`, `interrupted`, `timeout`, `unknown` |
 | `exit_code` | int/null | seulement si le client l'expose (aucun des deux en V1) |
 | `error_signature`, `error_summary` | str/null | signature normalisee (nombres, chemins, hex remplaces) ; resume masque et borne |

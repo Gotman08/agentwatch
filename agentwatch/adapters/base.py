@@ -147,6 +147,42 @@ def _error_text(resp: dict[str, Any]) -> str | None:
     return None
 
 
+def primary_text(resp: Any, tool_name: str | None = None) -> str | None:
+    """Texte principal d'une reponse : contenu lu, stdout, resultats de recherche, blocs MCP.
+
+    # * Sert a l'empreinte de CONTENU : deux outils differents (Read / cat) qui obtiennent
+    #   le meme texte donnent la meme empreinte, contrairement a l'empreinte du JSON complet.
+    """
+    if isinstance(resp, str):
+        return resp
+    if isinstance(resp, list):
+        parts = [b.get("text") for b in resp if isinstance(b, dict) and isinstance(b.get("text"), str)]
+        return "\n".join(parts) if parts else None
+    if not isinstance(resp, dict):
+        return None
+    info = resp.get("file") if isinstance(resp.get("file"), dict) else resp
+    for key in ("content", "stdout", "output", "aggregated_output", "text"):
+        v = info.get(key) if isinstance(info, dict) else None
+        if isinstance(v, str):
+            return v
+        if isinstance(v, list):
+            parts = [b.get("text") for b in v if isinstance(b, dict) and isinstance(b.get("text"), str)]
+            if parts:
+                return "\n".join(parts)
+    names = resp.get("filenames")
+    if isinstance(names, list):
+        return "\n".join(str(n) for n in names)
+    return None
+
+
+def content_fingerprint(text: str | None, fp: Any) -> dict[str, Any] | None:
+    """Empreinte HMAC du texte normalise (CRLF -> LF, espaces de fin supprimes)."""
+    if not isinstance(text, str) or not text.strip():
+        return None
+    norm = "\n".join(line.rstrip() for line in text.replace("\r\n", "\n").replace("\r", "\n").split("\n")).strip()
+    return {"method": "hmac-sha256-normalized-text", "value": fp(norm), "chars": len(norm)}
+
+
 def response_keys(resp: Any) -> list[str] | None:
     if isinstance(resp, dict):
         return sorted(str(k) for k in list(resp)[:40])

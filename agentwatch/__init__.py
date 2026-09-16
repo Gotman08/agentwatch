@@ -7,7 +7,7 @@
 __version__ = "0.1.0"
 
 # * Version du schema d'evenement commun. Incrementer a chaque changement de champ.
-SCHEMA_VERSION = "1.0"
+SCHEMA_VERSION = "1.1"
 
 CLIENT_CLAUDE_CODE = "claude-code"
 CLIENT_CODEX = "codex"

@@ -25,20 +25,24 @@ RULE_VERSION = "1.0"
 
 
 def _shape(c: Call) -> str:
-    """Signature structurelle d'un appel (sans valeurs)."""
-    if c.target_kind == "path":
-        t = c.target or ""
-        ext = os.path.splitext(t)[1] or ("dir" if not os.path.basename(t) or "." not in os.path.basename(t) else "noext")
-        tshape = f"path{ext}"
-    elif c.target_kind == "command":
+    """Signature structurelle d'un appel : OPERATION normalisee (pas l'outil), forme de la cible,
+    noms des parametres. Read et `cat` ont la meme forme ; `pytest` et `python -m pytest` aussi."""
+    if c.op not in ("unknown", "other"):
+        t = str(c.op_target or "")
+        if c.op in ("read", "search", "list", "edit", "write", "run_script"):
+            ext = os.path.splitext(t)[1] or ("dir" if not os.path.basename(t) or "." not in os.path.basename(t) else "noext")
+            tshape = f"path{ext}"
+        else:
+            tshape = t[:40]
+        pkeys = ",".join(sorted(k for k in c.op_params if k not in ("cwd",)))
+        return f"{c.op}|{tshape}|{pkeys}"
+    if c.target_kind == "command":
         heads = c.params.get("shell_heads") or []
-        tshape = "cmd:" + "/".join(heads[:3]) + f":{c.shell_kind}"
-    elif c.target_kind == "mcp":
-        tshape = f"mcp:{c.mcp_server}/{c.mcp_tool}"
-    else:
-        tshape = str(c.target_kind)
+        return f"{c.tool_name}|shell|cmd:" + "/".join(heads[:3]) + f":{c.shell_kind}|"
+    if c.target_kind == "mcp":
+        return f"{c.tool_name}|mcp|{c.mcp_server}/{c.mcp_tool}|"
     pkeys = ",".join(sorted(k for k in c.params if not k.startswith("_") and k not in ("shell_heads", "shell_kind", "shell_paths", "command")))
-    return f"{c.tool_name}|{c.category}|{tshape}|{pkeys}"
+    return f"{c.tool_name}|{c.category}|{c.target_kind}|{pkeys}"
 
 
 def _mine(seq: list[Call], n_min: int, n_max: int, min_occ: int) -> list[tuple[tuple[str, ...], list[list[Call]]]]:

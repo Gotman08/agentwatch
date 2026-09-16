@@ -208,6 +208,8 @@ class CodexAdapter:
                 ev["duration_ms"], ev["duration_source"] = dur, "client"
             ev["output_truncated"] = resp.get("truncated") if isinstance(resp.get("truncated"), bool) else None
         ev["result_fingerprint"] = {"method": S.FINGERPRINT_METHOD_HMAC, "value": ctx.fp(N.canonical_json(resp))}
+        if ev["tool_category"] in (S.CAT_READ, S.CAT_SEARCH, S.CAT_LIST, S.CAT_SHELL, S.CAT_MCP):
+            ev["content_fingerprint"] = base.content_fingerprint(_output_text(resp), ctx.fp)
         if cfg.get("detailed_excerpts"):
             text = _output_text(resp)
             if text:

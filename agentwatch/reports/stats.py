@@ -104,7 +104,36 @@ def compute_stats(view: SessionView) -> dict[str, Any]:
         "correlation": dict(view.counts),
         "turns": view.turns, "context_epochs": view.epochs, "agents": view.agents,
         "usage": _usage_summary(view),
+        "work_units": work_units(view),
     }
+
+
+def work_units(view: SessionView, limit: int = 25) -> list[dict[str, Any]]:
+    """Unites de travail : meme operation normalisee sur la meme cible, tous outils confondus.
+
+    # * Repond a « a-t-on refait le meme travail ? » plutot qu'a « a-t-on refait le meme appel ? ».
+    """
+    groups: dict[str, dict[str, Any]] = {}
+    for c in view.calls:
+        if c.op in ("other", "agent") or not c.op_key:
+            continue
+        g = groups.setdefault(c.op_key, {"op": c.op, "target": c.op_target if c.op != "unknown" else c.target, "calls": 0,
+                                         "tools": set(), "agents": set(), "statuses": {}, "content_fps": set(), "seqs": []})
+        g["calls"] += 1
+        g["tools"].add(c.tool_name or "?")
+        g["agents"].add(c.agent_key)
+        g["statuses"][c.status] = g["statuses"].get(c.status, 0) + 1
+        if c.content_fingerprint:
+            g["content_fps"].add(c.content_fingerprint)
+        g["seqs"].append(c.seq)
+    rows = []
+    for g in groups.values():
+        rows.append({"op": g["op"], "target": g["target"], "calls": g["calls"], "tools": sorted(g["tools"]),
+                     "agents": len(g["agents"]), "statuses": g["statuses"],
+                     "distinct_contents": len(g["content_fps"]) if g["content_fps"] else None,
+                     "seqs": g["seqs"][:20], "repeated": g["calls"] >= 2})
+    rows.sort(key=lambda r: (r["calls"], len(r["tools"])), reverse=True)
+    return rows[:limit]
 
 
 def _usage_summary(view: SessionView) -> dict[str, Any]:

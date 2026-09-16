@@ -261,6 +261,8 @@ class ClaudeCodeAdapter:
                 ev["evidence"]["result_count"] = resp["numFiles"]
         # * Empreinte du resultat : sur le JSON canonique complet (comparaison d'egalite).
         ev["result_fingerprint"] = {"method": S.FINGERPRINT_METHOD_HMAC, "value": ctx.fp(N.canonical_json(resp))}
+        if ev["tool_category"] in (S.CAT_READ, S.CAT_SEARCH, S.CAT_LIST, S.CAT_SHELL, S.CAT_MCP):
+            ev["content_fingerprint"] = base.content_fingerprint(base.primary_text(resp, ev["tool_name"]), ctx.fp)
         if cfg.get("detailed_excerpts"):
             text = _excerpt_source(resp)
             if text:

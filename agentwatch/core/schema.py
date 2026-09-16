@@ -58,6 +58,9 @@ SOURCE_REPLAY = "replay"
 SOURCE_IMPORT = "import"
 
 FINGERPRINT_METHOD_HMAC = "hmac-sha256"
+# * 1.1 ajoute `content_fingerprint` (empreinte du contenu principal, normalise). Les
+#   evenements 1.0 restent lisibles : le champ vaut simplement None.
+COMPATIBLE_SCHEMA_VERSIONS = ("1.0", "1.1")
 
 # * Ordre des cles du document : lisible en JSON, stable pour les tests.
 EVENT_FIELDS: tuple[str, ...] = (
@@ -66,7 +69,7 @@ EVENT_FIELDS: tuple[str, ...] = (
     "phase", "hook_event_name", "event_time", "received_time", "received_time_ns",
     "tool_name", "tool_category", "mcp_server", "mcp_tool",
     "project_dir", "cwd", "target", "target_kind", "params",
-    "input_fingerprint", "result_fingerprint",
+    "input_fingerprint", "result_fingerprint", "content_fingerprint",
     "status", "exit_code", "error_signature", "error_summary",
     "output_size_bytes", "output_size_source", "output_truncated",
     "duration_ms", "duration_source",
@@ -109,8 +112,8 @@ def validate_event(ev: Any) -> list[str]:
     for key in ("schema_version", "event_id", "client", "phase", "received_time"):
         if not ev.get(key):
             problems.append(f"missing {key}")
-    if ev.get("schema_version") != SCHEMA_VERSION:
-        problems.append(f"schema_version {ev.get('schema_version')!r} != {SCHEMA_VERSION!r}")
+    if ev.get("schema_version") not in COMPATIBLE_SCHEMA_VERSIONS:
+        problems.append(f"schema_version {ev.get('schema_version')!r} not in {COMPATIBLE_SCHEMA_VERSIONS}")
     if ev.get("params") is not None and not isinstance(ev.get("params"), dict):
         problems.append("params must be an object")
     return problems

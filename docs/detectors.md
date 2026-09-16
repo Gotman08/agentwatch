@@ -10,11 +10,44 @@ Le niveau de confiance est une heuristique documentee, pas une probabilite calib
 Classement des rapports : confiance, puis nombre d'appels, puis octets de sortie observes.
 Aucun score global.
 
-## A. `A.redundant_reads` — lectures ou recherches probablement redondantes
+## Unites de travail (prealable a A et D)
 
-Regle : meme outil, meme cible, memes parametres de comparaison (plage, filtre, motif),
-meme agent, meme epoque de contexte, dans une fenetre (`window_calls` = 60 appels,
-`window_seconds` = 900), sans modification observee de la cible entre les deux.
+Compter des appels identiques ne suffit pas : le meme travail peut etre refait par des
+moyens differents. `core/intent.py` traduit chaque appel en une **operation normalisee**
+independante de l'outil et de la forme de commande :
+
+| Operation | Formes reconnues |
+|---|---|
+| `read` | outil Read ; `cat`, `type`, `Get-Content`, `head`, `tail`, `sed -n 'a,bp'`, `nl`, `less` |
+| `search` | outil Grep ; `rg`, `grep`, `ag`, `ack`, `Select-String`, `findstr` |
+| `list` | outil Glob/LS ; `ls`, `dir`, `Get-ChildItem`, `tree`, `find`, `fd` |
+| `vcs_read` | `git status/diff/log/show/branch/rev-parse/ls-files/blame` |
+| `run_tests` | `pytest`, `python -m pytest`, `python -m unittest`, `npm test`, `cargo test`, `go test`, `ctest`, ... |
+| `build` | `make`, `cmake`, `msbuild`, `cargo build`, `npm run build`, `dotnet build`, `tsc`, ... |
+| `run_script` | `python script.py ...`, `node script.js ...` |
+| `edit`, `write`, `mcp`, `agent`, `web` | outils natifs |
+| `unknown` | toute commande hors liste blanche, ou tube contenant un filtre inconnu |
+
+Une commande `unknown` n'est comparee qu'a elle-meme (texte normalise) : aucune
+equivalence semantique generale n'est pretendue. La preuve qu'un travail refait a
+produit la meme chose est l'**empreinte du contenu obtenu** (texte normalise : CRLF ->
+LF, espaces de fin supprimes), identique entre Read et `cat` pour un meme fichier.
+
+Le rapport liste les « unites de travail refaites » (operation, cible, nombre de fois,
+outils, agents, contenus distincts obtenus) avant meme tout signalement.
+
+## A. `A.redundant_reads` (v2.0) — travail de lecture redondant, executions relancees
+
+Regle (`repeated_read`) : meme unite de travail de lecture/recherche/listage (operation,
+cible, parametres de comparaison), meme agent, meme epoque de contexte, dans une fenetre
+(`window_calls` = 60 appels, `window_seconds` = 900), sans modification observee de la
+cible entre les deux. Le sous-type `repeated_read_cross_tool` signale le meme travail
+fait par des outils differents (ex. Read puis `cat`).
+
+Regle (`repeated_run`) : meme execution (`run_tests`, `build`, `run_script`) relancee
+au moins deux fois avec le meme statut, sans aucune ecriture, edition ni patch observe
+entre les lancements. Confiance `medium` si les sorties sont identiques (empreinte de
+contenu), `low` sinon ; un echec suivi d'un succes n'est pas signale (progres).
 
 | Confiance | Condition |
 |---|---|
