@@ -116,11 +116,25 @@ def ingest_payload(payload: Any, client: str, home: str | os.PathLike[str], cfg:
     try:
         ev = get_adapter(client).parse_hook_payload(payload, ctx)
     except Exception as exc:  # noqa: BLE001 - ! un payload inattendu ne doit pas perdre l'evenement
+        # * Repli minimal : on conserve les identifiants (sans aucun contenu) pour que l'appel
+        #   reste comptable a l'analyse, avec l'erreur en avertissement. Vecu en direct : une
+        #   edition en deux temps du code du hook a provoque un NameError pendant 2 appels.
         ev = S.empty_event()
         ev["client"] = client
-        ev["phase"] = S.PHASE_UNKNOWN
-        ev["hook_event_name"] = payload.get("hook_event_name") if isinstance(payload.get("hook_event_name"), str) else None
-        ev["session_id"] = payload.get("session_id") if isinstance(payload.get("session_id"), str) else None
+        name = payload.get("hook_event_name") if isinstance(payload.get("hook_event_name"), str) else None
+        ev["hook_event_name"] = name
+        ev["phase"] = {"PreToolUse": S.PHASE_START, "PostToolUse": S.PHASE_END,
+                       "PostToolUseFailure": S.PHASE_FAILURE}.get(name or "", S.PHASE_UNKNOWN)
+        for src, dst in (("session_id", "session_id"), ("tool_use_id", "call_id"), ("tool_name", "tool_name"),
+                         ("agent_id", "agent_id"), ("agent_type", "agent_type"), ("turn_id", "turn_id"), ("cwd", "cwd")):
+            v = payload.get(src)
+            if isinstance(v, str) and v:
+                ev[dst] = v
+        if ev["tool_name"]:
+            from agentwatch.core.normalize import categorize_tool
+            ev["tool_category"], ev["mcp_server"], ev["mcp_tool"] = categorize_tool(client, ev["tool_name"])
+        ev["status"] = S.STATUS_UNKNOWN if ev["phase"] in (S.PHASE_END, S.PHASE_FAILURE) else None
+        ev["target_kind"] = "unknown"
         ev["warnings"].append(f"adapter error: {type(exc).__name__}: {str(exc)[:120]}")
     ev["source"] = source
     if source == S.SOURCE_REPLAY:

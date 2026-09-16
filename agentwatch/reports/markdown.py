@@ -17,6 +17,13 @@ def _fmt(v: Any) -> str:
     return str(v)
 
 
+def _short(value: Any, limit: int = 100) -> str:
+    """Cible bornee pour l'affichage : une commande longue reste lisible dans le JSON."""
+    s = repr(value) if not isinstance(value, str) else value
+    s = s.replace("\n", " ")
+    return f"`{s}`" if len(s) <= limit else f"`{s[:limit]}...` ({len(s)} car., complet dans l'export JSON)"
+
+
 def _cost_line(cost: dict[str, Any]) -> str:
     parts = [f"{cost.get('calls')} appel(s)"]
     if cost.get("output_bytes_sum") is not None:
@@ -103,7 +110,7 @@ def render_markdown(report: dict[str, Any]) -> str:
     else:
         top = [f for f in findings if f["finding_id"] in top_ids]
         if not top:
-            lines.append("Tous les signalements ont ete marques comme faux positifs localement.")
+            lines.append(report.get("no_issue_statement") or "Tous les signalements ont ete marques comme faux positifs localement.")
             lines.append("")
         for fd in top:
             lines += _render_finding(Finding(**fd), detailed=True)
@@ -154,11 +161,11 @@ def render_markdown(report: dict[str, Any]) -> str:
         lines.append("")
     if st["largest_outputs"]:
         lines.append("Sorties les plus volumineuses (une sortie volumineuse n'est pas, seule, un gaspillage) :")
-        lines += [f"- #{c['seq']} {c['tool']} {c['target']!r} : {c['output_size_bytes']} octets" for c in st["largest_outputs"]]
+        lines += [f"- #{c['seq']} {c['tool']} {_short(c['target'])} : {c['output_size_bytes']} octets" for c in st["largest_outputs"]]
         lines.append("")
     if st["longest_calls"]:
         lines.append("Appels les plus longs (source de la duree indiquee) :")
-        lines += [f"- #{c['seq']} {c['tool']} {c['target']!r} : {c['duration_ms']} ms ({c['duration_source']})" for c in st["longest_calls"]]
+        lines += [f"- #{c['seq']} {c['tool']} {_short(c['target'])} : {c['duration_ms']} ms ({c['duration_source']})" for c in st["longest_calls"]]
         lines.append("")
     agents = report.get("agents") or []
     if agents:

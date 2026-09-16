@@ -34,7 +34,11 @@ OP_WEB = "web"
 OP_OTHER = "other"
 OP_UNKNOWN = "unknown"
 
-READ_LIKE_OPS = {OP_READ, OP_SEARCH, OP_LIST, OP_VCS_READ}
+OP_MCP_READ = "mcp_read"
+READ_LIKE_OPS = {OP_READ, OP_SEARCH, OP_LIST, OP_VCS_READ, OP_MCP_READ}
+# * Outils MCP dont le nom annonce une lecture : comparables entre eux, avec une confiance
+#   plafonnee (un serveur peut renvoyer un etat volatil ou avoir des effets non declares).
+_MCP_READ_VERBS = re.compile(r"(?i)(^|_)(get|list|read|search|find|status|show|info|quota|check|query|describe|fetch|lookup|explore)(_|$)")
 RUN_LIKE_OPS = {OP_RUN_TESTS, OP_BUILD, OP_RUN_SCRIPT}
 
 _READ_HEADS = {"cat", "type", "get-content", "gc", "less", "more", "nl", "head", "tail", "sed", "bat"}
@@ -192,7 +196,8 @@ def derive(call: Call) -> Intent:
         op = OP_EDIT if cat == S.CAT_EDIT else OP_WRITE
         return Intent(op, path_key or call.target, {}, "tool", f"{op}:{path_key or call.target}:{call.params_key}")
     if cat == S.CAT_MCP:
-        return Intent(OP_MCP, call.target, dict(call.params), "tool", f"{OP_MCP}:{call.tool_name}:{tkey}:{call.params_key}")
+        op = OP_MCP_READ if _MCP_READ_VERBS.search(call.mcp_tool or "") else OP_MCP
+        return Intent(op, call.target, dict(call.params), "tool", f"{op}:{call.tool_name}:{tkey}:{call.params_key}")
     if cat == S.CAT_AGENT:
         return Intent(OP_AGENT, call.params.get("subagent_type"), {}, "tool", f"{OP_AGENT}:{call.key}")
     if cat == S.CAT_WEB:

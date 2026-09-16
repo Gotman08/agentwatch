@@ -133,6 +133,57 @@ class CrossToolRedundancyTests(unittest.TestCase):
         self.assertIn("Unites de travail refaites", buf.getvalue())
         self.assertIn("| read | a.py | 3 | Bash, Read | 1 | 1 |", buf.getvalue())
 
+    def test_mcp_read_tools_are_comparable_with_capped_confidence(self) -> None:
+        s = Synth(self.home, session_id="mcp1")
+        s.session_start(); s.user_prompt()
+        s.mcp("romeo", "romeo_status", {}, "cluster ok")
+        s.read("a.py", "A")
+        s.mcp("romeo", "romeo_status", {}, "cluster ok")
+        s.mcp("romeo", "submit_job", {"script": "x"}, "queued")
+        s.mcp("romeo", "submit_job", {"script": "x"}, "queued")
+        f = s.findings(["redundant_reads"])
+        self.assertEqual(len(f), 1, "submit_job n'est pas une lecture : jamais compare")
+        self.assertEqual((f[0].evidence["operation"], f[0].confidence), ("mcp_read", "medium"))
+        self.assertIn("MCP", f[0].confidence_rationale)
+
+    def test_low_confidence_only_is_not_an_opportunity(self) -> None:
+        s = Synth(self.home, session_id="low1")
+        s.session_start(); s.user_prompt()
+        for i, name in enumerate(("m1", "m2", "m3")):
+            s.read(f"src/{name}.py", f"code{i}"); s.edit(f"src/{name}.py", f"code{i}", f"fixed{i}"); s.bash(f"pytest tests/test_{name}.py", "ok", fail=("failed" if i == 1 else None))
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            cli.main(["--home", str(self.home), "report", "--session", "low1", "--format", "json"])
+        js = json.loads(buf.getvalue())
+        self.assertTrue(js["findings"], "un motif a faible confiance existe")
+        self.assertTrue(all(f["confidence"] == "low" for f in js["findings"]))
+        self.assertEqual(js["top_findings"], [])
+        self.assertIn("Aucune opportunite demontree", js["no_issue_statement"])
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            cli.main(["--home", str(self.home), "report", "--session", "low1"])
+        self.assertIn("Aucune opportunite demontree", buf.getvalue())
+        self.assertIn("## Autres signalements", buf.getvalue())
+
+    def test_adapter_failure_keeps_call_identity(self) -> None:
+        from unittest import mock
+        from agentwatch.collector.ingest import ingest_payload
+        from agentwatch.config import load_config
+        from agentwatch.collector.store import EventStore
+        cfg = load_config(self.home)
+        with mock.patch("agentwatch.adapters.claude_code.ClaudeCodeAdapter.parse_hook_payload", side_effect=NameError("boom")):
+            for hook in ("PreToolUse", "PostToolUse"):
+                path, inc = ingest_payload({"session_id": "af", "hook_event_name": hook, "tool_name": "Read", "tool_use_id": "t1",
+                                            "tool_input": {"file_path": "x"}, "tool_response": {"content": "secret"}}, "claude-code", self.home, cfg)
+                self.assertTrue(path and not inc)
+        store = EventStore(self.home, cfg)
+        events, _ = store.read_session_events("claude-code", "af")
+        self.assertEqual({e["phase"] for e in events}, {"start", "end"})
+        self.assertTrue(all(e["call_id"] == "t1" and e["tool_name"] == "Read" and "adapter error" in e["warnings"][0] for e in events))
+        self.assertNotIn("secret", json.dumps(events), "le repli ne conserve aucun contenu")
+        v = build_session(events, cfg)
+        self.assertEqual((len(v.calls), v.calls[0].status), (1, "unknown"))
+
     def test_schema_1_0_events_still_accepted(self) -> None:
         ev = {"schema_version": "1.0", "event_id": "e1", "client": "codex", "phase": "turn_end", "received_time": "2026-01-01T00:00:00Z",
               "received_time_ns": 1, "params": {}, "warnings": [], "evidence": {}}

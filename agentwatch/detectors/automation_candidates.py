@@ -29,8 +29,11 @@ def _shape(c: Call) -> str:
     noms des parametres. Read et `cat` ont la meme forme ; `pytest` et `python -m pytest` aussi."""
     if c.op not in ("unknown", "other"):
         t = str(c.op_target or "")
-        if c.op in ("read", "search", "list", "edit", "write", "run_script"):
-            ext = os.path.splitext(t)[1] or ("dir" if not os.path.basename(t) or "." not in os.path.basename(t) else "noext")
+        base = os.path.basename(t)
+        if c.op in ("read", "search", "list", "edit", "write", "run_script") or "/" in t or (base and "." in base):
+            # * Forme de chemin : extension seulement, pour que `pytest tests/test_a.py` et
+            #   `pytest tests/test_b.py` soient la meme etape a cible variable.
+            ext = os.path.splitext(t)[1] or ("dir" if not base or "." not in base else "noext")
             tshape = f"path{ext}"
         else:
             tshape = t[:40]
@@ -126,6 +129,11 @@ def detect(view: SessionView, cfg: dict[str, Any]) -> list[B.Finding]:
         for gram, occ in _mine(seq, n_min, n_max, min_occ)[:10]:
             info = _analyse(gram, occ)
             n = len(occ)
+            if info["judgment_steps"] >= len(info["steps"]):
+                continue  # * aucune etape mecanique : rien a automatiser, on ne signale pas
+            for step in info["steps"]:
+                if isinstance(step.get("example_target"), str) and len(step["example_target"]) > 80:
+                    step["example_target"] = step["example_target"][:80] + "..."
             if info["judgment_steps"] == 0 and info["all_success"] and n >= min_occ + 1:
                 conf, why = B.CONFIDENCE_HIGH, f"{n} occurrences, toutes reussies, aucune etape de jugement detectee"
             elif info["judgment_steps"] <= 1:

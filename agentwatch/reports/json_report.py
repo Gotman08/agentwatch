@@ -19,7 +19,10 @@ def build_report(view: SessionView, stats: dict[str, Any], coverage: list[dict[s
     for f in ranked:
         f.feedback = feedback.get(f.finding_id)
     max_top = int(cfg.get("report", {}).get("max_top_findings", 3))
-    top = [f for f in ranked if not (f.feedback and f.feedback.get("mark") == "false-positive")][:max_top]
+    # * Seuls les signalements de confiance moyenne ou haute peuvent etre des "opportunites" :
+    #   on ne remplit pas la tete du rapport avec des candidats a faible confiance.
+    top = [f for f in ranked if f.confidence_rank >= 2 and not (f.feedback and f.feedback.get("mark") == "false-positive")][:max_top]
+    low_only = bool(ranked) and not top
     return {
         "report_version": REPORT_VERSION,
         "agentwatch_version": __version__,
@@ -37,7 +40,9 @@ def build_report(view: SessionView, stats: dict[str, Any], coverage: list[dict[s
         "top_findings": [f.finding_id for f in top],
         "max_listed_per_rule": int(cfg.get("report", {}).get("max_listed_per_rule", 15)),
         "findings": [f.to_dict() for f in ranked],
-        "no_issue_statement": None if ranked else "Aucun probleme demontre dans les donnees couvertes.",
+        "no_issue_statement": (None if top else
+                               (f"Aucune opportunite demontree : {len(ranked)} signalement(s) a faible confiance seulement, listes ci-dessous."
+                                if low_only else "Aucun probleme demontre dans les donnees couvertes.")),
         "stats": stats,
         "coverage": coverage,
         "agents": [asdict(a) for a in view.agent_infos],

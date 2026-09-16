@@ -1,7 +1,7 @@
 {
   "report_version": "1.0",
   "agentwatch_version": "0.1.0",
-  "schema_version": "1.0",
+  "schema_version": "1.1",
   "session": {
     "client": "claude-code",
     "session_id": "exemple-synthetique",
@@ -9,14 +9,14 @@
     "model_source": "hook input (SessionStart / events)",
     "project_dir": "C:\\proj",
     "first_time": "2027-01-15T08:00:00.000Z",
-    "last_time": "2027-01-15T08:00:02.799Z",
+    "last_time": "2027-01-15T08:00:03.279Z",
     "turns": 1,
     "context_epochs": 1,
     "agents": [
       "main"
     ],
     "schema_versions_seen": [
-      "1.0"
+      "1.1"
     ],
     "client_version_at_configure": null,
     "warnings": []
@@ -28,8 +28,8 @@
   ],
   "top_findings": [
     "df3085664635e2c1",
-    "91b5757321e53a8c",
-    "49d95bbc3f66b177"
+    "4136874dc0c70bc1",
+    "6f82784b1e7f906a"
   ],
   "max_listed_per_rule": 15,
   "findings": [
@@ -51,6 +51,8 @@
           "call_id": "toolu_0002",
           "tool": "Read",
           "category": "read",
+          "op": "read",
+          "op_target": "src/a.py",
           "target": "src/a.py",
           "status": "success",
           "start_time": "2027-01-15T08:00:00.240Z",
@@ -67,6 +69,8 @@
           "call_id": "toolu_0003",
           "tool": "Read",
           "category": "read",
+          "op": "read",
+          "op_target": "src/b.py",
           "target": "src/b.py",
           "status": "success",
           "start_time": "2027-01-15T08:00:00.400Z",
@@ -83,6 +87,8 @@
           "call_id": "toolu_0004",
           "tool": "Read",
           "category": "read",
+          "op": "read",
+          "op_target": "src/c.py",
           "target": "src/c.py",
           "status": "success",
           "start_time": "2027-01-15T08:00:00.559Z",
@@ -155,6 +161,140 @@
       "feedback": null
     },
     {
+      "rule_id": "A.redundant_reads",
+      "rule_version": "2.0",
+      "kind": "repeated_read_cross_tool",
+      "title": "read de 'src/a.py' repete 3 fois via Bash, Read",
+      "confidence": "high",
+      "confidence_rationale": "contenu obtenu identique a chaque fois, aucune modification ni appel a effet inconnu observe entre les appels, meme agent et meme epoque de contexte. Le niveau de confiance est heuristique, pas une probabilite calibree.",
+      "calls": [
+        "main|toolu_0002",
+        "main|toolu_0005",
+        "main|toolu_0006"
+      ],
+      "call_refs": [
+        {
+          "seq": 1,
+          "call_id": "toolu_0002",
+          "tool": "Read",
+          "category": "read",
+          "op": "read",
+          "op_target": "src/a.py",
+          "target": "src/a.py",
+          "status": "success",
+          "start_time": "2027-01-15T08:00:00.240Z",
+          "end_time": "2027-01-15T08:00:00.359Z",
+          "agent": "main",
+          "turn_index": 1,
+          "duration_ms": 120,
+          "duration_source": "reconstructed_between_hooks",
+          "output_size_bytes": 124,
+          "error_signature": null
+        },
+        {
+          "seq": 4,
+          "call_id": "toolu_0005",
+          "tool": "Read",
+          "category": "read",
+          "op": "read",
+          "op_target": "src/a.py",
+          "target": "src/a.py",
+          "status": "success",
+          "start_time": "2027-01-15T08:00:00.720Z",
+          "end_time": "2027-01-15T08:00:00.839Z",
+          "agent": "main",
+          "turn_index": 1,
+          "duration_ms": 120,
+          "duration_source": "reconstructed_between_hooks",
+          "output_size_bytes": 124,
+          "error_signature": null
+        },
+        {
+          "seq": 5,
+          "call_id": "toolu_0006",
+          "tool": "Bash",
+          "category": "shell",
+          "op": "read",
+          "op_target": "src/a.py",
+          "target": "cat src/a.py",
+          "status": "success",
+          "start_time": "2027-01-15T08:00:00.880Z",
+          "end_time": "2027-01-15T08:00:01.000Z",
+          "agent": "main",
+          "turn_index": 1,
+          "duration_ms": 120,
+          "duration_source": "reconstructed_between_hooks",
+          "output_size_bytes": 69,
+          "error_signature": null
+        }
+      ],
+      "evidence": {
+        "operation": "read",
+        "target": "src/a.py",
+        "params": {},
+        "tools_used": [
+          "Bash",
+          "Read"
+        ],
+        "same_result_basis": [
+          "empreinte du contenu obtenu (texte normalise)"
+        ],
+        "statuses": [
+          "success",
+          "success",
+          "success"
+        ],
+        "intervening_notable_calls": [
+          [],
+          []
+        ],
+        "context_epoch": 0,
+        "agent": "main",
+        "pair_verdicts": [
+          {
+            "verdict": "clean",
+            "reasons": [],
+            "same_result_basis": "empreinte du contenu obtenu (texte normalise)"
+          },
+          {
+            "verdict": "clean",
+            "reasons": [],
+            "same_result_basis": "empreinte du contenu obtenu (texte normalise)"
+          }
+        ]
+      },
+      "explanation": "La meme unite de travail (read sur 'src/a.py', memes parametres) a ete refaite 3 fois dans la fenetre (60 appels / 900 s), par des outils differents (Bash, Read). Le contenu obtenu etait identique a chaque fois.",
+      "counter_indications": [
+        "Aucune verification necessaire n'a ete observee, mais l'intention du modele n'est pas visible.",
+        "La disponibilite du resultat precedent dans le contexte du modele n'est pas observable par les hooks : seule une compaction connue est prise en compte.",
+        "Une modification externe (autre processus, editeur, git) n'est pas observable.",
+        "Le meme travail a ete fait par des outils differents : la forme differait, pas la tache."
+      ],
+      "missing_data": [],
+      "observed_cost": {
+        "calls": 2,
+        "output_bytes_sum": 193,
+        "output_bytes_known_for": 2,
+        "duration_client_ms_sum": null,
+        "duration_reconstructed_ms_sum": 240,
+        "duration_unknown_for": 0,
+        "tokens": "non mesure",
+        "note": "sommes par provenance ; les appels paralleles ne sont pas convertis en temps mural economisable"
+      },
+      "proposal": {
+        "type": "reuse_previous_result",
+        "text": "Reutiliser le resultat de la premiere fois tant qu'aucune modification de la cible n'est observee ; si une verification est voulue, preferer une lecture ciblee (plage ou filtre) et un seul outil.",
+        "requires_judgment": "Decider si la repetition etait une verification intentionnelle."
+      },
+      "validation_protocol": [
+        "Ouvrir le transcript aux horodatages des appels et verifier que le premier resultat etait encore utilisable.",
+        "Comparer les empreintes de contenu (identiques => meme texte obtenu, quel que soit l'outil).",
+        "Marquer le signalement : agentwatch feedback --finding <id> --mark relevant|false-positive."
+      ],
+      "finding_id": "4136874dc0c70bc1",
+      "feedback": null
+    },
+    {
       "rule_id": "B.error_loops",
       "rule_version": "1.0",
       "kind": "persistent",
@@ -162,32 +302,18 @@
       "confidence": "high",
       "confidence_rationale": "3 echecs de meme signature sans aucune modification observee entre eux. Le niveau de confiance est heuristique, pas une probabilite calibree.",
       "calls": [
-        "main|toolu_0006",
         "main|toolu_0007",
-        "main|toolu_0008"
+        "main|toolu_0008",
+        "main|toolu_0009"
       ],
       "call_refs": [
-        {
-          "seq": 5,
-          "call_id": "toolu_0006",
-          "tool": "Bash",
-          "category": "shell",
-          "target": "python build.py",
-          "status": "error",
-          "start_time": "2027-01-15T08:00:00.880Z",
-          "end_time": "2027-01-15T08:00:01.000Z",
-          "agent": "main",
-          "turn_index": 1,
-          "duration_ms": 120,
-          "duration_source": "reconstructed_between_hooks",
-          "output_size_bytes": null,
-          "error_signature": "Exit code <n>: ModuleNotFoundError: No module named 'toolz'"
-        },
         {
           "seq": 6,
           "call_id": "toolu_0007",
           "tool": "Bash",
           "category": "shell",
+          "op": "run_script",
+          "op_target": "build.py",
           "target": "python build.py",
           "status": "error",
           "start_time": "2027-01-15T08:00:01.039Z",
@@ -204,10 +330,30 @@
           "call_id": "toolu_0008",
           "tool": "Bash",
           "category": "shell",
+          "op": "run_script",
+          "op_target": "build.py",
           "target": "python build.py",
           "status": "error",
           "start_time": "2027-01-15T08:00:01.200Z",
           "end_time": "2027-01-15T08:00:01.319Z",
+          "agent": "main",
+          "turn_index": 1,
+          "duration_ms": 120,
+          "duration_source": "reconstructed_between_hooks",
+          "output_size_bytes": null,
+          "error_signature": "Exit code <n>: ModuleNotFoundError: No module named 'toolz'"
+        },
+        {
+          "seq": 8,
+          "call_id": "toolu_0009",
+          "tool": "Bash",
+          "category": "shell",
+          "op": "run_script",
+          "op_target": "build.py",
+          "target": "python build.py",
+          "status": "error",
+          "start_time": "2027-01-15T08:00:01.359Z",
+          "end_time": "2027-01-15T08:00:01.480Z",
           "agent": "main",
           "turn_index": 1,
           "duration_ms": 120,
@@ -280,104 +426,7 @@
         "Verifier dans le transcript si une correction a eu lieu hors des outils observes.",
         "Marquer le signalement : agentwatch feedback --finding <id> --mark relevant|false-positive."
       ],
-      "finding_id": "91b5757321e53a8c",
-      "feedback": null
-    },
-    {
-      "rule_id": "A.redundant_reads",
-      "rule_version": "1.0",
-      "kind": "repeated_read",
-      "title": "Read repete 2 fois sur 'src/a.py'",
-      "confidence": "high",
-      "confidence_rationale": "empreintes de resultat identiques, aucune modification ni appel a effet inconnu observe entre les appels, meme agent et meme epoque de contexte. Le niveau de confiance est heuristique, pas une probabilite calibree.",
-      "calls": [
-        "main|toolu_0002",
-        "main|toolu_0005"
-      ],
-      "call_refs": [
-        {
-          "seq": 1,
-          "call_id": "toolu_0002",
-          "tool": "Read",
-          "category": "read",
-          "target": "src/a.py",
-          "status": "success",
-          "start_time": "2027-01-15T08:00:00.240Z",
-          "end_time": "2027-01-15T08:00:00.359Z",
-          "agent": "main",
-          "turn_index": 1,
-          "duration_ms": 120,
-          "duration_source": "reconstructed_between_hooks",
-          "output_size_bytes": 124,
-          "error_signature": null
-        },
-        {
-          "seq": 4,
-          "call_id": "toolu_0005",
-          "tool": "Read",
-          "category": "read",
-          "target": "src/a.py",
-          "status": "success",
-          "start_time": "2027-01-15T08:00:00.720Z",
-          "end_time": "2027-01-15T08:00:00.839Z",
-          "agent": "main",
-          "turn_index": 1,
-          "duration_ms": 120,
-          "duration_source": "reconstructed_between_hooks",
-          "output_size_bytes": 124,
-          "error_signature": null
-        }
-      ],
-      "evidence": {
-        "target": "src/a.py",
-        "target_kind": "path",
-        "params": {},
-        "result_fingerprints_distinct": 1,
-        "result_fingerprints_known": true,
-        "statuses": [
-          "success",
-          "success"
-        ],
-        "intervening_notable_calls": [
-          []
-        ],
-        "context_epoch": 0,
-        "agent": "main",
-        "pair_verdicts": [
-          {
-            "verdict": "clean",
-            "reasons": []
-          }
-        ]
-      },
-      "explanation": "L'appel Read sur la meme cible avec les memes parametres a ete emis 2 fois dans la fenetre (60 appels / 900 s). Le resultat observe etait identique a chaque fois.",
-      "counter_indications": [
-        "Aucune verification necessaire n'a ete observee, mais l'intention du modele n'est pas visible.",
-        "La disponibilite du resultat precedent dans le contexte du modele n'est pas observable par les hooks : seule une compaction connue est prise en compte.",
-        "Une modification externe (autre processus, editeur, git) n'est pas observable."
-      ],
-      "missing_data": [],
-      "observed_cost": {
-        "calls": 1,
-        "output_bytes_sum": 124,
-        "output_bytes_known_for": 1,
-        "duration_client_ms_sum": null,
-        "duration_reconstructed_ms_sum": 120,
-        "duration_unknown_for": 0,
-        "tokens": "non mesure",
-        "note": "sommes par provenance ; les appels paralleles ne sont pas convertis en temps mural economisable"
-      },
-      "proposal": {
-        "type": "reuse_previous_result",
-        "text": "Reutiliser le resultat de la premiere lecture tant qu'aucune modification de la cible n'est observee ; si une verification est voulue apres une commande a effet inconnu, preferer une lecture ciblee (plage de lignes ou filtre) plutot qu'une relecture complete.",
-        "requires_judgment": "Decider si la relecture etait une verification intentionnelle."
-      },
-      "validation_protocol": [
-        "Ouvrir le transcript du client a l'horodatage des appels et verifier que le premier resultat etait encore visible.",
-        "Comparer les empreintes de resultat (identiques => contenu identique au moment des appels).",
-        "Marquer le signalement : agentwatch feedback --finding <id> --mark relevant|false-positive."
-      ],
-      "finding_id": "49d95bbc3f66b177",
+      "finding_id": "6f82784b1e7f906a",
       "feedback": null
     },
     {
@@ -388,7 +437,6 @@
       "confidence": "medium",
       "confidence_rationale": "3 occurrences ; 0 etape(s) de jugement ou occurrences au seuil. Le niveau de confiance est heuristique, pas une probabilite calibree.",
       "calls": [
-        "main|toolu_0009",
         "main|toolu_0010",
         "main|toolu_0011",
         "main|toolu_0012",
@@ -396,18 +444,21 @@
         "main|toolu_0014",
         "main|toolu_0015",
         "main|toolu_0016",
-        "main|toolu_0017"
+        "main|toolu_0017",
+        "main|toolu_0018"
       ],
       "call_refs": [
         {
-          "seq": 8,
-          "call_id": "toolu_0009",
+          "seq": 9,
+          "call_id": "toolu_0010",
           "tool": "Bash",
           "category": "shell",
+          "op": "run_script",
+          "op_target": "export.py",
           "target": "python export.py data/m1.csv",
           "status": "success",
-          "start_time": "2027-01-15T08:00:01.359Z",
-          "end_time": "2027-01-15T08:00:01.480Z",
+          "start_time": "2027-01-15T08:00:01.519Z",
+          "end_time": "2027-01-15T08:00:01.640Z",
           "agent": "main",
           "turn_index": 1,
           "duration_ms": 120,
@@ -416,14 +467,16 @@
           "error_signature": null
         },
         {
-          "seq": 9,
-          "call_id": "toolu_0010",
+          "seq": 10,
+          "call_id": "toolu_0011",
           "tool": "Read",
           "category": "read",
+          "op": "read",
+          "op_target": "out/m1.json",
           "target": "out/m1.json",
           "status": "success",
-          "start_time": "2027-01-15T08:00:01.519Z",
-          "end_time": "2027-01-15T08:00:01.640Z",
+          "start_time": "2027-01-15T08:00:01.680Z",
+          "end_time": "2027-01-15T08:00:01.799Z",
           "agent": "main",
           "turn_index": 1,
           "duration_ms": 120,
@@ -432,27 +485,13 @@
           "error_signature": null
         },
         {
-          "seq": 10,
-          "call_id": "toolu_0011",
-          "tool": "Bash",
-          "category": "shell",
-          "target": "python check.py out/m1.json",
-          "status": "success",
-          "start_time": "2027-01-15T08:00:01.680Z",
-          "end_time": "2027-01-15T08:00:01.799Z",
-          "agent": "main",
-          "turn_index": 1,
-          "duration_ms": 120,
-          "duration_source": "reconstructed_between_hooks",
-          "output_size_bytes": 72,
-          "error_signature": null
-        },
-        {
           "seq": 11,
           "call_id": "toolu_0012",
           "tool": "Bash",
           "category": "shell",
-          "target": "python export.py data/m2.csv",
+          "op": "run_script",
+          "op_target": "check.py",
+          "target": "python check.py out/m1.json",
           "status": "success",
           "start_time": "2027-01-15T08:00:01.839Z",
           "end_time": "2027-01-15T08:00:01.960Z",
@@ -466,28 +505,14 @@
         {
           "seq": 12,
           "call_id": "toolu_0013",
-          "tool": "Read",
-          "category": "read",
-          "target": "out/m2.json",
+          "tool": "Bash",
+          "category": "shell",
+          "op": "run_script",
+          "op_target": "export.py",
+          "target": "python export.py data/m2.csv",
           "status": "success",
           "start_time": "2027-01-15T08:00:02.000Z",
           "end_time": "2027-01-15T08:00:02.119Z",
-          "agent": "main",
-          "turn_index": 1,
-          "duration_ms": 120,
-          "duration_source": "reconstructed_between_hooks",
-          "output_size_bytes": 128,
-          "error_signature": null
-        },
-        {
-          "seq": 13,
-          "call_id": "toolu_0014",
-          "tool": "Bash",
-          "category": "shell",
-          "target": "python check.py out/m2.json",
-          "status": "success",
-          "start_time": "2027-01-15T08:00:02.160Z",
-          "end_time": "2027-01-15T08:00:02.279Z",
           "agent": "main",
           "turn_index": 1,
           "duration_ms": 120,
@@ -496,11 +521,31 @@
           "error_signature": null
         },
         {
+          "seq": 13,
+          "call_id": "toolu_0014",
+          "tool": "Read",
+          "category": "read",
+          "op": "read",
+          "op_target": "out/m2.json",
+          "target": "out/m2.json",
+          "status": "success",
+          "start_time": "2027-01-15T08:00:02.160Z",
+          "end_time": "2027-01-15T08:00:02.279Z",
+          "agent": "main",
+          "turn_index": 1,
+          "duration_ms": 120,
+          "duration_source": "reconstructed_between_hooks",
+          "output_size_bytes": 128,
+          "error_signature": null
+        },
+        {
           "seq": 14,
           "call_id": "toolu_0015",
           "tool": "Bash",
           "category": "shell",
-          "target": "python export.py data/m3.csv",
+          "op": "run_script",
+          "op_target": "check.py",
+          "target": "python check.py out/m2.json",
           "status": "success",
           "start_time": "2027-01-15T08:00:02.319Z",
           "end_time": "2027-01-15T08:00:02.440Z",
@@ -514,12 +559,32 @@
         {
           "seq": 15,
           "call_id": "toolu_0016",
-          "tool": "Read",
-          "category": "read",
-          "target": "out/m3.json",
+          "tool": "Bash",
+          "category": "shell",
+          "op": "run_script",
+          "op_target": "export.py",
+          "target": "python export.py data/m3.csv",
           "status": "success",
           "start_time": "2027-01-15T08:00:02.480Z",
           "end_time": "2027-01-15T08:00:02.599Z",
+          "agent": "main",
+          "turn_index": 1,
+          "duration_ms": 120,
+          "duration_source": "reconstructed_between_hooks",
+          "output_size_bytes": 72,
+          "error_signature": null
+        },
+        {
+          "seq": 16,
+          "call_id": "toolu_0017",
+          "tool": "Read",
+          "category": "read",
+          "op": "read",
+          "op_target": "out/m3.json",
+          "target": "out/m3.json",
+          "status": "success",
+          "start_time": "2027-01-15T08:00:02.640Z",
+          "end_time": "2027-01-15T08:00:02.759Z",
           "agent": "main",
           "turn_index": 1,
           "duration_ms": 120,
@@ -528,14 +593,16 @@
           "error_signature": null
         },
         {
-          "seq": 16,
-          "call_id": "toolu_0017",
+          "seq": 17,
+          "call_id": "toolu_0018",
           "tool": "Bash",
           "category": "shell",
+          "op": "run_script",
+          "op_target": "check.py",
           "target": "python check.py out/m3.json",
           "status": "success",
-          "start_time": "2027-01-15T08:00:02.640Z",
-          "end_time": "2027-01-15T08:00:02.759Z",
+          "start_time": "2027-01-15T08:00:02.799Z",
+          "end_time": "2027-01-15T08:00:02.920Z",
           "agent": "main",
           "turn_index": 1,
           "duration_ms": 120,
@@ -547,27 +614,27 @@
       "evidence": {
         "agent": "main",
         "pattern": [
-          "Bash|shell|cmd:python:run|",
-          "Read|read|path.json|",
-          "Bash|shell|cmd:python:run|"
+          "run_script|path.py|args",
+          "read|path.json|",
+          "run_script|path.py|args"
         ],
         "occurrences": 3,
         "pattern_length": 3,
         "occurrence_seqs": [
           [
-            8,
             9,
-            10
+            10,
+            11
           ],
           [
-            11,
             12,
-            13
+            13,
+            14
           ],
           [
-            14,
             15,
-            16
+            16,
+            17
           ]
         ],
         "judgment_steps": 0
@@ -669,7 +736,7 @@
         "Ecrire la recette, l'executer sur une copie, comparer les sorties avec les empreintes observees.",
         "Marquer le signalement : agentwatch feedback --finding <id> --mark relevant|false-positive."
       ],
-      "finding_id": "04ab98f662626379",
+      "finding_id": "abf729ab6a7d0b53",
       "feedback": null
     },
     {
@@ -680,7 +747,6 @@
       "confidence": "medium",
       "confidence_rationale": "3 occurrences ; 1 etape(s) de jugement ou occurrences au seuil. Le niveau de confiance est heuristique, pas une probabilite calibree.",
       "calls": [
-        "main|toolu_0008",
         "main|toolu_0009",
         "main|toolu_0010",
         "main|toolu_0011",
@@ -688,18 +754,21 @@
         "main|toolu_0013",
         "main|toolu_0014",
         "main|toolu_0015",
-        "main|toolu_0016"
+        "main|toolu_0016",
+        "main|toolu_0017"
       ],
       "call_refs": [
         {
-          "seq": 7,
-          "call_id": "toolu_0008",
+          "seq": 8,
+          "call_id": "toolu_0009",
           "tool": "Bash",
           "category": "shell",
+          "op": "run_script",
+          "op_target": "build.py",
           "target": "python build.py",
           "status": "error",
-          "start_time": "2027-01-15T08:00:01.200Z",
-          "end_time": "2027-01-15T08:00:01.319Z",
+          "start_time": "2027-01-15T08:00:01.359Z",
+          "end_time": "2027-01-15T08:00:01.480Z",
           "agent": "main",
           "turn_index": 1,
           "duration_ms": 120,
@@ -708,14 +777,16 @@
           "error_signature": "Exit code <n>: ModuleNotFoundError: No module named 'toolz'"
         },
         {
-          "seq": 8,
-          "call_id": "toolu_0009",
+          "seq": 9,
+          "call_id": "toolu_0010",
           "tool": "Bash",
           "category": "shell",
+          "op": "run_script",
+          "op_target": "export.py",
           "target": "python export.py data/m1.csv",
           "status": "success",
-          "start_time": "2027-01-15T08:00:01.359Z",
-          "end_time": "2027-01-15T08:00:01.480Z",
+          "start_time": "2027-01-15T08:00:01.519Z",
+          "end_time": "2027-01-15T08:00:01.640Z",
           "agent": "main",
           "turn_index": 1,
           "duration_ms": 120,
@@ -724,14 +795,16 @@
           "error_signature": null
         },
         {
-          "seq": 9,
-          "call_id": "toolu_0010",
+          "seq": 10,
+          "call_id": "toolu_0011",
           "tool": "Read",
           "category": "read",
+          "op": "read",
+          "op_target": "out/m1.json",
           "target": "out/m1.json",
           "status": "success",
-          "start_time": "2027-01-15T08:00:01.519Z",
-          "end_time": "2027-01-15T08:00:01.640Z",
+          "start_time": "2027-01-15T08:00:01.680Z",
+          "end_time": "2027-01-15T08:00:01.799Z",
           "agent": "main",
           "turn_index": 1,
           "duration_ms": 120,
@@ -740,27 +813,13 @@
           "error_signature": null
         },
         {
-          "seq": 10,
-          "call_id": "toolu_0011",
-          "tool": "Bash",
-          "category": "shell",
-          "target": "python check.py out/m1.json",
-          "status": "success",
-          "start_time": "2027-01-15T08:00:01.680Z",
-          "end_time": "2027-01-15T08:00:01.799Z",
-          "agent": "main",
-          "turn_index": 1,
-          "duration_ms": 120,
-          "duration_source": "reconstructed_between_hooks",
-          "output_size_bytes": 72,
-          "error_signature": null
-        },
-        {
           "seq": 11,
           "call_id": "toolu_0012",
           "tool": "Bash",
           "category": "shell",
-          "target": "python export.py data/m2.csv",
+          "op": "run_script",
+          "op_target": "check.py",
+          "target": "python check.py out/m1.json",
           "status": "success",
           "start_time": "2027-01-15T08:00:01.839Z",
           "end_time": "2027-01-15T08:00:01.960Z",
@@ -774,28 +833,14 @@
         {
           "seq": 12,
           "call_id": "toolu_0013",
-          "tool": "Read",
-          "category": "read",
-          "target": "out/m2.json",
+          "tool": "Bash",
+          "category": "shell",
+          "op": "run_script",
+          "op_target": "export.py",
+          "target": "python export.py data/m2.csv",
           "status": "success",
           "start_time": "2027-01-15T08:00:02.000Z",
           "end_time": "2027-01-15T08:00:02.119Z",
-          "agent": "main",
-          "turn_index": 1,
-          "duration_ms": 120,
-          "duration_source": "reconstructed_between_hooks",
-          "output_size_bytes": 128,
-          "error_signature": null
-        },
-        {
-          "seq": 13,
-          "call_id": "toolu_0014",
-          "tool": "Bash",
-          "category": "shell",
-          "target": "python check.py out/m2.json",
-          "status": "success",
-          "start_time": "2027-01-15T08:00:02.160Z",
-          "end_time": "2027-01-15T08:00:02.279Z",
           "agent": "main",
           "turn_index": 1,
           "duration_ms": 120,
@@ -804,11 +849,31 @@
           "error_signature": null
         },
         {
+          "seq": 13,
+          "call_id": "toolu_0014",
+          "tool": "Read",
+          "category": "read",
+          "op": "read",
+          "op_target": "out/m2.json",
+          "target": "out/m2.json",
+          "status": "success",
+          "start_time": "2027-01-15T08:00:02.160Z",
+          "end_time": "2027-01-15T08:00:02.279Z",
+          "agent": "main",
+          "turn_index": 1,
+          "duration_ms": 120,
+          "duration_source": "reconstructed_between_hooks",
+          "output_size_bytes": 128,
+          "error_signature": null
+        },
+        {
           "seq": 14,
           "call_id": "toolu_0015",
           "tool": "Bash",
           "category": "shell",
-          "target": "python export.py data/m3.csv",
+          "op": "run_script",
+          "op_target": "check.py",
+          "target": "python check.py out/m2.json",
           "status": "success",
           "start_time": "2027-01-15T08:00:02.319Z",
           "end_time": "2027-01-15T08:00:02.440Z",
@@ -822,12 +887,32 @@
         {
           "seq": 15,
           "call_id": "toolu_0016",
-          "tool": "Read",
-          "category": "read",
-          "target": "out/m3.json",
+          "tool": "Bash",
+          "category": "shell",
+          "op": "run_script",
+          "op_target": "export.py",
+          "target": "python export.py data/m3.csv",
           "status": "success",
           "start_time": "2027-01-15T08:00:02.480Z",
           "end_time": "2027-01-15T08:00:02.599Z",
+          "agent": "main",
+          "turn_index": 1,
+          "duration_ms": 120,
+          "duration_source": "reconstructed_between_hooks",
+          "output_size_bytes": 72,
+          "error_signature": null
+        },
+        {
+          "seq": 16,
+          "call_id": "toolu_0017",
+          "tool": "Read",
+          "category": "read",
+          "op": "read",
+          "op_target": "out/m3.json",
+          "target": "out/m3.json",
+          "status": "success",
+          "start_time": "2027-01-15T08:00:02.640Z",
+          "end_time": "2027-01-15T08:00:02.759Z",
           "agent": "main",
           "turn_index": 1,
           "duration_ms": 120,
@@ -839,27 +924,27 @@
       "evidence": {
         "agent": "main",
         "pattern": [
-          "Bash|shell|cmd:python:run|",
-          "Bash|shell|cmd:python:run|",
-          "Read|read|path.json|"
+          "run_script|path.py|args",
+          "run_script|path.py|args",
+          "read|path.json|"
         ],
         "occurrences": 3,
         "pattern_length": 3,
         "occurrence_seqs": [
           [
-            7,
             8,
-            9
+            9,
+            10
           ],
           [
-            10,
             11,
-            12
+            12,
+            13
           ],
           [
-            13,
             14,
-            15
+            15,
+            16
           ]
         ],
         "judgment_steps": 1
@@ -962,31 +1047,127 @@
         "Ecrire la recette, l'executer sur une copie, comparer les sorties avec les empreintes observees.",
         "Marquer le signalement : agentwatch feedback --finding <id> --mark relevant|false-positive."
       ],
-      "finding_id": "21c16da7c7ebcfb4",
+      "finding_id": "04ab98f662626379",
+      "feedback": null
+    },
+    {
+      "rule_id": "A.redundant_reads",
+      "rule_version": "2.0",
+      "kind": "repeated_run",
+      "title": "run_tests relance 2 fois sans changement observe : 'python -m pytest -q'",
+      "confidence": "medium",
+      "confidence_rationale": "2 lancements avec la meme sortie et le meme statut, sans ecriture ni edition observee entre eux. Le niveau de confiance est heuristique, pas une probabilite calibree.",
+      "calls": [
+        "main|toolu_0019",
+        "main|toolu_0020"
+      ],
+      "call_refs": [
+        {
+          "seq": 18,
+          "call_id": "toolu_0019",
+          "tool": "Bash",
+          "category": "shell",
+          "op": "run_tests",
+          "op_target": "(suite)",
+          "target": "python -m pytest -q",
+          "status": "success",
+          "start_time": "2027-01-15T08:00:02.960Z",
+          "end_time": "2027-01-15T08:00:03.079Z",
+          "agent": "main",
+          "turn_index": 1,
+          "duration_ms": 120,
+          "duration_source": "reconstructed_between_hooks",
+          "output_size_bytes": 78,
+          "error_signature": null
+        },
+        {
+          "seq": 19,
+          "call_id": "toolu_0020",
+          "tool": "Bash",
+          "category": "shell",
+          "op": "run_tests",
+          "op_target": "(suite)",
+          "target": "python -m pytest -q",
+          "status": "success",
+          "start_time": "2027-01-15T08:00:03.119Z",
+          "end_time": "2027-01-15T08:00:03.240Z",
+          "agent": "main",
+          "turn_index": 1,
+          "duration_ms": 120,
+          "duration_source": "reconstructed_between_hooks",
+          "output_size_bytes": 78,
+          "error_signature": null
+        }
+      ],
+      "evidence": {
+        "operation": "run_tests",
+        "target": "(suite)",
+        "params": {
+          "args": [
+            "-q"
+          ],
+          "cwd": "C:\\proj"
+        },
+        "statuses": [
+          "success",
+          "success"
+        ],
+        "same_output": true,
+        "content_fingerprints_known": true,
+        "unknown_effect_between": false
+      },
+      "explanation": "La meme execution (run_tests : 'python -m pytest -q') a ete relancee 2 fois avec le meme statut, sans qu'aucune ecriture, edition ou patch n'ait ete observe entre les lancements.",
+      "counter_indications": [
+        "Relancer pour verifier un test instable (flaky) ou un effet non deterministe est parfois voulu.",
+        "Une commande peut avoir des effets de bord ou dependre d'un etat externe non observe.",
+        "Une modification externe (autre processus, editeur, git) n'est pas observable."
+      ],
+      "missing_data": [],
+      "observed_cost": {
+        "calls": 1,
+        "output_bytes_sum": 78,
+        "output_bytes_known_for": 1,
+        "duration_client_ms_sum": null,
+        "duration_reconstructed_ms_sum": 120,
+        "duration_unknown_for": 0,
+        "tokens": "non mesure",
+        "note": "sommes par provenance ; les appels paralleles ne sont pas convertis en temps mural economisable"
+      },
+      "proposal": {
+        "type": "avoid_rerun_without_change",
+        "text": "Ne relancer qu'apres une modification, ou reutiliser la sortie precedente ; si l'objectif est de tester la stabilite, le dire explicitement.",
+        "requires_judgment": "Determiner si la relance visait a verifier un comportement non deterministe."
+      },
+      "validation_protocol": [
+        "Verifier dans le transcript ce qui a motive chaque relance.",
+        "Comparer les sorties (empreintes de contenu) : identiques => aucune information nouvelle obtenue.",
+        "Marquer le signalement : agentwatch feedback --finding <id> --mark relevant|false-positive."
+      ],
+      "finding_id": "e596f6f940277763",
       "feedback": null
     }
   ],
   "no_issue_statement": null,
   "stats": {
-    "calls": 17,
-    "events": 37,
+    "calls": 20,
+    "events": 43,
     "status": {
-      "success": 14,
+      "success": 17,
       "error": 3
     },
     "tools": [
       {
         "tool": "Bash",
-        "calls": 9,
+        "calls": 12,
         "errors": 3,
         "unknown_status": 0,
         "open": 0,
-        "output_bytes": 432,
-        "output_known_for": 6,
+        "output_bytes": 657,
+        "output_known_for": 9,
         "client_duration_median_ms": null,
         "client_duration_n": 0,
         "reconstructed_duration_median_ms": 120,
-        "reconstructed_duration_n": 9
+        "reconstructed_duration_n": 12
       },
       {
         "tool": "Read",
@@ -1027,6 +1208,8 @@
         "call_id": "toolu_0001",
         "tool": "Glob",
         "category": "list",
+        "op": "list",
+        "op_target": ".",
         "target": ".",
         "status": "success",
         "start_time": "2027-01-15T08:00:00.079Z",
@@ -1034,19 +1217,21 @@
         "agent": "main",
         "turn_index": 1,
         "duration_ms": 5,
-        "duration_source": "client_mcp_durationMs",
+        "duration_source": "client_durationMs",
         "output_size_bytes": 133,
         "error_signature": null
       },
       {
-        "seq": 9,
-        "call_id": "toolu_0010",
+        "seq": 10,
+        "call_id": "toolu_0011",
         "tool": "Read",
         "category": "read",
+        "op": "read",
+        "op_target": "out/m1.json",
         "target": "out/m1.json",
         "status": "success",
-        "start_time": "2027-01-15T08:00:01.519Z",
-        "end_time": "2027-01-15T08:00:01.640Z",
+        "start_time": "2027-01-15T08:00:01.680Z",
+        "end_time": "2027-01-15T08:00:01.799Z",
         "agent": "main",
         "turn_index": 1,
         "duration_ms": 120,
@@ -1055,14 +1240,16 @@
         "error_signature": null
       },
       {
-        "seq": 12,
-        "call_id": "toolu_0013",
+        "seq": 13,
+        "call_id": "toolu_0014",
         "tool": "Read",
         "category": "read",
+        "op": "read",
+        "op_target": "out/m2.json",
         "target": "out/m2.json",
         "status": "success",
-        "start_time": "2027-01-15T08:00:02.000Z",
-        "end_time": "2027-01-15T08:00:02.119Z",
+        "start_time": "2027-01-15T08:00:02.160Z",
+        "end_time": "2027-01-15T08:00:02.279Z",
         "agent": "main",
         "turn_index": 1,
         "duration_ms": 120,
@@ -1071,14 +1258,16 @@
         "error_signature": null
       },
       {
-        "seq": 15,
-        "call_id": "toolu_0016",
+        "seq": 16,
+        "call_id": "toolu_0017",
         "tool": "Read",
         "category": "read",
+        "op": "read",
+        "op_target": "out/m3.json",
         "target": "out/m3.json",
         "status": "success",
-        "start_time": "2027-01-15T08:00:02.480Z",
-        "end_time": "2027-01-15T08:00:02.599Z",
+        "start_time": "2027-01-15T08:00:02.640Z",
+        "end_time": "2027-01-15T08:00:02.759Z",
         "agent": "main",
         "turn_index": 1,
         "duration_ms": 120,
@@ -1091,6 +1280,8 @@
         "call_id": "toolu_0002",
         "tool": "Read",
         "category": "read",
+        "op": "read",
+        "op_target": "src/a.py",
         "target": "src/a.py",
         "status": "success",
         "start_time": "2027-01-15T08:00:00.240Z",
@@ -1109,6 +1300,8 @@
         "call_id": "toolu_0002",
         "tool": "Read",
         "category": "read",
+        "op": "read",
+        "op_target": "src/a.py",
         "target": "src/a.py",
         "status": "success",
         "start_time": "2027-01-15T08:00:00.240Z",
@@ -1125,6 +1318,8 @@
         "call_id": "toolu_0003",
         "tool": "Read",
         "category": "read",
+        "op": "read",
+        "op_target": "src/b.py",
         "target": "src/b.py",
         "status": "success",
         "start_time": "2027-01-15T08:00:00.400Z",
@@ -1141,6 +1336,8 @@
         "call_id": "toolu_0004",
         "tool": "Read",
         "category": "read",
+        "op": "read",
+        "op_target": "src/c.py",
         "target": "src/c.py",
         "status": "success",
         "start_time": "2027-01-15T08:00:00.559Z",
@@ -1157,6 +1354,8 @@
         "call_id": "toolu_0005",
         "tool": "Read",
         "category": "read",
+        "op": "read",
+        "op_target": "src/a.py",
         "target": "src/a.py",
         "status": "success",
         "start_time": "2027-01-15T08:00:00.720Z",
@@ -1173,27 +1372,29 @@
         "call_id": "toolu_0006",
         "tool": "Bash",
         "category": "shell",
-        "target": "python build.py",
-        "status": "error",
+        "op": "read",
+        "op_target": "src/a.py",
+        "target": "cat src/a.py",
+        "status": "success",
         "start_time": "2027-01-15T08:00:00.880Z",
         "end_time": "2027-01-15T08:00:01.000Z",
         "agent": "main",
         "turn_index": 1,
         "duration_ms": 120,
         "duration_source": "reconstructed_between_hooks",
-        "output_size_bytes": null,
-        "error_signature": "Exit code <n>: ModuleNotFoundError: No module named 'toolz'"
+        "output_size_bytes": 69,
+        "error_signature": null
       }
     ],
     "hook_overhead_ms": {
-      "n": 37,
-      "median": -10520028554.6,
-      "p90": -10520027411.4,
-      "max": -10520027216.0,
+      "n": 43,
+      "median": -10455529096.1,
+      "p90": -10455527717.4,
+      "max": -10455527484.1,
       "note": "temps dans le processus du hook (hors demarrage de l'interpreteur)"
     },
     "correlation": {
-      "events": 37,
+      "events": 43,
       "duplicate_events": 0,
       "invalid_events": 0,
       "orphan_ends": 0,
@@ -1209,8 +1410,273 @@
     ],
     "usage": {
       "status": "non mesure",
-      "note": "aucune donnee d'usage fournie par les hooks ; voir agentwatch import-usage"
-    }
+      "note": "aucune donnee d'usage fournie par les hooks pour le fil principal ; voir agentwatch import-usage",
+      "agents": [],
+      "imported": []
+    },
+    "work_units": [
+      {
+        "op": "read",
+        "target": "src/a.py",
+        "calls": 3,
+        "tools": [
+          "Bash",
+          "Read"
+        ],
+        "agents": 1,
+        "statuses": {
+          "success": 3
+        },
+        "distinct_contents": 1,
+        "seqs": [
+          1,
+          4,
+          5
+        ],
+        "repeated": true
+      },
+      {
+        "op": "run_script",
+        "target": "build.py",
+        "calls": 3,
+        "tools": [
+          "Bash"
+        ],
+        "agents": 1,
+        "statuses": {
+          "error": 3
+        },
+        "distinct_contents": null,
+        "seqs": [
+          6,
+          7,
+          8
+        ],
+        "repeated": true
+      },
+      {
+        "op": "run_tests",
+        "target": "(suite)",
+        "calls": 2,
+        "tools": [
+          "Bash"
+        ],
+        "agents": 1,
+        "statuses": {
+          "success": 2
+        },
+        "distinct_contents": 1,
+        "seqs": [
+          18,
+          19
+        ],
+        "repeated": true
+      },
+      {
+        "op": "list",
+        "target": ".",
+        "calls": 1,
+        "tools": [
+          "Glob"
+        ],
+        "agents": 1,
+        "statuses": {
+          "success": 1
+        },
+        "distinct_contents": 1,
+        "seqs": [
+          0
+        ],
+        "repeated": false
+      },
+      {
+        "op": "read",
+        "target": "src/b.py",
+        "calls": 1,
+        "tools": [
+          "Read"
+        ],
+        "agents": 1,
+        "statuses": {
+          "success": 1
+        },
+        "distinct_contents": 1,
+        "seqs": [
+          2
+        ],
+        "repeated": false
+      },
+      {
+        "op": "read",
+        "target": "src/c.py",
+        "calls": 1,
+        "tools": [
+          "Read"
+        ],
+        "agents": 1,
+        "statuses": {
+          "success": 1
+        },
+        "distinct_contents": 1,
+        "seqs": [
+          3
+        ],
+        "repeated": false
+      },
+      {
+        "op": "run_script",
+        "target": "export.py",
+        "calls": 1,
+        "tools": [
+          "Bash"
+        ],
+        "agents": 1,
+        "statuses": {
+          "success": 1
+        },
+        "distinct_contents": 1,
+        "seqs": [
+          9
+        ],
+        "repeated": false
+      },
+      {
+        "op": "read",
+        "target": "out/m1.json",
+        "calls": 1,
+        "tools": [
+          "Read"
+        ],
+        "agents": 1,
+        "statuses": {
+          "success": 1
+        },
+        "distinct_contents": 1,
+        "seqs": [
+          10
+        ],
+        "repeated": false
+      },
+      {
+        "op": "run_script",
+        "target": "check.py",
+        "calls": 1,
+        "tools": [
+          "Bash"
+        ],
+        "agents": 1,
+        "statuses": {
+          "success": 1
+        },
+        "distinct_contents": 1,
+        "seqs": [
+          11
+        ],
+        "repeated": false
+      },
+      {
+        "op": "run_script",
+        "target": "export.py",
+        "calls": 1,
+        "tools": [
+          "Bash"
+        ],
+        "agents": 1,
+        "statuses": {
+          "success": 1
+        },
+        "distinct_contents": 1,
+        "seqs": [
+          12
+        ],
+        "repeated": false
+      },
+      {
+        "op": "read",
+        "target": "out/m2.json",
+        "calls": 1,
+        "tools": [
+          "Read"
+        ],
+        "agents": 1,
+        "statuses": {
+          "success": 1
+        },
+        "distinct_contents": 1,
+        "seqs": [
+          13
+        ],
+        "repeated": false
+      },
+      {
+        "op": "run_script",
+        "target": "check.py",
+        "calls": 1,
+        "tools": [
+          "Bash"
+        ],
+        "agents": 1,
+        "statuses": {
+          "success": 1
+        },
+        "distinct_contents": 1,
+        "seqs": [
+          14
+        ],
+        "repeated": false
+      },
+      {
+        "op": "run_script",
+        "target": "export.py",
+        "calls": 1,
+        "tools": [
+          "Bash"
+        ],
+        "agents": 1,
+        "statuses": {
+          "success": 1
+        },
+        "distinct_contents": 1,
+        "seqs": [
+          15
+        ],
+        "repeated": false
+      },
+      {
+        "op": "read",
+        "target": "out/m3.json",
+        "calls": 1,
+        "tools": [
+          "Read"
+        ],
+        "agents": 1,
+        "statuses": {
+          "success": 1
+        },
+        "distinct_contents": 1,
+        "seqs": [
+          16
+        ],
+        "repeated": false
+      },
+      {
+        "op": "run_script",
+        "target": "check.py",
+        "calls": 1,
+        "tools": [
+          "Bash"
+        ],
+        "agents": 1,
+        "statuses": {
+          "success": 1
+        },
+        "distinct_contents": 1,
+        "seqs": [
+          17
+        ],
+        "repeated": false
+      }
+    ]
   },
   "coverage": [
     {
@@ -1305,17 +1771,20 @@
     },
     {
       "capability": "token_usage",
-      "documented": "absent",
-      "basis": "non fourni aux hooks ; interface d'import OpenTelemetry seulement",
-      "observed_in_session": "absent"
+      "documented": "partial",
+      "basis": "sous-agents : usage rapporte dans la reponse de l'outil Agent (observe 2.1.270) ; fil principal : absent, import seulement",
+      "observed_in_session": "not_observed"
     }
   ],
+  "agents": [],
   "calls": [
     {
       "seq": 0,
       "call_id": "toolu_0001",
       "tool": "Glob",
       "category": "list",
+      "op": "list",
+      "op_target": ".",
       "target": ".",
       "status": "success",
       "start_time": "2027-01-15T08:00:00.079Z",
@@ -1323,7 +1792,7 @@
       "agent": "main",
       "turn_index": 1,
       "duration_ms": 5,
-      "duration_source": "client_mcp_durationMs",
+      "duration_source": "client_durationMs",
       "output_size_bytes": 133,
       "error_signature": null,
       "key": "main|toolu_0001",
@@ -1339,6 +1808,8 @@
       "call_id": "toolu_0002",
       "tool": "Read",
       "category": "read",
+      "op": "read",
+      "op_target": "src/a.py",
       "target": "src/a.py",
       "status": "success",
       "start_time": "2027-01-15T08:00:00.240Z",
@@ -1360,6 +1831,8 @@
       "call_id": "toolu_0003",
       "tool": "Read",
       "category": "read",
+      "op": "read",
+      "op_target": "src/b.py",
       "target": "src/b.py",
       "status": "success",
       "start_time": "2027-01-15T08:00:00.400Z",
@@ -1381,6 +1854,8 @@
       "call_id": "toolu_0004",
       "tool": "Read",
       "category": "read",
+      "op": "read",
+      "op_target": "src/c.py",
       "target": "src/c.py",
       "status": "success",
       "start_time": "2027-01-15T08:00:00.559Z",
@@ -1402,6 +1877,8 @@
       "call_id": "toolu_0005",
       "tool": "Read",
       "category": "read",
+      "op": "read",
+      "op_target": "src/a.py",
       "target": "src/a.py",
       "status": "success",
       "start_time": "2027-01-15T08:00:00.720Z",
@@ -1423,28 +1900,30 @@
       "call_id": "toolu_0006",
       "tool": "Bash",
       "category": "shell",
-      "target": "python build.py",
-      "status": "error",
+      "op": "read",
+      "op_target": "src/a.py",
+      "target": "cat src/a.py",
+      "status": "success",
       "start_time": "2027-01-15T08:00:00.880Z",
       "end_time": "2027-01-15T08:00:01.000Z",
       "agent": "main",
       "turn_index": 1,
       "duration_ms": 120,
       "duration_source": "reconstructed_between_hooks",
-      "output_size_bytes": null,
-      "error_signature": "Exit code <n>: ModuleNotFoundError: No module named 'toolz'",
+      "output_size_bytes": 69,
+      "error_signature": null,
       "key": "main|toolu_0006",
       "warnings": [],
       "context_epoch": 0,
-      "target_key": "cmd:C:\\proj::python build.py",
+      "target_key": "cmd:C:\\proj::cat src/a.py",
       "params": {
-        "command": "python build.py",
-        "shell_kind": "run",
+        "command": "cat src/a.py",
+        "shell_kind": "read",
         "shell_heads": [
-          "python"
+          "cat"
         ],
         "shell_paths": [
-          "build.py"
+          "src/a.py"
         ]
       }
     },
@@ -1453,6 +1932,8 @@
       "call_id": "toolu_0007",
       "tool": "Bash",
       "category": "shell",
+      "op": "run_script",
+      "op_target": "build.py",
       "target": "python build.py",
       "status": "error",
       "start_time": "2027-01-15T08:00:01.039Z",
@@ -1483,6 +1964,8 @@
       "call_id": "toolu_0008",
       "tool": "Bash",
       "category": "shell",
+      "op": "run_script",
+      "op_target": "build.py",
       "target": "python build.py",
       "status": "error",
       "start_time": "2027-01-15T08:00:01.200Z",
@@ -1513,17 +1996,51 @@
       "call_id": "toolu_0009",
       "tool": "Bash",
       "category": "shell",
-      "target": "python export.py data/m1.csv",
-      "status": "success",
+      "op": "run_script",
+      "op_target": "build.py",
+      "target": "python build.py",
+      "status": "error",
       "start_time": "2027-01-15T08:00:01.359Z",
       "end_time": "2027-01-15T08:00:01.480Z",
       "agent": "main",
       "turn_index": 1,
       "duration_ms": 120,
       "duration_source": "reconstructed_between_hooks",
+      "output_size_bytes": null,
+      "error_signature": "Exit code <n>: ModuleNotFoundError: No module named 'toolz'",
+      "key": "main|toolu_0009",
+      "warnings": [],
+      "context_epoch": 0,
+      "target_key": "cmd:C:\\proj::python build.py",
+      "params": {
+        "command": "python build.py",
+        "shell_kind": "run",
+        "shell_heads": [
+          "python"
+        ],
+        "shell_paths": [
+          "build.py"
+        ]
+      }
+    },
+    {
+      "seq": 9,
+      "call_id": "toolu_0010",
+      "tool": "Bash",
+      "category": "shell",
+      "op": "run_script",
+      "op_target": "export.py",
+      "target": "python export.py data/m1.csv",
+      "status": "success",
+      "start_time": "2027-01-15T08:00:01.519Z",
+      "end_time": "2027-01-15T08:00:01.640Z",
+      "agent": "main",
+      "turn_index": 1,
+      "duration_ms": 120,
+      "duration_source": "reconstructed_between_hooks",
       "output_size_bytes": 72,
       "error_signature": null,
-      "key": "main|toolu_0009",
+      "key": "main|toolu_0010",
       "warnings": [],
       "context_epoch": 0,
       "target_key": "cmd:C:\\proj::python export.py data/m1.csv",
@@ -1540,32 +2057,13 @@
       }
     },
     {
-      "seq": 9,
-      "call_id": "toolu_0010",
-      "tool": "Read",
-      "category": "read",
-      "target": "out/m1.json",
-      "status": "success",
-      "start_time": "2027-01-15T08:00:01.519Z",
-      "end_time": "2027-01-15T08:00:01.640Z",
-      "agent": "main",
-      "turn_index": 1,
-      "duration_ms": 120,
-      "duration_source": "reconstructed_between_hooks",
-      "output_size_bytes": 128,
-      "error_signature": null,
-      "key": "main|toolu_0010",
-      "warnings": [],
-      "context_epoch": 0,
-      "target_key": "path:C:\\proj::out/m1.json",
-      "params": {}
-    },
-    {
       "seq": 10,
       "call_id": "toolu_0011",
-      "tool": "Bash",
-      "category": "shell",
-      "target": "python check.py out/m1.json",
+      "tool": "Read",
+      "category": "read",
+      "op": "read",
+      "op_target": "out/m1.json",
+      "target": "out/m1.json",
       "status": "success",
       "start_time": "2027-01-15T08:00:01.680Z",
       "end_time": "2027-01-15T08:00:01.799Z",
@@ -1573,9 +2071,32 @@
       "turn_index": 1,
       "duration_ms": 120,
       "duration_source": "reconstructed_between_hooks",
-      "output_size_bytes": 72,
+      "output_size_bytes": 128,
       "error_signature": null,
       "key": "main|toolu_0011",
+      "warnings": [],
+      "context_epoch": 0,
+      "target_key": "path:C:\\proj::out/m1.json",
+      "params": {}
+    },
+    {
+      "seq": 11,
+      "call_id": "toolu_0012",
+      "tool": "Bash",
+      "category": "shell",
+      "op": "run_script",
+      "op_target": "check.py",
+      "target": "python check.py out/m1.json",
+      "status": "success",
+      "start_time": "2027-01-15T08:00:01.839Z",
+      "end_time": "2027-01-15T08:00:01.960Z",
+      "agent": "main",
+      "turn_index": 1,
+      "duration_ms": 120,
+      "duration_source": "reconstructed_between_hooks",
+      "output_size_bytes": 72,
+      "error_signature": null,
+      "key": "main|toolu_0012",
       "warnings": [],
       "context_epoch": 0,
       "target_key": "cmd:C:\\proj::python check.py out/m1.json",
@@ -1592,21 +2113,23 @@
       }
     },
     {
-      "seq": 11,
-      "call_id": "toolu_0012",
+      "seq": 12,
+      "call_id": "toolu_0013",
       "tool": "Bash",
       "category": "shell",
+      "op": "run_script",
+      "op_target": "export.py",
       "target": "python export.py data/m2.csv",
       "status": "success",
-      "start_time": "2027-01-15T08:00:01.839Z",
-      "end_time": "2027-01-15T08:00:01.960Z",
+      "start_time": "2027-01-15T08:00:02.000Z",
+      "end_time": "2027-01-15T08:00:02.119Z",
       "agent": "main",
       "turn_index": 1,
       "duration_ms": 120,
       "duration_source": "reconstructed_between_hooks",
       "output_size_bytes": 72,
       "error_signature": null,
-      "key": "main|toolu_0012",
+      "key": "main|toolu_0013",
       "warnings": [],
       "context_epoch": 0,
       "target_key": "cmd:C:\\proj::python export.py data/m2.csv",
@@ -1623,32 +2146,13 @@
       }
     },
     {
-      "seq": 12,
-      "call_id": "toolu_0013",
-      "tool": "Read",
-      "category": "read",
-      "target": "out/m2.json",
-      "status": "success",
-      "start_time": "2027-01-15T08:00:02.000Z",
-      "end_time": "2027-01-15T08:00:02.119Z",
-      "agent": "main",
-      "turn_index": 1,
-      "duration_ms": 120,
-      "duration_source": "reconstructed_between_hooks",
-      "output_size_bytes": 128,
-      "error_signature": null,
-      "key": "main|toolu_0013",
-      "warnings": [],
-      "context_epoch": 0,
-      "target_key": "path:C:\\proj::out/m2.json",
-      "params": {}
-    },
-    {
       "seq": 13,
       "call_id": "toolu_0014",
-      "tool": "Bash",
-      "category": "shell",
-      "target": "python check.py out/m2.json",
+      "tool": "Read",
+      "category": "read",
+      "op": "read",
+      "op_target": "out/m2.json",
+      "target": "out/m2.json",
       "status": "success",
       "start_time": "2027-01-15T08:00:02.160Z",
       "end_time": "2027-01-15T08:00:02.279Z",
@@ -1656,9 +2160,32 @@
       "turn_index": 1,
       "duration_ms": 120,
       "duration_source": "reconstructed_between_hooks",
-      "output_size_bytes": 72,
+      "output_size_bytes": 128,
       "error_signature": null,
       "key": "main|toolu_0014",
+      "warnings": [],
+      "context_epoch": 0,
+      "target_key": "path:C:\\proj::out/m2.json",
+      "params": {}
+    },
+    {
+      "seq": 14,
+      "call_id": "toolu_0015",
+      "tool": "Bash",
+      "category": "shell",
+      "op": "run_script",
+      "op_target": "check.py",
+      "target": "python check.py out/m2.json",
+      "status": "success",
+      "start_time": "2027-01-15T08:00:02.319Z",
+      "end_time": "2027-01-15T08:00:02.440Z",
+      "agent": "main",
+      "turn_index": 1,
+      "duration_ms": 120,
+      "duration_source": "reconstructed_between_hooks",
+      "output_size_bytes": 72,
+      "error_signature": null,
+      "key": "main|toolu_0015",
       "warnings": [],
       "context_epoch": 0,
       "target_key": "cmd:C:\\proj::python check.py out/m2.json",
@@ -1675,21 +2202,23 @@
       }
     },
     {
-      "seq": 14,
-      "call_id": "toolu_0015",
+      "seq": 15,
+      "call_id": "toolu_0016",
       "tool": "Bash",
       "category": "shell",
+      "op": "run_script",
+      "op_target": "export.py",
       "target": "python export.py data/m3.csv",
       "status": "success",
-      "start_time": "2027-01-15T08:00:02.319Z",
-      "end_time": "2027-01-15T08:00:02.440Z",
+      "start_time": "2027-01-15T08:00:02.480Z",
+      "end_time": "2027-01-15T08:00:02.599Z",
       "agent": "main",
       "turn_index": 1,
       "duration_ms": 120,
       "duration_source": "reconstructed_between_hooks",
       "output_size_bytes": 72,
       "error_signature": null,
-      "key": "main|toolu_0015",
+      "key": "main|toolu_0016",
       "warnings": [],
       "context_epoch": 0,
       "target_key": "cmd:C:\\proj::python export.py data/m3.csv",
@@ -1706,32 +2235,13 @@
       }
     },
     {
-      "seq": 15,
-      "call_id": "toolu_0016",
-      "tool": "Read",
-      "category": "read",
-      "target": "out/m3.json",
-      "status": "success",
-      "start_time": "2027-01-15T08:00:02.480Z",
-      "end_time": "2027-01-15T08:00:02.599Z",
-      "agent": "main",
-      "turn_index": 1,
-      "duration_ms": 120,
-      "duration_source": "reconstructed_between_hooks",
-      "output_size_bytes": 128,
-      "error_signature": null,
-      "key": "main|toolu_0016",
-      "warnings": [],
-      "context_epoch": 0,
-      "target_key": "path:C:\\proj::out/m3.json",
-      "params": {}
-    },
-    {
       "seq": 16,
       "call_id": "toolu_0017",
-      "tool": "Bash",
-      "category": "shell",
-      "target": "python check.py out/m3.json",
+      "tool": "Read",
+      "category": "read",
+      "op": "read",
+      "op_target": "out/m3.json",
+      "target": "out/m3.json",
       "status": "success",
       "start_time": "2027-01-15T08:00:02.640Z",
       "end_time": "2027-01-15T08:00:02.759Z",
@@ -1739,9 +2249,32 @@
       "turn_index": 1,
       "duration_ms": 120,
       "duration_source": "reconstructed_between_hooks",
-      "output_size_bytes": 72,
+      "output_size_bytes": 128,
       "error_signature": null,
       "key": "main|toolu_0017",
+      "warnings": [],
+      "context_epoch": 0,
+      "target_key": "path:C:\\proj::out/m3.json",
+      "params": {}
+    },
+    {
+      "seq": 17,
+      "call_id": "toolu_0018",
+      "tool": "Bash",
+      "category": "shell",
+      "op": "run_script",
+      "op_target": "check.py",
+      "target": "python check.py out/m3.json",
+      "status": "success",
+      "start_time": "2027-01-15T08:00:02.799Z",
+      "end_time": "2027-01-15T08:00:02.920Z",
+      "agent": "main",
+      "turn_index": 1,
+      "duration_ms": 120,
+      "duration_source": "reconstructed_between_hooks",
+      "output_size_bytes": 72,
+      "error_signature": null,
+      "key": "main|toolu_0018",
       "warnings": [],
       "context_epoch": 0,
       "target_key": "cmd:C:\\proj::python check.py out/m3.json",
@@ -1754,6 +2287,64 @@
         "shell_paths": [
           "check.py",
           "out/m3.json"
+        ]
+      }
+    },
+    {
+      "seq": 18,
+      "call_id": "toolu_0019",
+      "tool": "Bash",
+      "category": "shell",
+      "op": "run_tests",
+      "op_target": "(suite)",
+      "target": "python -m pytest -q",
+      "status": "success",
+      "start_time": "2027-01-15T08:00:02.960Z",
+      "end_time": "2027-01-15T08:00:03.079Z",
+      "agent": "main",
+      "turn_index": 1,
+      "duration_ms": 120,
+      "duration_source": "reconstructed_between_hooks",
+      "output_size_bytes": 78,
+      "error_signature": null,
+      "key": "main|toolu_0019",
+      "warnings": [],
+      "context_epoch": 0,
+      "target_key": "cmd:C:\\proj::python -m pytest -q",
+      "params": {
+        "command": "python -m pytest -q",
+        "shell_kind": "run",
+        "shell_heads": [
+          "python"
+        ]
+      }
+    },
+    {
+      "seq": 19,
+      "call_id": "toolu_0020",
+      "tool": "Bash",
+      "category": "shell",
+      "op": "run_tests",
+      "op_target": "(suite)",
+      "target": "python -m pytest -q",
+      "status": "success",
+      "start_time": "2027-01-15T08:00:03.119Z",
+      "end_time": "2027-01-15T08:00:03.240Z",
+      "agent": "main",
+      "turn_index": 1,
+      "duration_ms": 120,
+      "duration_source": "reconstructed_between_hooks",
+      "output_size_bytes": 78,
+      "error_signature": null,
+      "key": "main|toolu_0020",
+      "warnings": [],
+      "context_epoch": 0,
+      "target_key": "cmd:C:\\proj::python -m pytest -q",
+      "params": {
+        "command": "python -m pytest -q",
+        "shell_kind": "run",
+        "shell_heads": [
+          "python"
         ]
       }
     }
@@ -1779,7 +2370,7 @@
     },
     {
       "phase": "turn_end",
-      "time": "2027-01-15T08:00:02.799Z",
+      "time": "2027-01-15T08:00:03.279Z",
       "agent_id": null,
       "meta": {}
     }

@@ -156,6 +156,9 @@ def _detect_reads(calls: list[Call], window_calls: int, window_seconds: int, cas
             conf, why = B.CONFIDENCE_MEDIUM, "aucun changement observe mais le contenu n'a pas pu etre compare : repetition a examiner"
         else:
             conf, why = B.CONFIDENCE_LOW, "contenu non comparable et appel a effet inconnu intercale : repetition a examiner"
+        if first.op == I.OP_MCP_READ and conf == B.CONFIDENCE_HIGH:
+            conf = B.CONFIDENCE_MEDIUM
+            why += " ; outil MCP : l'etat renvoye peut etre volatil et le serveur peut avoir des effets non declares"
         cross_tool = len(tools) > 1
         title = f"{first.op} de {first.op_target!r} repete {n} fois via {', '.join(tools)}"
         if first.op == I.OP_UNKNOWN:
