@@ -220,7 +220,9 @@ def _detect_reads(calls: list[Call], window_calls: int, window_seconds: int, cas
                 "triggers": triggers, "trigger_kinds": trigger_kinds, "trigger_counts": trigger_counts,
                 "same_result_basis": sorted({v.get("same_result_basis", "") for v in verdicts}),
                 "statuses": [c.status for c in members],
-                "intervening_notable_calls": [{"count": len(b), "first_seqs": b[:5]} for b in cl["between"]],
+                "intervening_notable_calls": ([{"count": len(b), "first_seqs": b[:5]} for b in cl["between"][:8]]
+                                              + ([{"more_gaps": len(cl["between"]) - 8}] if len(cl["between"]) > 8 else [])),
+                "intervening_total": sum(len(b) for b in cl["between"]),
                 "context_epoch": first.context_epoch, "agent": first.agent_key, "pair_verdicts": verdicts,
             },
             explanation=(f"La meme unite de travail ({first.op} sur {first.op_target!r}, memes parametres) a ete refaite {n} fois "
