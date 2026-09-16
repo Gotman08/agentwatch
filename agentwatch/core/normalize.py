@@ -70,6 +70,15 @@ def _is_abs(path: str) -> bool:
 _MSYS_RE = re.compile(r"^/(?:mnt/)?([A-Za-z])(/|$)")
 
 
+def _expand_tilde(path: str) -> str:
+    """`~/x` -> dossier utilisateur : les evenements stockent le projet et le cwd masques par `~`
+    (confidentialite), mais les chemins cites dans les commandes sont absolus ; a l'analyse,
+    les deux doivent se comparer."""
+    if path == "~" or path.startswith("~/"):
+        return to_posix(os.path.expanduser("~")) + path[1:]
+    return path
+
+
 def _unmsys(path: str) -> str:
     """Sous Windows, `/c/Users/x` (Git Bash, MSYS) et `/mnt/c/Users/x` (WSL) designent `C:/Users/x`.
 
@@ -92,15 +101,15 @@ def normalize_path(path: str | None, project_dir: str | None, cwd: str | None) -
     """
     if not path or not isinstance(path, str):
         return None
-    p = _unmsys(to_posix(path.strip().strip('"').strip("'")))
+    p = _unmsys(_expand_tilde(to_posix(path.strip().strip('"').strip("'"))))
     if not p:
         return None
-    cwd = _unmsys(to_posix(cwd)) if cwd else cwd
+    cwd = _unmsys(_expand_tilde(to_posix(cwd))) if cwd else cwd
     if not _is_abs(p) and cwd:
         p = to_posix(os.path.normpath(os.path.join(cwd, p)))
     elif _is_abs(p):
         p = to_posix(os.path.normpath(p))
-    root = to_posix(os.path.normpath(_unmsys(to_posix(project_dir)))) if project_dir else None
+    root = to_posix(os.path.normpath(_unmsys(_expand_tilde(to_posix(project_dir))))) if project_dir else None
     if root:
         fold = os.name == "nt"
         a, b = (p.lower(), root.lower()) if fold else (p, root)

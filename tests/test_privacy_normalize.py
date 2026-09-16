@@ -91,6 +91,12 @@ class NormalizeTests(unittest.TestCase):
         outside = "D:\\other\\x.py" if os.name == "nt" else "/other/x.py"
         self.assertEqual(N.normalize_path(outside, proj, proj), outside.replace("\\", "/"))
 
+    def test_masked_home_project_matches_absolute_paths(self) -> None:
+        home = os.path.expanduser("~").replace("\\", "/")
+        self.assertEqual(N.normalize_path(home + "/proj/src/a.py", "~/proj", "~/proj"), "src/a.py")
+        self.assertEqual(N.normalize_path("src/a.py", "~/proj", "~/proj"), "src/a.py")
+        self.assertEqual(N.normalize_path("~/proj/src/a.py", "~/proj", None), "src/a.py")
+
     @unittest.skipUnless(os.name == "nt", "formes MSYS/WSL : Windows seulement")
     def test_msys_and_wsl_paths_map_to_the_project(self) -> None:
         proj = "C:\\Users\\me\\proj"
