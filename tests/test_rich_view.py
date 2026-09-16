@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 import io
+import json
 import subprocess
 import sys
 import tempfile
@@ -60,6 +61,18 @@ class RichViewTests(unittest.TestCase):
     def test_auto_format_is_markdown_when_not_a_tty(self) -> None:
         out = self._run("report", "--session", "rich")
         self.assertTrue(out.startswith("# AgentWatch - rapport de session"))
+
+    def test_piped_report_is_utf8(self) -> None:
+        # * Sous Windows un tube herite de la page de code locale (cp1252) : le JSON redirige doit rester de l'UTF-8.
+        for fmt in ("json", "markdown"):
+            r = subprocess.run([sys.executable, "-m", "agentwatch", "--home", str(self.home), "report", "--session", "rich", "--format", fmt],
+                               capture_output=True, timeout=120, cwd=str(ENTRY.parent.parent))
+            self.assertEqual(r.returncode, 0, r.stderr.decode("utf-8", "replace"))
+            text = r.stdout.decode("utf-8")  # leve UnicodeDecodeError si la sortie n'est pas UTF-8
+            if fmt == "json":
+                self.assertEqual(json.loads(text)["session"]["session_id"], "rich")
+            else:
+                self.assertTrue(text.startswith("# AgentWatch - rapport de session"))
 
     def test_hook_never_imports_rich(self) -> None:
         r = subprocess.run([sys.executable, "-X", "importtime", "-I", str(ENTRY), "ingest", "--client", "codex", "--home", str(self.home)],

@@ -503,10 +503,18 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _configure_stdout() -> None:
-    """Consoles Windows en cp1252 : ne jamais planter sur un chemin accentue ou un symbole."""
+    """Consoles Windows en cp1252 : ne jamais planter sur un chemin accentue ou un symbole.
+
+    # * Vers un tube ou un fichier (`> rapport.json`), la sortie est toujours en UTF-8 : le JSON
+    #   et le Markdown doivent etre relisibles partout, pas seulement avec la page de code locale.
+    #   Dans une vraie console, l'encodage detecte par Python est conserve.
+    """
     for stream in (sys.stdout, sys.stderr):
         try:
-            stream.reconfigure(errors="replace")  # type: ignore[attr-defined]
+            if stream.isatty():
+                stream.reconfigure(errors="replace")  # type: ignore[attr-defined]
+            else:
+                stream.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[attr-defined]
         except (AttributeError, ValueError):
             pass
 
