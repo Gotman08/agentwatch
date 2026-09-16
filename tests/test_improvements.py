@@ -145,6 +145,30 @@ class CliImprovementTests(unittest.TestCase):
         self.assertTrue(list((self.home / "spool").rglob("*.json")))
 
 
+class EditEchoTests(unittest.TestCase):
+    def test_edit_and_write_output_size_excludes_echoed_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            s = Synth(Path(tmp), session_id="echo")
+            s.session_start(); s.user_prompt()
+            big = "x" * 20000
+            s.call("Write", {"file_path": s._abs("big.py"), "content": big},
+                   {"type": "create", "filePath": s._abs("big.py"), "content": big, "structuredPatch": [], "originalFile": ""})
+            s.call("Edit", {"file_path": s._abs("big.py"), "old_string": "x", "new_string": "y"},
+                   {"filePath": s._abs("big.py"), "oldString": "x", "newString": "y", "originalFile": big, "structuredPatch": [{"lines": ["-x", "+y"]}]})
+            s.read("big.py", big)
+            v = s.view()
+            write, edit, read = v.calls
+            self.assertLess(write.output_size_bytes, 500)
+            self.assertLess(edit.output_size_bytes, 500)
+            self.assertGreater(read.output_size_bytes, 20000, "une lecture reste une vraie sortie")
+            store = EventStore(Path(tmp), load_config(Path(tmp)))
+            events, _ = store.read_session_events("claude-code", "echo")
+            ends = {e["tool_name"]: e for e in events if e["phase"] == "end"}
+            self.assertEqual(ends["Edit"]["output_size_source"], "serialized_tool_response_minus_echoed_file")
+            self.assertGreater(ends["Edit"]["evidence"]["echoed_file_bytes"], 20000)
+            self.assertEqual(ends["Read"]["output_size_source"], "serialized_tool_response")
+
+
 class HostileInputTests(unittest.TestCase):
     """Le hook doit toujours sortir en 0, sans rien ecrire sur stdout, quel que soit stdin."""
 

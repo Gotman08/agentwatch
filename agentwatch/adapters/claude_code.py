@@ -215,6 +215,14 @@ class ClaudeCodeAdapter:
             return
         ev["output_size_bytes"] = N.size_of(resp)
         ev["output_size_source"] = "serialized_tool_response"
+        if isinstance(resp, dict) and ev["tool_category"] in (S.CAT_EDIT, S.CAT_WRITE):
+            # * Observe en direct (2.1.270) : la reponse d'Edit/Write recopie le fichier entier
+            #   (originalFile, content, structuredPatch). Ce n'est pas une sortie lue par le
+            #   modele : on la retranche du volume et on la consigne a part.
+            echoed = sum(N.size_of(resp.get(k)) for k in ("originalFile", "content", "structuredPatch", "oldString", "newString") if k in resp)
+            ev["evidence"]["echoed_file_bytes"] = echoed
+            ev["output_size_bytes"] = max(0, ev["output_size_bytes"] - echoed)
+            ev["output_size_source"] = "serialized_tool_response_minus_echoed_file"
         status, code, err, warns = base.status_from_response(resp)
         if status == S.STATUS_UNKNOWN:
             # * Documente : PostToolUse n'est emis qu'apres un appel reussi ; les echecs

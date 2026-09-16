@@ -169,10 +169,12 @@ def render_markdown(report: dict[str, Any]) -> str:
         lines.append("")
     agents = report.get("agents") or []
     if agents:
+        internal = [a for a in agents if a["classification"] == "stop_only"]
+        shown = [a for a in agents if a["classification"] != "stop_only"]
         lines += ["## Agents", "",
                   "| Agent | Type | Statut | Appels | Debut -> fin | Lance par | Base du lien | Modele | Tokens (rapportes par le client) |",
                   "|---|---|---|---|---|---|---|---|---|"]
-        for a in agents:
+        for a in shown:
             u = a.get("usage") or {}
             tokens = (f"in {_fmt(u.get('input_tokens'))} / out {_fmt(u.get('output_tokens'))} / cache lu {_fmt(u.get('cache_read_tokens'))}"
                       f" / total {_fmt(u.get('total_tokens'))}") if u else "non rapportes"
@@ -181,8 +183,11 @@ def render_markdown(report: dict[str, Any]) -> str:
                          f"{a.get('start_time') or '?'} -> {a.get('stop_time') or '?'} | {parent} | {a.get('link_basis') or '-'} | "
                          f"{a.get('model') or 'inconnu'} | {tokens} |")
         lines.append("")
-        notes = sorted({a["classification_note"] for a in agents})
-        lines += [f"- {n}" for n in notes]
+        if internal:
+            lines.append(f"- {len(internal)} agent(s) interne(s) non detailles : seulement un `SubagentStop`, sans type ni appel "
+                         f"(identifiants dans l'export JSON) ; agent interne du client ou demarre avant l'installation des hooks.")
+        if shown:
+            lines.append("- sous-agent observe : demarrage et/ou appels d'outils ; les detecteurs ne comparent jamais deux agents entre eux.")
         lines.append("")
     lines += ["## Couverture", "", "| Capacite | Documente | Observe dans cette session | Base |", "|---|---|---|---|"]
     for r in report["coverage"]:

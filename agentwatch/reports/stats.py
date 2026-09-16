@@ -18,7 +18,7 @@ CAPABILITIES: dict[str, dict[str, tuple[str, str]]] = {
         "tool_end": ("supported", "PostToolUse (succes uniquement)"),
         "tool_failure": ("supported", "PostToolUseFailure (erreur, refus, interruption)"),
         "exit_code": ("absent", "tool_response de Bash expose stdout/stderr/interrupted, pas de code de sortie"),
-        "client_duration": ("partial", "PostToolUse.duration a partir de v2.1.267 ; durationMs pour certains outils MCP"),
+        "client_duration": ("partial", "PostToolUse.duration_ms (observe 2.1.270 ; documente comme `duration` a partir de 2.1.267) ; durationMs dans certaines reponses"),
         "output_size": ("supported", "taille du tool_response serialise tel que recu par le hook"),
         "result_fingerprint": ("supported", "empreinte HMAC du tool_response"),
         "mcp_calls": ("supported", "outils nommes mcp__<serveur>__<outil>"),

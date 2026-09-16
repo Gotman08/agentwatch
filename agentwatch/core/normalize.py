@@ -265,18 +265,26 @@ def strip_url(url: str | None) -> str | None:
     return (m.group(1) + m.group(2))[:300]
 
 
+_ERROR_LINE_RE = re.compile(r"(?i)\b(error|erreur|exception|traceback|no such file|not found|cannot|can't|failed|denied|"
+                            r"unexpected|invalid|refused|timed? ?out|introuvable|impossible)\b")
+
+
 def make_error_signature(text: str | None, limit: int = 160) -> str | None:
     """Signature d'erreur : premiere ligne significative, nombres/hex/chemins remplaces."""
     if not text:
         return None
-    line = ""
-    for candidate in text.strip().splitlines():
-        candidate = candidate.strip()
-        if candidate:
-            line = candidate
-            break
-    if not line:
+    lines = [c.strip() for c in text.strip().splitlines() if c.strip()]
+    if not lines:
         return None
+    line = lines[0]
+    # * Observe en direct (Claude Code) : l'erreur de Bash commence par "Exit code N" seul ;
+    #   on y joint la premiere ligne significative de stderr, sinon toutes les erreurs se
+    #   confondraient dans la meme signature.
+    if re.match(r"(?i)^exit code \d+$", line) and len(lines) > 1:
+        # ? Le texte melange stdout et stderr : on prend la premiere ligne qui ressemble a une
+        #   erreur, sinon la derniere (stderr arrive generalement en fin).
+        detail = next((c for c in lines[1:] if _ERROR_LINE_RE.search(c)), lines[-1])
+        line = line + " | " + detail
     line = re.sub(r"[A-Za-z]:[\\/][^\s:'\"]+|(?:/[\w.\-]+){2,}", "<path>", line)
     line = re.sub(r"\b[0-9a-f]{7,}\b", "<hex>", line)
     line = re.sub(r"\d+", "<n>", line)

@@ -29,7 +29,10 @@ def build_report(view: SessionView, stats: dict[str, Any], coverage: list[dict[s
         "schema_version": SCHEMA_VERSION,
         "session": {
             "client": view.client, "session_id": view.session_id, "model": view.model,
-            "model_source": "hook input (SessionStart / events)" if view.model else "non observe",
+            "model_source": ("hook input (SessionStart / events)" if view.model else
+                             ("non observe : aucun SessionStart enregistre, hooks installes apres le debut de la session"
+                              if not any(m.phase == "session_start" for m in view.markers) else
+                              "non observe : le client ne transmet pas le modele du fil principal aux hooks")),
             "project_dir": view.project_dir, "first_time": view.first_time, "last_time": view.last_time,
             "turns": view.turns, "context_epochs": view.epochs, "agents": view.agents,
             "schema_versions_seen": view.schema_versions,
