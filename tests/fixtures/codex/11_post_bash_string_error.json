@@ -1,0 +1,16 @@
+{
+  "_note": "SYNTHETIC content; SHAPE observed live with codex-cli 0.154.0-alpha.6.2 on 2026-09-15 (tool_response is a plain output string, no exit code)",
+  "session_id": "thr_abc",
+  "turn_id": "turn_1",
+  "cwd": "C:\\Users\\nicol\\Desktop\\MCP\\Auto_Mcp",
+  "hook_event_name": "PostToolUse",
+  "model": "gpt-example",
+  "permission_mode": "default",
+  "transcript_path": "C:\\Users\\nicol\\Desktop\\MCP\\Auto_Mcp\\rollout.jsonl",
+  "tool_name": "Bash",
+  "tool_input": {
+    "command": "python does_not_exist.py"
+  },
+  "tool_use_id": "exec-2222",
+  "tool_response": "C:\\Python314\\python.exe: can't open file 'C:\\\\x\\\\does_not_exist.py': [Errno 2] No such file or directory\r\n"
+}

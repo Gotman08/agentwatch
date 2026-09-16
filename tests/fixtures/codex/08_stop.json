@@ -1,0 +1,10 @@
+{
+  "_note": "SYNTHETIC fixture (hand-written from the official hook documentation, not a live capture)",
+  "session_id": "thr_abc",
+  "turn_id": "turn_1",
+  "cwd": "C:\\Users\\nicol\\Desktop\\MCP\\Auto_Mcp",
+  "hook_event_name": "Stop",
+  "model": "gpt-example",
+  "stop_hook_active": false,
+  "last_assistant_message": "ok"
+}

@@ -1,0 +1,18 @@
+{
+  "_note": "SYNTHETIC fixture (hand-written from the official hook documentation, not a live capture)",
+  "session_id": "sess-claude-1",
+  "cwd": "C:\\Users\\nicol\\Desktop\\MCP\\Auto_Mcp",
+  "hook_event_name": "PostToolUse",
+  "tool_name": "Bash",
+  "tool_input": {
+    "command": "git status --short",
+    "description": "status"
+  },
+  "tool_use_id": "toolu_03",
+  "tool_response": {
+    "stdout": " M a.py\n",
+    "stderr": "",
+    "interrupted": false,
+    "isImage": false
+  }
+}

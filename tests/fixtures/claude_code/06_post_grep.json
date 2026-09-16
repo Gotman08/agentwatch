@@ -1,0 +1,21 @@
+{
+  "_note": "SYNTHETIC fixture (hand-written from the official hook documentation, not a live capture)",
+  "session_id": "sess-claude-1",
+  "cwd": "C:\\Users\\nicol\\Desktop\\MCP\\Auto_Mcp",
+  "hook_event_name": "PostToolUse",
+  "tool_name": "Grep",
+  "tool_input": {
+    "pattern": "def main",
+    "path": "C:\\Users\\nicol\\Desktop\\MCP\\Auto_Mcp",
+    "output_mode": "files_with_matches"
+  },
+  "tool_use_id": "toolu_04",
+  "tool_response": {
+    "mode": "files_with_matches",
+    "filenames": [
+      "C:\\Users\\nicol\\Desktop\\MCP\\Auto_Mcp\\agentwatch\\cli.py",
+      "C:\\Users\\nicol\\Desktop\\MCP\\Auto_Mcp\\agentwatch\\hook_entry.py"
+    ],
+    "numFiles": 2
+  }
+}

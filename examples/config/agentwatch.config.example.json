@@ -1,0 +1,65 @@
+{
+  "max_stdin_bytes": 8388608,
+  "max_event_bytes": 262144,
+  "max_command_chars": 2000,
+  "max_error_chars": 400,
+  "max_result_paths": 200,
+  "max_session_events": 20000,
+  "max_diagnostics_files": 1000,
+  "retention_days": 30,
+  "mask_home_dir": true,
+  "store_tool_descriptions": false,
+  "detailed_excerpts": false,
+  "detailed_excerpt_chars": 240,
+  "case_insensitive_paths": true,
+  "mcp_param_allowlist": [
+    "path",
+    "file_path",
+    "filePath",
+    "file",
+    "files",
+    "paths",
+    "directory",
+    "dir",
+    "cwd",
+    "pattern",
+    "glob",
+    "name",
+    "id",
+    "limit",
+    "offset",
+    "page",
+    "cursor",
+    "projectPath",
+    "query"
+  ],
+  "mcp_param_value_max_chars": 300,
+  "detectors": {
+    "redundant_reads": {
+      "enabled": true,
+      "window_calls": 60,
+      "window_seconds": 900
+    },
+    "error_loops": {
+      "enabled": true,
+      "min_failures": 3,
+      "window_calls": 40,
+      "window_seconds": 1800
+    },
+    "batchable": {
+      "enabled": true,
+      "min_group": 3,
+      "max_gap_calls": 0
+    },
+    "automation_candidates": {
+      "enabled": true,
+      "min_occurrences": 3,
+      "min_pattern_len": 2,
+      "max_pattern_len": 6,
+      "max_calls": 2000
+    }
+  },
+  "report": {
+    "max_top_findings": 3
+  }
+}

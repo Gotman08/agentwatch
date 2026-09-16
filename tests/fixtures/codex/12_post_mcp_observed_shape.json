@@ -1,0 +1,23 @@
+{
+  "_note": "SYNTHETIC content; SHAPE observed live with codex-cli 0.154.0-alpha.6.2 on 2026-09-15 (MCP tool_response = {content, isError})",
+  "session_id": "thr_abc",
+  "turn_id": "turn_1",
+  "cwd": "C:\\Users\\nicol\\Desktop\\MCP\\Auto_Mcp",
+  "hook_event_name": "PostToolUse",
+  "model": "gpt-example",
+  "permission_mode": "default",
+  "tool_name": "mcp__awtest__echo_path",
+  "tool_input": {
+    "path": "README.txt"
+  },
+  "tool_use_id": "exec-3333",
+  "tool_response": {
+    "content": [
+      {
+        "type": "text",
+        "text": "echo: README.txt"
+      }
+    ],
+    "isError": false
+  }
+}

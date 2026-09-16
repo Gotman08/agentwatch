@@ -1,0 +1,1787 @@
+{
+  "report_version": "1.0",
+  "agentwatch_version": "0.1.0",
+  "schema_version": "1.0",
+  "session": {
+    "client": "claude-code",
+    "session_id": "exemple-synthetique",
+    "model": "synthetic-model",
+    "model_source": "hook input (SessionStart / events)",
+    "project_dir": "C:\\proj",
+    "first_time": "2027-01-15T08:00:00.000Z",
+    "last_time": "2027-01-15T08:00:02.799Z",
+    "turns": 1,
+    "context_epochs": 1,
+    "agents": [
+      "main"
+    ],
+    "schema_versions_seen": [
+      "1.0"
+    ],
+    "client_version_at_configure": null,
+    "warnings": []
+  },
+  "ranking_criteria": [
+    "confiance (high > medium > low)",
+    "nombre d'appels concernes",
+    "octets de sortie observes"
+  ],
+  "top_findings": [
+    "df3085664635e2c1",
+    "91b5757321e53a8c",
+    "49d95bbc3f66b177"
+  ],
+  "max_listed_per_rule": 15,
+  "findings": [
+    {
+      "rule_id": "C.batchable",
+      "rule_version": "1.0",
+      "kind": "sequential_similar_calls",
+      "title": "3 appels Read sequentiels sur des cibles differentes",
+      "confidence": "high",
+      "confidence_rationale": "independance : toutes les cibles figurent dans le resultat de l'appel #0 (Glob). Le niveau de confiance est heuristique, pas une probabilite calibree.",
+      "calls": [
+        "main|toolu_0002",
+        "main|toolu_0003",
+        "main|toolu_0004"
+      ],
+      "call_refs": [
+        {
+          "seq": 1,
+          "call_id": "toolu_0002",
+          "tool": "Read",
+          "category": "read",
+          "target": "src/a.py",
+          "status": "success",
+          "start_time": "2027-01-15T08:00:00.240Z",
+          "end_time": "2027-01-15T08:00:00.359Z",
+          "agent": "main",
+          "turn_index": 1,
+          "duration_ms": 120,
+          "duration_source": "reconstructed_between_hooks",
+          "output_size_bytes": 124,
+          "error_signature": null
+        },
+        {
+          "seq": 2,
+          "call_id": "toolu_0003",
+          "tool": "Read",
+          "category": "read",
+          "target": "src/b.py",
+          "status": "success",
+          "start_time": "2027-01-15T08:00:00.400Z",
+          "end_time": "2027-01-15T08:00:00.519Z",
+          "agent": "main",
+          "turn_index": 1,
+          "duration_ms": 120,
+          "duration_source": "reconstructed_between_hooks",
+          "output_size_bytes": 124,
+          "error_signature": null
+        },
+        {
+          "seq": 3,
+          "call_id": "toolu_0004",
+          "tool": "Read",
+          "category": "read",
+          "target": "src/c.py",
+          "status": "success",
+          "start_time": "2027-01-15T08:00:00.559Z",
+          "end_time": "2027-01-15T08:00:00.680Z",
+          "agent": "main",
+          "turn_index": 1,
+          "duration_ms": 120,
+          "duration_source": "reconstructed_between_hooks",
+          "output_size_bytes": 124,
+          "error_signature": null
+        }
+      ],
+      "evidence": {
+        "tool": "Read",
+        "targets": [
+          "src/a.py",
+          "src/b.py",
+          "src/c.py"
+        ],
+        "independence": "high",
+        "independence_basis": "toutes les cibles figurent dans le resultat de l'appel #0 (Glob)",
+        "sequential": true,
+        "grouped_tool": {
+          "status": "documented_not_verified",
+          "note": "Claude Code peut emettre plusieurs appels d'outil dans un meme tour ; non observe dans cette session"
+        },
+        "durations_ms": [
+          120,
+          120,
+          120
+        ],
+        "duration_sources": [
+          "reconstructed_between_hooks"
+        ]
+      },
+      "explanation": "3 appels Read ont ete emis l'un apres l'autre (chacun apres la fin du precedent) sur 3 cibles distinctes, sans appel intermediaire.",
+      "counter_indications": [
+        "Si une cible a ete choisie d'apres le contenu lu juste avant, les appels ne sont pas independants.",
+        "Un regroupement concatene les sorties : verifier que la taille totale reste acceptable pour le contexte.",
+        "Les contraintes du client (limites de parallelisme, sandbox, quotas MCP) ne sont pas observees."
+      ],
+      "missing_data": [
+        "contenu des resultats non conserve : la dependance entre lectures est inferee, pas observee"
+      ],
+      "observed_cost": {
+        "calls": 3,
+        "output_bytes_sum": 372,
+        "output_bytes_known_for": 3,
+        "duration_client_ms_sum": null,
+        "duration_reconstructed_ms_sum": 360,
+        "duration_unknown_for": 0,
+        "tokens": "non mesure",
+        "note": "sommes par provenance ; les appels paralleles ne sont pas convertis en temps mural economisable"
+      },
+      "proposal": {
+        "type": "group_calls",
+        "grouped_tool": {
+          "status": "documented_not_verified",
+          "note": "Claude Code peut emettre plusieurs appels d'outil dans un meme tour ; non observe dans cette session"
+        },
+        "text": "Emettre ces lectures en une seule fois (appels paralleles dans le meme tour, ou un outil acceptant plusieurs cibles) lorsque l'independance est etablie.",
+        "requires_judgment": "Confirmer que les cibles etaient connues avant la premiere lecture."
+      },
+      "validation_protocol": [
+        "Verifier dans le transcript que la liste des cibles etait connue avant le premier appel.",
+        "Comparer la duree totale (source indiquee) avec celle d'un tour groupe apres modification.",
+        "Marquer le signalement : agentwatch feedback --finding <id> --mark relevant|false-positive."
+      ],
+      "finding_id": "df3085664635e2c1",
+      "feedback": null
+    },
+    {
+      "rule_id": "B.error_loops",
+      "rule_version": "1.0",
+      "kind": "persistent",
+      "title": "3 echecs identiques : Bash sur 'python build.py'",
+      "confidence": "high",
+      "confidence_rationale": "3 echecs de meme signature sans aucune modification observee entre eux. Le niveau de confiance est heuristique, pas une probabilite calibree.",
+      "calls": [
+        "main|toolu_0006",
+        "main|toolu_0007",
+        "main|toolu_0008"
+      ],
+      "call_refs": [
+        {
+          "seq": 5,
+          "call_id": "toolu_0006",
+          "tool": "Bash",
+          "category": "shell",
+          "target": "python build.py",
+          "status": "error",
+          "start_time": "2027-01-15T08:00:00.880Z",
+          "end_time": "2027-01-15T08:00:01.000Z",
+          "agent": "main",
+          "turn_index": 1,
+          "duration_ms": 120,
+          "duration_source": "reconstructed_between_hooks",
+          "output_size_bytes": null,
+          "error_signature": "Exit code <n>: ModuleNotFoundError: No module named 'toolz'"
+        },
+        {
+          "seq": 6,
+          "call_id": "toolu_0007",
+          "tool": "Bash",
+          "category": "shell",
+          "target": "python build.py",
+          "status": "error",
+          "start_time": "2027-01-15T08:00:01.039Z",
+          "end_time": "2027-01-15T08:00:01.160Z",
+          "agent": "main",
+          "turn_index": 1,
+          "duration_ms": 120,
+          "duration_source": "reconstructed_between_hooks",
+          "output_size_bytes": null,
+          "error_signature": "Exit code <n>: ModuleNotFoundError: No module named 'toolz'"
+        },
+        {
+          "seq": 7,
+          "call_id": "toolu_0008",
+          "tool": "Bash",
+          "category": "shell",
+          "target": "python build.py",
+          "status": "error",
+          "start_time": "2027-01-15T08:00:01.200Z",
+          "end_time": "2027-01-15T08:00:01.319Z",
+          "agent": "main",
+          "turn_index": 1,
+          "duration_ms": 120,
+          "duration_source": "reconstructed_between_hooks",
+          "output_size_bytes": null,
+          "error_signature": "Exit code <n>: ModuleNotFoundError: No module named 'toolz'"
+        }
+      ],
+      "evidence": {
+        "error_signature": "Exit code <n>: ModuleNotFoundError: No module named 'toolz'",
+        "error_summary_first": "Exit code 1: ModuleNotFoundError: No module named 'toolz'",
+        "statuses": [
+          "error",
+          "error",
+          "error"
+        ],
+        "exit_codes": [
+          null,
+          null,
+          null
+        ],
+        "gaps_seconds": [
+          0.2,
+          0.2
+        ],
+        "backoff_pattern": false,
+        "unknown_effect_calls_between": [],
+        "later_success_seq": null,
+        "target": "python build.py",
+        "params": {
+          "command": "python build.py",
+          "shell_kind": "run",
+          "shell_heads": [
+            "python"
+          ],
+          "shell_paths": [
+            "build.py"
+          ]
+        }
+      },
+      "explanation": "La meme operation (Bash, cible 'python build.py') a echoue 3 fois avec la signature \"Exit code <n>: ModuleNotFoundError: No module named 'toolz'\". Aucun succes ulterieur ni correction observable des preconditions.",
+      "counter_indications": [
+        "Un test intentionnel (verifier qu'une commande echoue) produirait le meme motif.",
+        "Une correction hors des outils observes (edition manuelle, service externe) n'est pas visible.",
+        "Les causes proposees sont des hypotheses etayees par la signature, pas des certitudes."
+      ],
+      "missing_data": [
+        "code de sortie absent"
+      ],
+      "observed_cost": {
+        "calls": 3,
+        "output_bytes_sum": null,
+        "output_bytes_known_for": 0,
+        "duration_client_ms_sum": null,
+        "duration_reconstructed_ms_sum": 360,
+        "duration_unknown_for": 0,
+        "tokens": "non mesure",
+        "note": "sommes par provenance ; les appels paralleles ne sont pas convertis en temps mural economisable"
+      },
+      "proposal": {
+        "type": "fix_precondition_before_retry",
+        "hypotheses": [
+          "dependance Python absente",
+          "commande en echec : voir le code de sortie"
+        ],
+        "text": "Verifier la precondition (chemin, dependance, permission, delai) avant de relancer, ou limiter le nombre de tentatives identiques dans les instructions du projet."
+      },
+      "validation_protocol": [
+        "Relire le resume d'erreur masque et confirmer que la signature designe bien la meme cause.",
+        "Verifier dans le transcript si une correction a eu lieu hors des outils observes.",
+        "Marquer le signalement : agentwatch feedback --finding <id> --mark relevant|false-positive."
+      ],
+      "finding_id": "91b5757321e53a8c",
+      "feedback": null
+    },
+    {
+      "rule_id": "A.redundant_reads",
+      "rule_version": "1.0",
+      "kind": "repeated_read",
+      "title": "Read repete 2 fois sur 'src/a.py'",
+      "confidence": "high",
+      "confidence_rationale": "empreintes de resultat identiques, aucune modification ni appel a effet inconnu observe entre les appels, meme agent et meme epoque de contexte. Le niveau de confiance est heuristique, pas une probabilite calibree.",
+      "calls": [
+        "main|toolu_0002",
+        "main|toolu_0005"
+      ],
+      "call_refs": [
+        {
+          "seq": 1,
+          "call_id": "toolu_0002",
+          "tool": "Read",
+          "category": "read",
+          "target": "src/a.py",
+          "status": "success",
+          "start_time": "2027-01-15T08:00:00.240Z",
+          "end_time": "2027-01-15T08:00:00.359Z",
+          "agent": "main",
+          "turn_index": 1,
+          "duration_ms": 120,
+          "duration_source": "reconstructed_between_hooks",
+          "output_size_bytes": 124,
+          "error_signature": null
+        },
+        {
+          "seq": 4,
+          "call_id": "toolu_0005",
+          "tool": "Read",
+          "category": "read",
+          "target": "src/a.py",
+          "status": "success",
+          "start_time": "2027-01-15T08:00:00.720Z",
+          "end_time": "2027-01-15T08:00:00.839Z",
+          "agent": "main",
+          "turn_index": 1,
+          "duration_ms": 120,
+          "duration_source": "reconstructed_between_hooks",
+          "output_size_bytes": 124,
+          "error_signature": null
+        }
+      ],
+      "evidence": {
+        "target": "src/a.py",
+        "target_kind": "path",
+        "params": {},
+        "result_fingerprints_distinct": 1,
+        "result_fingerprints_known": true,
+        "statuses": [
+          "success",
+          "success"
+        ],
+        "intervening_notable_calls": [
+          []
+        ],
+        "context_epoch": 0,
+        "agent": "main",
+        "pair_verdicts": [
+          {
+            "verdict": "clean",
+            "reasons": []
+          }
+        ]
+      },
+      "explanation": "L'appel Read sur la meme cible avec les memes parametres a ete emis 2 fois dans la fenetre (60 appels / 900 s). Le resultat observe etait identique a chaque fois.",
+      "counter_indications": [
+        "Aucune verification necessaire n'a ete observee, mais l'intention du modele n'est pas visible.",
+        "La disponibilite du resultat precedent dans le contexte du modele n'est pas observable par les hooks : seule une compaction connue est prise en compte.",
+        "Une modification externe (autre processus, editeur, git) n'est pas observable."
+      ],
+      "missing_data": [],
+      "observed_cost": {
+        "calls": 1,
+        "output_bytes_sum": 124,
+        "output_bytes_known_for": 1,
+        "duration_client_ms_sum": null,
+        "duration_reconstructed_ms_sum": 120,
+        "duration_unknown_for": 0,
+        "tokens": "non mesure",
+        "note": "sommes par provenance ; les appels paralleles ne sont pas convertis en temps mural economisable"
+      },
+      "proposal": {
+        "type": "reuse_previous_result",
+        "text": "Reutiliser le resultat de la premiere lecture tant qu'aucune modification de la cible n'est observee ; si une verification est voulue apres une commande a effet inconnu, preferer une lecture ciblee (plage de lignes ou filtre) plutot qu'une relecture complete.",
+        "requires_judgment": "Decider si la relecture etait une verification intentionnelle."
+      },
+      "validation_protocol": [
+        "Ouvrir le transcript du client a l'horodatage des appels et verifier que le premier resultat etait encore visible.",
+        "Comparer les empreintes de resultat (identiques => contenu identique au moment des appels).",
+        "Marquer le signalement : agentwatch feedback --finding <id> --mark relevant|false-positive."
+      ],
+      "finding_id": "49d95bbc3f66b177",
+      "feedback": null
+    },
+    {
+      "rule_id": "D.automation_candidates",
+      "rule_version": "1.0",
+      "kind": "recurring_pattern",
+      "title": "Motif recurrent (3x) : Bash -> Read -> Bash",
+      "confidence": "medium",
+      "confidence_rationale": "3 occurrences ; 0 etape(s) de jugement ou occurrences au seuil. Le niveau de confiance est heuristique, pas une probabilite calibree.",
+      "calls": [
+        "main|toolu_0009",
+        "main|toolu_0010",
+        "main|toolu_0011",
+        "main|toolu_0012",
+        "main|toolu_0013",
+        "main|toolu_0014",
+        "main|toolu_0015",
+        "main|toolu_0016",
+        "main|toolu_0017"
+      ],
+      "call_refs": [
+        {
+          "seq": 8,
+          "call_id": "toolu_0009",
+          "tool": "Bash",
+          "category": "shell",
+          "target": "python export.py data/m1.csv",
+          "status": "success",
+          "start_time": "2027-01-15T08:00:01.359Z",
+          "end_time": "2027-01-15T08:00:01.480Z",
+          "agent": "main",
+          "turn_index": 1,
+          "duration_ms": 120,
+          "duration_source": "reconstructed_between_hooks",
+          "output_size_bytes": 72,
+          "error_signature": null
+        },
+        {
+          "seq": 9,
+          "call_id": "toolu_0010",
+          "tool": "Read",
+          "category": "read",
+          "target": "out/m1.json",
+          "status": "success",
+          "start_time": "2027-01-15T08:00:01.519Z",
+          "end_time": "2027-01-15T08:00:01.640Z",
+          "agent": "main",
+          "turn_index": 1,
+          "duration_ms": 120,
+          "duration_source": "reconstructed_between_hooks",
+          "output_size_bytes": 128,
+          "error_signature": null
+        },
+        {
+          "seq": 10,
+          "call_id": "toolu_0011",
+          "tool": "Bash",
+          "category": "shell",
+          "target": "python check.py out/m1.json",
+          "status": "success",
+          "start_time": "2027-01-15T08:00:01.680Z",
+          "end_time": "2027-01-15T08:00:01.799Z",
+          "agent": "main",
+          "turn_index": 1,
+          "duration_ms": 120,
+          "duration_source": "reconstructed_between_hooks",
+          "output_size_bytes": 72,
+          "error_signature": null
+        },
+        {
+          "seq": 11,
+          "call_id": "toolu_0012",
+          "tool": "Bash",
+          "category": "shell",
+          "target": "python export.py data/m2.csv",
+          "status": "success",
+          "start_time": "2027-01-15T08:00:01.839Z",
+          "end_time": "2027-01-15T08:00:01.960Z",
+          "agent": "main",
+          "turn_index": 1,
+          "duration_ms": 120,
+          "duration_source": "reconstructed_between_hooks",
+          "output_size_bytes": 72,
+          "error_signature": null
+        },
+        {
+          "seq": 12,
+          "call_id": "toolu_0013",
+          "tool": "Read",
+          "category": "read",
+          "target": "out/m2.json",
+          "status": "success",
+          "start_time": "2027-01-15T08:00:02.000Z",
+          "end_time": "2027-01-15T08:00:02.119Z",
+          "agent": "main",
+          "turn_index": 1,
+          "duration_ms": 120,
+          "duration_source": "reconstructed_between_hooks",
+          "output_size_bytes": 128,
+          "error_signature": null
+        },
+        {
+          "seq": 13,
+          "call_id": "toolu_0014",
+          "tool": "Bash",
+          "category": "shell",
+          "target": "python check.py out/m2.json",
+          "status": "success",
+          "start_time": "2027-01-15T08:00:02.160Z",
+          "end_time": "2027-01-15T08:00:02.279Z",
+          "agent": "main",
+          "turn_index": 1,
+          "duration_ms": 120,
+          "duration_source": "reconstructed_between_hooks",
+          "output_size_bytes": 72,
+          "error_signature": null
+        },
+        {
+          "seq": 14,
+          "call_id": "toolu_0015",
+          "tool": "Bash",
+          "category": "shell",
+          "target": "python export.py data/m3.csv",
+          "status": "success",
+          "start_time": "2027-01-15T08:00:02.319Z",
+          "end_time": "2027-01-15T08:00:02.440Z",
+          "agent": "main",
+          "turn_index": 1,
+          "duration_ms": 120,
+          "duration_source": "reconstructed_between_hooks",
+          "output_size_bytes": 72,
+          "error_signature": null
+        },
+        {
+          "seq": 15,
+          "call_id": "toolu_0016",
+          "tool": "Read",
+          "category": "read",
+          "target": "out/m3.json",
+          "status": "success",
+          "start_time": "2027-01-15T08:00:02.480Z",
+          "end_time": "2027-01-15T08:00:02.599Z",
+          "agent": "main",
+          "turn_index": 1,
+          "duration_ms": 120,
+          "duration_source": "reconstructed_between_hooks",
+          "output_size_bytes": 128,
+          "error_signature": null
+        },
+        {
+          "seq": 16,
+          "call_id": "toolu_0017",
+          "tool": "Bash",
+          "category": "shell",
+          "target": "python check.py out/m3.json",
+          "status": "success",
+          "start_time": "2027-01-15T08:00:02.640Z",
+          "end_time": "2027-01-15T08:00:02.759Z",
+          "agent": "main",
+          "turn_index": 1,
+          "duration_ms": 120,
+          "duration_source": "reconstructed_between_hooks",
+          "output_size_bytes": 72,
+          "error_signature": null
+        }
+      ],
+      "evidence": {
+        "agent": "main",
+        "pattern": [
+          "Bash|shell|cmd:python:run|",
+          "Read|read|path.json|",
+          "Bash|shell|cmd:python:run|"
+        ],
+        "occurrences": 3,
+        "pattern_length": 3,
+        "occurrence_seqs": [
+          [
+            8,
+            9,
+            10
+          ],
+          [
+            11,
+            12,
+            13
+          ],
+          [
+            14,
+            15,
+            16
+          ]
+        ],
+        "judgment_steps": 0
+      },
+      "explanation": "La sequence Bash -> Read -> Bash apparait 3 fois avec la meme structure ; 3 position(s) ont une cible variable.",
+      "counter_indications": [
+        "Les decisions prises entre deux appels (lecture du resultat, choix de la cible suivante) ne sont pas observables.",
+        "Une structure stable n'implique pas une semantique stable (commandes shell notamment)."
+      ],
+      "missing_data": [
+        "contenu des resultats et raisonnement du modele non observes"
+      ],
+      "observed_cost": {
+        "calls": 9,
+        "output_bytes_sum": 816,
+        "output_bytes_known_for": 9,
+        "duration_client_ms_sum": null,
+        "duration_reconstructed_ms_sum": 1080,
+        "duration_unknown_for": 0,
+        "tokens": "non mesure",
+        "note": "sommes par provenance ; les appels paralleles ne sont pas convertis en temps mural economisable"
+      },
+      "proposal": {
+        "type": "deterministic_recipe_candidate",
+        "recipe": {
+          "name": "Bash -> Read -> Bash",
+          "inputs": [
+            {
+              "step": 1,
+              "example": "python export.py data/m1.csv"
+            },
+            {
+              "step": 2,
+              "example": "out/m1.json"
+            },
+            {
+              "step": 3,
+              "example": "python check.py out/m1.json"
+            }
+          ],
+          "preconditions": [
+            "les cibles existent et sont accessibles",
+            "les memes outils/serveurs MCP sont disponibles",
+            "aucune etape ne depend d'une decision prise pendant l'execution (a verifier)"
+          ],
+          "steps": [
+            {
+              "position": 1,
+              "tool": "Bash",
+              "category": "shell",
+              "kind": "mechanical",
+              "reason": "meme commande, chemins substitues",
+              "example_target": "python export.py data/m1.csv",
+              "variable": true,
+              "statuses": [
+                "success"
+              ]
+            },
+            {
+              "position": 2,
+              "tool": "Read",
+              "category": "read",
+              "kind": "mechanical",
+              "reason": "structure stable, cible variable",
+              "example_target": "out/m1.json",
+              "variable": true,
+              "statuses": [
+                "success"
+              ]
+            },
+            {
+              "position": 3,
+              "tool": "Bash",
+              "category": "shell",
+              "kind": "mechanical",
+              "reason": "meme commande, chemins substitues",
+              "example_target": "python check.py out/m1.json",
+              "variable": true,
+              "statuses": [
+                "success"
+              ]
+            }
+          ],
+          "output": "shell sur 'python check.py out/m1.json' (derniere etape)",
+          "tests": [
+            "rejouer la recette sur les occurrences enregistrees (donnees seulement, sans executer les commandes)",
+            "comparer les empreintes de resultat de chaque etape avec celles observees"
+          ],
+          "risks": [
+            "les etapes de jugement restent a la charge du modele ou d'un humain",
+            "une commande shell peut avoir des effets non observes",
+            "un motif repete n'implique pas que la tache soit sans intelligence : candidat a valider"
+          ]
+        },
+        "text": "Candidat de script/recette a valider manuellement ; AgentWatch ne le genere ni ne l'execute."
+      },
+      "validation_protocol": [
+        "Verifier sur 2 occurrences que les entrees variables suffisent a reproduire chaque etape.",
+        "Ecrire la recette, l'executer sur une copie, comparer les sorties avec les empreintes observees.",
+        "Marquer le signalement : agentwatch feedback --finding <id> --mark relevant|false-positive."
+      ],
+      "finding_id": "04ab98f662626379",
+      "feedback": null
+    },
+    {
+      "rule_id": "D.automation_candidates",
+      "rule_version": "1.0",
+      "kind": "recurring_pattern",
+      "title": "Motif recurrent (3x) : Bash -> Bash -> Read",
+      "confidence": "medium",
+      "confidence_rationale": "3 occurrences ; 1 etape(s) de jugement ou occurrences au seuil. Le niveau de confiance est heuristique, pas une probabilite calibree.",
+      "calls": [
+        "main|toolu_0008",
+        "main|toolu_0009",
+        "main|toolu_0010",
+        "main|toolu_0011",
+        "main|toolu_0012",
+        "main|toolu_0013",
+        "main|toolu_0014",
+        "main|toolu_0015",
+        "main|toolu_0016"
+      ],
+      "call_refs": [
+        {
+          "seq": 7,
+          "call_id": "toolu_0008",
+          "tool": "Bash",
+          "category": "shell",
+          "target": "python build.py",
+          "status": "error",
+          "start_time": "2027-01-15T08:00:01.200Z",
+          "end_time": "2027-01-15T08:00:01.319Z",
+          "agent": "main",
+          "turn_index": 1,
+          "duration_ms": 120,
+          "duration_source": "reconstructed_between_hooks",
+          "output_size_bytes": null,
+          "error_signature": "Exit code <n>: ModuleNotFoundError: No module named 'toolz'"
+        },
+        {
+          "seq": 8,
+          "call_id": "toolu_0009",
+          "tool": "Bash",
+          "category": "shell",
+          "target": "python export.py data/m1.csv",
+          "status": "success",
+          "start_time": "2027-01-15T08:00:01.359Z",
+          "end_time": "2027-01-15T08:00:01.480Z",
+          "agent": "main",
+          "turn_index": 1,
+          "duration_ms": 120,
+          "duration_source": "reconstructed_between_hooks",
+          "output_size_bytes": 72,
+          "error_signature": null
+        },
+        {
+          "seq": 9,
+          "call_id": "toolu_0010",
+          "tool": "Read",
+          "category": "read",
+          "target": "out/m1.json",
+          "status": "success",
+          "start_time": "2027-01-15T08:00:01.519Z",
+          "end_time": "2027-01-15T08:00:01.640Z",
+          "agent": "main",
+          "turn_index": 1,
+          "duration_ms": 120,
+          "duration_source": "reconstructed_between_hooks",
+          "output_size_bytes": 128,
+          "error_signature": null
+        },
+        {
+          "seq": 10,
+          "call_id": "toolu_0011",
+          "tool": "Bash",
+          "category": "shell",
+          "target": "python check.py out/m1.json",
+          "status": "success",
+          "start_time": "2027-01-15T08:00:01.680Z",
+          "end_time": "2027-01-15T08:00:01.799Z",
+          "agent": "main",
+          "turn_index": 1,
+          "duration_ms": 120,
+          "duration_source": "reconstructed_between_hooks",
+          "output_size_bytes": 72,
+          "error_signature": null
+        },
+        {
+          "seq": 11,
+          "call_id": "toolu_0012",
+          "tool": "Bash",
+          "category": "shell",
+          "target": "python export.py data/m2.csv",
+          "status": "success",
+          "start_time": "2027-01-15T08:00:01.839Z",
+          "end_time": "2027-01-15T08:00:01.960Z",
+          "agent": "main",
+          "turn_index": 1,
+          "duration_ms": 120,
+          "duration_source": "reconstructed_between_hooks",
+          "output_size_bytes": 72,
+          "error_signature": null
+        },
+        {
+          "seq": 12,
+          "call_id": "toolu_0013",
+          "tool": "Read",
+          "category": "read",
+          "target": "out/m2.json",
+          "status": "success",
+          "start_time": "2027-01-15T08:00:02.000Z",
+          "end_time": "2027-01-15T08:00:02.119Z",
+          "agent": "main",
+          "turn_index": 1,
+          "duration_ms": 120,
+          "duration_source": "reconstructed_between_hooks",
+          "output_size_bytes": 128,
+          "error_signature": null
+        },
+        {
+          "seq": 13,
+          "call_id": "toolu_0014",
+          "tool": "Bash",
+          "category": "shell",
+          "target": "python check.py out/m2.json",
+          "status": "success",
+          "start_time": "2027-01-15T08:00:02.160Z",
+          "end_time": "2027-01-15T08:00:02.279Z",
+          "agent": "main",
+          "turn_index": 1,
+          "duration_ms": 120,
+          "duration_source": "reconstructed_between_hooks",
+          "output_size_bytes": 72,
+          "error_signature": null
+        },
+        {
+          "seq": 14,
+          "call_id": "toolu_0015",
+          "tool": "Bash",
+          "category": "shell",
+          "target": "python export.py data/m3.csv",
+          "status": "success",
+          "start_time": "2027-01-15T08:00:02.319Z",
+          "end_time": "2027-01-15T08:00:02.440Z",
+          "agent": "main",
+          "turn_index": 1,
+          "duration_ms": 120,
+          "duration_source": "reconstructed_between_hooks",
+          "output_size_bytes": 72,
+          "error_signature": null
+        },
+        {
+          "seq": 15,
+          "call_id": "toolu_0016",
+          "tool": "Read",
+          "category": "read",
+          "target": "out/m3.json",
+          "status": "success",
+          "start_time": "2027-01-15T08:00:02.480Z",
+          "end_time": "2027-01-15T08:00:02.599Z",
+          "agent": "main",
+          "turn_index": 1,
+          "duration_ms": 120,
+          "duration_source": "reconstructed_between_hooks",
+          "output_size_bytes": 128,
+          "error_signature": null
+        }
+      ],
+      "evidence": {
+        "agent": "main",
+        "pattern": [
+          "Bash|shell|cmd:python:run|",
+          "Bash|shell|cmd:python:run|",
+          "Read|read|path.json|"
+        ],
+        "occurrences": 3,
+        "pattern_length": 3,
+        "occurrence_seqs": [
+          [
+            7,
+            8,
+            9
+          ],
+          [
+            10,
+            11,
+            12
+          ],
+          [
+            13,
+            14,
+            15
+          ]
+        ],
+        "judgment_steps": 1
+      },
+      "explanation": "La sequence Bash -> Bash -> Read apparait 3 fois avec la meme structure ; 3 position(s) ont une cible variable.",
+      "counter_indications": [
+        "Les decisions prises entre deux appels (lecture du resultat, choix de la cible suivante) ne sont pas observables.",
+        "Une structure stable n'implique pas une semantique stable (commandes shell notamment)."
+      ],
+      "missing_data": [
+        "contenu des resultats et raisonnement du modele non observes"
+      ],
+      "observed_cost": {
+        "calls": 9,
+        "output_bytes_sum": 744,
+        "output_bytes_known_for": 8,
+        "duration_client_ms_sum": null,
+        "duration_reconstructed_ms_sum": 1080,
+        "duration_unknown_for": 0,
+        "tokens": "non mesure",
+        "note": "sommes par provenance ; les appels paralleles ne sont pas convertis en temps mural economisable"
+      },
+      "proposal": {
+        "type": "deterministic_recipe_candidate",
+        "recipe": {
+          "name": "Bash -> Bash -> Read",
+          "inputs": [
+            {
+              "step": 1,
+              "example": "python build.py"
+            },
+            {
+              "step": 2,
+              "example": "python export.py data/m1.csv"
+            },
+            {
+              "step": 3,
+              "example": "out/m1.json"
+            }
+          ],
+          "preconditions": [
+            "les cibles existent et sont accessibles",
+            "les memes outils/serveurs MCP sont disponibles",
+            "aucune etape ne depend d'une decision prise pendant l'execution (a verifier)"
+          ],
+          "steps": [
+            {
+              "position": 1,
+              "tool": "Bash",
+              "category": "shell",
+              "kind": "judgment",
+              "reason": "meme commande, chemins substitues ; statut variable selon l'occurrence (branchement)",
+              "example_target": "python build.py",
+              "variable": true,
+              "statuses": [
+                "error",
+                "success"
+              ]
+            },
+            {
+              "position": 2,
+              "tool": "Bash",
+              "category": "shell",
+              "kind": "mechanical",
+              "reason": "meme commande, chemins substitues",
+              "example_target": "python export.py data/m1.csv",
+              "variable": true,
+              "statuses": [
+                "success"
+              ]
+            },
+            {
+              "position": 3,
+              "tool": "Read",
+              "category": "read",
+              "kind": "mechanical",
+              "reason": "structure stable, cible variable",
+              "example_target": "out/m1.json",
+              "variable": true,
+              "statuses": [
+                "success"
+              ]
+            }
+          ],
+          "output": "read sur 'out/m1.json' (derniere etape)",
+          "tests": [
+            "rejouer la recette sur les occurrences enregistrees (donnees seulement, sans executer les commandes)",
+            "comparer les empreintes de resultat de chaque etape avec celles observees"
+          ],
+          "risks": [
+            "les etapes de jugement restent a la charge du modele ou d'un humain",
+            "une commande shell peut avoir des effets non observes",
+            "un motif repete n'implique pas que la tache soit sans intelligence : candidat a valider"
+          ]
+        },
+        "text": "Candidat de script/recette a valider manuellement ; AgentWatch ne le genere ni ne l'execute."
+      },
+      "validation_protocol": [
+        "Verifier sur 2 occurrences que les entrees variables suffisent a reproduire chaque etape.",
+        "Ecrire la recette, l'executer sur une copie, comparer les sorties avec les empreintes observees.",
+        "Marquer le signalement : agentwatch feedback --finding <id> --mark relevant|false-positive."
+      ],
+      "finding_id": "21c16da7c7ebcfb4",
+      "feedback": null
+    }
+  ],
+  "no_issue_statement": null,
+  "stats": {
+    "calls": 17,
+    "events": 37,
+    "status": {
+      "success": 14,
+      "error": 3
+    },
+    "tools": [
+      {
+        "tool": "Bash",
+        "calls": 9,
+        "errors": 3,
+        "unknown_status": 0,
+        "open": 0,
+        "output_bytes": 432,
+        "output_known_for": 6,
+        "client_duration_median_ms": null,
+        "client_duration_n": 0,
+        "reconstructed_duration_median_ms": 120,
+        "reconstructed_duration_n": 9
+      },
+      {
+        "tool": "Read",
+        "calls": 7,
+        "errors": 0,
+        "unknown_status": 0,
+        "open": 0,
+        "output_bytes": 880,
+        "output_known_for": 7,
+        "client_duration_median_ms": null,
+        "client_duration_n": 0,
+        "reconstructed_duration_median_ms": 120,
+        "reconstructed_duration_n": 7
+      },
+      {
+        "tool": "Glob",
+        "calls": 1,
+        "errors": 0,
+        "unknown_status": 0,
+        "open": 0,
+        "output_bytes": 133,
+        "output_known_for": 1,
+        "client_duration_median_ms": 5,
+        "client_duration_n": 1,
+        "reconstructed_duration_median_ms": null,
+        "reconstructed_duration_n": 0
+      }
+    ],
+    "error_signatures": [
+      {
+        "signature": "Exit code <n>: ModuleNotFoundError: No module named 'toolz'",
+        "count": 3
+      }
+    ],
+    "largest_outputs": [
+      {
+        "seq": 0,
+        "call_id": "toolu_0001",
+        "tool": "Glob",
+        "category": "list",
+        "target": ".",
+        "status": "success",
+        "start_time": "2027-01-15T08:00:00.079Z",
+        "end_time": "2027-01-15T08:00:00.200Z",
+        "agent": "main",
+        "turn_index": 1,
+        "duration_ms": 5,
+        "duration_source": "client_mcp_durationMs",
+        "output_size_bytes": 133,
+        "error_signature": null
+      },
+      {
+        "seq": 9,
+        "call_id": "toolu_0010",
+        "tool": "Read",
+        "category": "read",
+        "target": "out/m1.json",
+        "status": "success",
+        "start_time": "2027-01-15T08:00:01.519Z",
+        "end_time": "2027-01-15T08:00:01.640Z",
+        "agent": "main",
+        "turn_index": 1,
+        "duration_ms": 120,
+        "duration_source": "reconstructed_between_hooks",
+        "output_size_bytes": 128,
+        "error_signature": null
+      },
+      {
+        "seq": 12,
+        "call_id": "toolu_0013",
+        "tool": "Read",
+        "category": "read",
+        "target": "out/m2.json",
+        "status": "success",
+        "start_time": "2027-01-15T08:00:02.000Z",
+        "end_time": "2027-01-15T08:00:02.119Z",
+        "agent": "main",
+        "turn_index": 1,
+        "duration_ms": 120,
+        "duration_source": "reconstructed_between_hooks",
+        "output_size_bytes": 128,
+        "error_signature": null
+      },
+      {
+        "seq": 15,
+        "call_id": "toolu_0016",
+        "tool": "Read",
+        "category": "read",
+        "target": "out/m3.json",
+        "status": "success",
+        "start_time": "2027-01-15T08:00:02.480Z",
+        "end_time": "2027-01-15T08:00:02.599Z",
+        "agent": "main",
+        "turn_index": 1,
+        "duration_ms": 120,
+        "duration_source": "reconstructed_between_hooks",
+        "output_size_bytes": 128,
+        "error_signature": null
+      },
+      {
+        "seq": 1,
+        "call_id": "toolu_0002",
+        "tool": "Read",
+        "category": "read",
+        "target": "src/a.py",
+        "status": "success",
+        "start_time": "2027-01-15T08:00:00.240Z",
+        "end_time": "2027-01-15T08:00:00.359Z",
+        "agent": "main",
+        "turn_index": 1,
+        "duration_ms": 120,
+        "duration_source": "reconstructed_between_hooks",
+        "output_size_bytes": 124,
+        "error_signature": null
+      }
+    ],
+    "longest_calls": [
+      {
+        "seq": 1,
+        "call_id": "toolu_0002",
+        "tool": "Read",
+        "category": "read",
+        "target": "src/a.py",
+        "status": "success",
+        "start_time": "2027-01-15T08:00:00.240Z",
+        "end_time": "2027-01-15T08:00:00.359Z",
+        "agent": "main",
+        "turn_index": 1,
+        "duration_ms": 120,
+        "duration_source": "reconstructed_between_hooks",
+        "output_size_bytes": 124,
+        "error_signature": null
+      },
+      {
+        "seq": 2,
+        "call_id": "toolu_0003",
+        "tool": "Read",
+        "category": "read",
+        "target": "src/b.py",
+        "status": "success",
+        "start_time": "2027-01-15T08:00:00.400Z",
+        "end_time": "2027-01-15T08:00:00.519Z",
+        "agent": "main",
+        "turn_index": 1,
+        "duration_ms": 120,
+        "duration_source": "reconstructed_between_hooks",
+        "output_size_bytes": 124,
+        "error_signature": null
+      },
+      {
+        "seq": 3,
+        "call_id": "toolu_0004",
+        "tool": "Read",
+        "category": "read",
+        "target": "src/c.py",
+        "status": "success",
+        "start_time": "2027-01-15T08:00:00.559Z",
+        "end_time": "2027-01-15T08:00:00.680Z",
+        "agent": "main",
+        "turn_index": 1,
+        "duration_ms": 120,
+        "duration_source": "reconstructed_between_hooks",
+        "output_size_bytes": 124,
+        "error_signature": null
+      },
+      {
+        "seq": 4,
+        "call_id": "toolu_0005",
+        "tool": "Read",
+        "category": "read",
+        "target": "src/a.py",
+        "status": "success",
+        "start_time": "2027-01-15T08:00:00.720Z",
+        "end_time": "2027-01-15T08:00:00.839Z",
+        "agent": "main",
+        "turn_index": 1,
+        "duration_ms": 120,
+        "duration_source": "reconstructed_between_hooks",
+        "output_size_bytes": 124,
+        "error_signature": null
+      },
+      {
+        "seq": 5,
+        "call_id": "toolu_0006",
+        "tool": "Bash",
+        "category": "shell",
+        "target": "python build.py",
+        "status": "error",
+        "start_time": "2027-01-15T08:00:00.880Z",
+        "end_time": "2027-01-15T08:00:01.000Z",
+        "agent": "main",
+        "turn_index": 1,
+        "duration_ms": 120,
+        "duration_source": "reconstructed_between_hooks",
+        "output_size_bytes": null,
+        "error_signature": "Exit code <n>: ModuleNotFoundError: No module named 'toolz'"
+      }
+    ],
+    "hook_overhead_ms": {
+      "n": 37,
+      "median": -10520028554.6,
+      "p90": -10520027411.4,
+      "max": -10520027216.0,
+      "note": "temps dans le processus du hook (hors demarrage de l'interpreteur)"
+    },
+    "correlation": {
+      "events": 37,
+      "duplicate_events": 0,
+      "invalid_events": 0,
+      "orphan_ends": 0,
+      "duplicate_phases": 0,
+      "open_calls": 0,
+      "heuristic_pairs": 0,
+      "unmapped_events": 0
+    },
+    "turns": 1,
+    "context_epochs": 1,
+    "agents": [
+      "main"
+    ],
+    "usage": {
+      "status": "non mesure",
+      "note": "aucune donnee d'usage fournie par les hooks ; voir agentwatch import-usage"
+    }
+  },
+  "coverage": [
+    {
+      "capability": "tool_start",
+      "documented": "supported",
+      "basis": "PreToolUse",
+      "observed_in_session": "observed"
+    },
+    {
+      "capability": "tool_end",
+      "documented": "supported",
+      "basis": "PostToolUse (succes uniquement)",
+      "observed_in_session": "observed"
+    },
+    {
+      "capability": "tool_failure",
+      "documented": "supported",
+      "basis": "PostToolUseFailure (erreur, refus, interruption)",
+      "observed_in_session": "observed"
+    },
+    {
+      "capability": "exit_code",
+      "documented": "absent",
+      "basis": "tool_response de Bash expose stdout/stderr/interrupted, pas de code de sortie",
+      "observed_in_session": "absent"
+    },
+    {
+      "capability": "client_duration",
+      "documented": "partial",
+      "basis": "PostToolUse.duration a partir de v2.1.267 ; durationMs pour certains outils MCP",
+      "observed_in_session": "observed"
+    },
+    {
+      "capability": "output_size",
+      "documented": "supported",
+      "basis": "taille du tool_response serialise tel que recu par le hook",
+      "observed_in_session": "observed"
+    },
+    {
+      "capability": "result_fingerprint",
+      "documented": "supported",
+      "basis": "empreinte HMAC du tool_response",
+      "observed_in_session": "observed"
+    },
+    {
+      "capability": "mcp_calls",
+      "documented": "supported",
+      "basis": "outils nommes mcp__<serveur>__<outil>",
+      "observed_in_session": "not_observed"
+    },
+    {
+      "capability": "subagents",
+      "documented": "supported",
+      "basis": "agent_id / agent_type dans l'entree des hooks",
+      "observed_in_session": "not_observed"
+    },
+    {
+      "capability": "compaction",
+      "documented": "supported",
+      "basis": "PreCompact / PostCompact",
+      "observed_in_session": "not_observed"
+    },
+    {
+      "capability": "interrupts",
+      "documented": "supported",
+      "basis": "PostToolUseFailure.is_interrupt",
+      "observed_in_session": "not_observed"
+    },
+    {
+      "capability": "turn_boundaries",
+      "documented": "supported",
+      "basis": "UserPromptSubmit / Stop (prompt_id a partir de v2.1.196)",
+      "observed_in_session": "observed"
+    },
+    {
+      "capability": "background_commands",
+      "documented": "partial",
+      "basis": "run_in_background : la fin reelle passe par BashOutput, non correlee",
+      "observed_in_session": "not_observed"
+    },
+    {
+      "capability": "hosted_tools",
+      "documented": "partial",
+      "basis": "WebFetch/WebSearch sont des outils locaux vus par les hooks ; pas de detail reseau",
+      "observed_in_session": "not_observed"
+    },
+    {
+      "capability": "long_commands_polling",
+      "documented": "partial",
+      "basis": "un appel long = un PreToolUse puis un PostToolUse ; le polling interne n'est pas visible",
+      "observed_in_session": "not_observed"
+    },
+    {
+      "capability": "token_usage",
+      "documented": "absent",
+      "basis": "non fourni aux hooks ; interface d'import OpenTelemetry seulement",
+      "observed_in_session": "absent"
+    }
+  ],
+  "calls": [
+    {
+      "seq": 0,
+      "call_id": "toolu_0001",
+      "tool": "Glob",
+      "category": "list",
+      "target": ".",
+      "status": "success",
+      "start_time": "2027-01-15T08:00:00.079Z",
+      "end_time": "2027-01-15T08:00:00.200Z",
+      "agent": "main",
+      "turn_index": 1,
+      "duration_ms": 5,
+      "duration_source": "client_mcp_durationMs",
+      "output_size_bytes": 133,
+      "error_signature": null,
+      "key": "main|toolu_0001",
+      "warnings": [],
+      "context_epoch": 0,
+      "target_key": "path:C:\\proj::.",
+      "params": {
+        "pattern": "src/*.py"
+      }
+    },
+    {
+      "seq": 1,
+      "call_id": "toolu_0002",
+      "tool": "Read",
+      "category": "read",
+      "target": "src/a.py",
+      "status": "success",
+      "start_time": "2027-01-15T08:00:00.240Z",
+      "end_time": "2027-01-15T08:00:00.359Z",
+      "agent": "main",
+      "turn_index": 1,
+      "duration_ms": 120,
+      "duration_source": "reconstructed_between_hooks",
+      "output_size_bytes": 124,
+      "error_signature": null,
+      "key": "main|toolu_0002",
+      "warnings": [],
+      "context_epoch": 0,
+      "target_key": "path:C:\\proj::src/a.py",
+      "params": {}
+    },
+    {
+      "seq": 2,
+      "call_id": "toolu_0003",
+      "tool": "Read",
+      "category": "read",
+      "target": "src/b.py",
+      "status": "success",
+      "start_time": "2027-01-15T08:00:00.400Z",
+      "end_time": "2027-01-15T08:00:00.519Z",
+      "agent": "main",
+      "turn_index": 1,
+      "duration_ms": 120,
+      "duration_source": "reconstructed_between_hooks",
+      "output_size_bytes": 124,
+      "error_signature": null,
+      "key": "main|toolu_0003",
+      "warnings": [],
+      "context_epoch": 0,
+      "target_key": "path:C:\\proj::src/b.py",
+      "params": {}
+    },
+    {
+      "seq": 3,
+      "call_id": "toolu_0004",
+      "tool": "Read",
+      "category": "read",
+      "target": "src/c.py",
+      "status": "success",
+      "start_time": "2027-01-15T08:00:00.559Z",
+      "end_time": "2027-01-15T08:00:00.680Z",
+      "agent": "main",
+      "turn_index": 1,
+      "duration_ms": 120,
+      "duration_source": "reconstructed_between_hooks",
+      "output_size_bytes": 124,
+      "error_signature": null,
+      "key": "main|toolu_0004",
+      "warnings": [],
+      "context_epoch": 0,
+      "target_key": "path:C:\\proj::src/c.py",
+      "params": {}
+    },
+    {
+      "seq": 4,
+      "call_id": "toolu_0005",
+      "tool": "Read",
+      "category": "read",
+      "target": "src/a.py",
+      "status": "success",
+      "start_time": "2027-01-15T08:00:00.720Z",
+      "end_time": "2027-01-15T08:00:00.839Z",
+      "agent": "main",
+      "turn_index": 1,
+      "duration_ms": 120,
+      "duration_source": "reconstructed_between_hooks",
+      "output_size_bytes": 124,
+      "error_signature": null,
+      "key": "main|toolu_0005",
+      "warnings": [],
+      "context_epoch": 0,
+      "target_key": "path:C:\\proj::src/a.py",
+      "params": {}
+    },
+    {
+      "seq": 5,
+      "call_id": "toolu_0006",
+      "tool": "Bash",
+      "category": "shell",
+      "target": "python build.py",
+      "status": "error",
+      "start_time": "2027-01-15T08:00:00.880Z",
+      "end_time": "2027-01-15T08:00:01.000Z",
+      "agent": "main",
+      "turn_index": 1,
+      "duration_ms": 120,
+      "duration_source": "reconstructed_between_hooks",
+      "output_size_bytes": null,
+      "error_signature": "Exit code <n>: ModuleNotFoundError: No module named 'toolz'",
+      "key": "main|toolu_0006",
+      "warnings": [],
+      "context_epoch": 0,
+      "target_key": "cmd:C:\\proj::python build.py",
+      "params": {
+        "command": "python build.py",
+        "shell_kind": "run",
+        "shell_heads": [
+          "python"
+        ],
+        "shell_paths": [
+          "build.py"
+        ]
+      }
+    },
+    {
+      "seq": 6,
+      "call_id": "toolu_0007",
+      "tool": "Bash",
+      "category": "shell",
+      "target": "python build.py",
+      "status": "error",
+      "start_time": "2027-01-15T08:00:01.039Z",
+      "end_time": "2027-01-15T08:00:01.160Z",
+      "agent": "main",
+      "turn_index": 1,
+      "duration_ms": 120,
+      "duration_source": "reconstructed_between_hooks",
+      "output_size_bytes": null,
+      "error_signature": "Exit code <n>: ModuleNotFoundError: No module named 'toolz'",
+      "key": "main|toolu_0007",
+      "warnings": [],
+      "context_epoch": 0,
+      "target_key": "cmd:C:\\proj::python build.py",
+      "params": {
+        "command": "python build.py",
+        "shell_kind": "run",
+        "shell_heads": [
+          "python"
+        ],
+        "shell_paths": [
+          "build.py"
+        ]
+      }
+    },
+    {
+      "seq": 7,
+      "call_id": "toolu_0008",
+      "tool": "Bash",
+      "category": "shell",
+      "target": "python build.py",
+      "status": "error",
+      "start_time": "2027-01-15T08:00:01.200Z",
+      "end_time": "2027-01-15T08:00:01.319Z",
+      "agent": "main",
+      "turn_index": 1,
+      "duration_ms": 120,
+      "duration_source": "reconstructed_between_hooks",
+      "output_size_bytes": null,
+      "error_signature": "Exit code <n>: ModuleNotFoundError: No module named 'toolz'",
+      "key": "main|toolu_0008",
+      "warnings": [],
+      "context_epoch": 0,
+      "target_key": "cmd:C:\\proj::python build.py",
+      "params": {
+        "command": "python build.py",
+        "shell_kind": "run",
+        "shell_heads": [
+          "python"
+        ],
+        "shell_paths": [
+          "build.py"
+        ]
+      }
+    },
+    {
+      "seq": 8,
+      "call_id": "toolu_0009",
+      "tool": "Bash",
+      "category": "shell",
+      "target": "python export.py data/m1.csv",
+      "status": "success",
+      "start_time": "2027-01-15T08:00:01.359Z",
+      "end_time": "2027-01-15T08:00:01.480Z",
+      "agent": "main",
+      "turn_index": 1,
+      "duration_ms": 120,
+      "duration_source": "reconstructed_between_hooks",
+      "output_size_bytes": 72,
+      "error_signature": null,
+      "key": "main|toolu_0009",
+      "warnings": [],
+      "context_epoch": 0,
+      "target_key": "cmd:C:\\proj::python export.py data/m1.csv",
+      "params": {
+        "command": "python export.py data/m1.csv",
+        "shell_kind": "run",
+        "shell_heads": [
+          "python"
+        ],
+        "shell_paths": [
+          "export.py",
+          "data/m1.csv"
+        ]
+      }
+    },
+    {
+      "seq": 9,
+      "call_id": "toolu_0010",
+      "tool": "Read",
+      "category": "read",
+      "target": "out/m1.json",
+      "status": "success",
+      "start_time": "2027-01-15T08:00:01.519Z",
+      "end_time": "2027-01-15T08:00:01.640Z",
+      "agent": "main",
+      "turn_index": 1,
+      "duration_ms": 120,
+      "duration_source": "reconstructed_between_hooks",
+      "output_size_bytes": 128,
+      "error_signature": null,
+      "key": "main|toolu_0010",
+      "warnings": [],
+      "context_epoch": 0,
+      "target_key": "path:C:\\proj::out/m1.json",
+      "params": {}
+    },
+    {
+      "seq": 10,
+      "call_id": "toolu_0011",
+      "tool": "Bash",
+      "category": "shell",
+      "target": "python check.py out/m1.json",
+      "status": "success",
+      "start_time": "2027-01-15T08:00:01.680Z",
+      "end_time": "2027-01-15T08:00:01.799Z",
+      "agent": "main",
+      "turn_index": 1,
+      "duration_ms": 120,
+      "duration_source": "reconstructed_between_hooks",
+      "output_size_bytes": 72,
+      "error_signature": null,
+      "key": "main|toolu_0011",
+      "warnings": [],
+      "context_epoch": 0,
+      "target_key": "cmd:C:\\proj::python check.py out/m1.json",
+      "params": {
+        "command": "python check.py out/m1.json",
+        "shell_kind": "run",
+        "shell_heads": [
+          "python"
+        ],
+        "shell_paths": [
+          "check.py",
+          "out/m1.json"
+        ]
+      }
+    },
+    {
+      "seq": 11,
+      "call_id": "toolu_0012",
+      "tool": "Bash",
+      "category": "shell",
+      "target": "python export.py data/m2.csv",
+      "status": "success",
+      "start_time": "2027-01-15T08:00:01.839Z",
+      "end_time": "2027-01-15T08:00:01.960Z",
+      "agent": "main",
+      "turn_index": 1,
+      "duration_ms": 120,
+      "duration_source": "reconstructed_between_hooks",
+      "output_size_bytes": 72,
+      "error_signature": null,
+      "key": "main|toolu_0012",
+      "warnings": [],
+      "context_epoch": 0,
+      "target_key": "cmd:C:\\proj::python export.py data/m2.csv",
+      "params": {
+        "command": "python export.py data/m2.csv",
+        "shell_kind": "run",
+        "shell_heads": [
+          "python"
+        ],
+        "shell_paths": [
+          "export.py",
+          "data/m2.csv"
+        ]
+      }
+    },
+    {
+      "seq": 12,
+      "call_id": "toolu_0013",
+      "tool": "Read",
+      "category": "read",
+      "target": "out/m2.json",
+      "status": "success",
+      "start_time": "2027-01-15T08:00:02.000Z",
+      "end_time": "2027-01-15T08:00:02.119Z",
+      "agent": "main",
+      "turn_index": 1,
+      "duration_ms": 120,
+      "duration_source": "reconstructed_between_hooks",
+      "output_size_bytes": 128,
+      "error_signature": null,
+      "key": "main|toolu_0013",
+      "warnings": [],
+      "context_epoch": 0,
+      "target_key": "path:C:\\proj::out/m2.json",
+      "params": {}
+    },
+    {
+      "seq": 13,
+      "call_id": "toolu_0014",
+      "tool": "Bash",
+      "category": "shell",
+      "target": "python check.py out/m2.json",
+      "status": "success",
+      "start_time": "2027-01-15T08:00:02.160Z",
+      "end_time": "2027-01-15T08:00:02.279Z",
+      "agent": "main",
+      "turn_index": 1,
+      "duration_ms": 120,
+      "duration_source": "reconstructed_between_hooks",
+      "output_size_bytes": 72,
+      "error_signature": null,
+      "key": "main|toolu_0014",
+      "warnings": [],
+      "context_epoch": 0,
+      "target_key": "cmd:C:\\proj::python check.py out/m2.json",
+      "params": {
+        "command": "python check.py out/m2.json",
+        "shell_kind": "run",
+        "shell_heads": [
+          "python"
+        ],
+        "shell_paths": [
+          "check.py",
+          "out/m2.json"
+        ]
+      }
+    },
+    {
+      "seq": 14,
+      "call_id": "toolu_0015",
+      "tool": "Bash",
+      "category": "shell",
+      "target": "python export.py data/m3.csv",
+      "status": "success",
+      "start_time": "2027-01-15T08:00:02.319Z",
+      "end_time": "2027-01-15T08:00:02.440Z",
+      "agent": "main",
+      "turn_index": 1,
+      "duration_ms": 120,
+      "duration_source": "reconstructed_between_hooks",
+      "output_size_bytes": 72,
+      "error_signature": null,
+      "key": "main|toolu_0015",
+      "warnings": [],
+      "context_epoch": 0,
+      "target_key": "cmd:C:\\proj::python export.py data/m3.csv",
+      "params": {
+        "command": "python export.py data/m3.csv",
+        "shell_kind": "run",
+        "shell_heads": [
+          "python"
+        ],
+        "shell_paths": [
+          "export.py",
+          "data/m3.csv"
+        ]
+      }
+    },
+    {
+      "seq": 15,
+      "call_id": "toolu_0016",
+      "tool": "Read",
+      "category": "read",
+      "target": "out/m3.json",
+      "status": "success",
+      "start_time": "2027-01-15T08:00:02.480Z",
+      "end_time": "2027-01-15T08:00:02.599Z",
+      "agent": "main",
+      "turn_index": 1,
+      "duration_ms": 120,
+      "duration_source": "reconstructed_between_hooks",
+      "output_size_bytes": 128,
+      "error_signature": null,
+      "key": "main|toolu_0016",
+      "warnings": [],
+      "context_epoch": 0,
+      "target_key": "path:C:\\proj::out/m3.json",
+      "params": {}
+    },
+    {
+      "seq": 16,
+      "call_id": "toolu_0017",
+      "tool": "Bash",
+      "category": "shell",
+      "target": "python check.py out/m3.json",
+      "status": "success",
+      "start_time": "2027-01-15T08:00:02.640Z",
+      "end_time": "2027-01-15T08:00:02.759Z",
+      "agent": "main",
+      "turn_index": 1,
+      "duration_ms": 120,
+      "duration_source": "reconstructed_between_hooks",
+      "output_size_bytes": 72,
+      "error_signature": null,
+      "key": "main|toolu_0017",
+      "warnings": [],
+      "context_epoch": 0,
+      "target_key": "cmd:C:\\proj::python check.py out/m3.json",
+      "params": {
+        "command": "python check.py out/m3.json",
+        "shell_kind": "run",
+        "shell_heads": [
+          "python"
+        ],
+        "shell_paths": [
+          "check.py",
+          "out/m3.json"
+        ]
+      }
+    }
+  ],
+  "markers": [
+    {
+      "phase": "session_start",
+      "time": "2027-01-15T08:00:00.000Z",
+      "agent_id": null,
+      "meta": {
+        "start_type": "startup",
+        "model": "synthetic-model",
+        "permission_mode": null
+      }
+    },
+    {
+      "phase": "turn_start",
+      "time": "2027-01-15T08:00:00.039Z",
+      "agent_id": null,
+      "meta": {
+        "prompt_chars": 16
+      }
+    },
+    {
+      "phase": "turn_end",
+      "time": "2027-01-15T08:00:02.799Z",
+      "agent_id": null,
+      "meta": {}
+    }
+  ]
+}

@@ -1,0 +1,139 @@
+# Compatibilite et preuves
+
+Date de verification : 2026-09-15. Machine : Windows 11 Pro 10.0.26200, Python 3.14.4
+(`C:\Python314\python.exe`), Git Bash et PowerShell 5.1 disponibles, WSL Ubuntu (Python
+3.12.3) present mais non utilise pour les tests.
+
+Vocabulaire des statuts : **documente** (lu dans la documentation officielle), **teste sur
+fixture** (payload synthetique ecrit d'apres la documentation), **verifie reellement**
+(observe avec le client installe), **indisponible** (non observable dans cet
+environnement).
+
+## Sources officielles consultees
+
+| URL de depart | URL finale (redirection officielle) | Contenu utilise |
+|---|---|---|
+| https://code.claude.com/docs/en/hooks | (pas de redirection) | evenements, champs d'entree, forme exec `command`+`args`, `matcher`, codes de sortie, emplacements des settings, Windows/PowerShell |
+| https://code.claude.com/docs/en/monitoring-usage | (pas de redirection) | OpenTelemetry : `claude_code.tool_result` (`tool_use_id`, `duration_ms`, tailles), `claude_code.api_request` (tokens), pas d'export fichier |
+| https://developers.openai.com/codex/hooks | https://learn.chatgpt.com/docs/hooks (308) | evenements, `hooks.json`, `commandWindows`, confiance des hooks, `PostToolUse` apres code non nul, outils herberges hors hooks |
+| https://developers.openai.com/codex/config-advanced | https://learn.chatgpt.com/docs/config-file/config-advanced (308) | `notify`, `[hooks]` inline, `[otel]`, `CODEX_HOME` |
+| https://learn.chatgpt.com/docs/config-file/config-reference | — | `features.hooks`, `history.persistence`, `mcp_servers.<id>.default_tools_approval_mode`, `approval_policy` |
+
+Complement non officiel (issue publique) : sous Windows, `commandWindows` est passe a
+PowerShell comme une instruction, d'ou l'operateur d'appel `&` (confirme par le smoke
+test reel ci-dessous).
+
+## Clients presents sur cette machine
+
+| Client | Version | Emplacement | Etat |
+|---|---|---|---|
+| Claude Code (CLI du PATH) | 2.1.87 | `~/.local/bin/claude.exe` | non authentifiee (« Not logged in — Please run /login ») : aucun hook ne se declenche avant l'authentification |
+| Claude Code (application de bureau) | 2.1.270 | `%APPDATA%\Claude\claude-code\2.1.270\claude.exe` | authentification portee par l'application, non transmise a un sous-processus (« OAuth session expired and could not be refreshed ») ; les hooks de session se declenchent quand meme |
+| Codex (application de bureau) | codex-cli 0.154.0-alpha.6.2 | `%LOCALAPPDATA%\OpenAI\Codex\bin\<hash>\codex.exe` (absent du PATH) | authentifie ; `features.hooks` = stable, actif par defaut |
+
+## Matrice de preuve
+
+| Capacite | Claude Code | Codex |
+|---|---|---|
+| Installation des hooks (diff, apply, idempotence, retrait, reglages etrangers preserves) | teste sur fixture (unittest) ; forme exec `command`+`args` verifiee reellement sur 2.1.270 | teste sur fixture ; commande PowerShell `& '...'` verifiee reellement via surcharges `-c` (equivalentes a `hooks.json`) |
+| `SessionStart` / `SessionEnd` | **verifie reellement** (2.1.270 : cles `cwd, hook_event_name, session_id, source, transcript_path` ; fin : `reason`) | **verifie reellement** |
+| `UserPromptSubmit` / `Stop` | **verifie reellement** (`prompt`, `prompt_id`, `permission_mode`) ; `Stop` non observe (echec d'authentification avant reponse) | **verifie reellement** |
+| `PreToolUse` / `PostToolUse` (shell) | documente + teste sur fixture ; **indisponible en direct** (authentification CLI requise) | **verifie reellement** : outil `Bash`, `tool_use_id` = `exec-<uuid>`, `turn_id`, `model` sur chaque evenement, `transcript_path`, `permission_mode` |
+| `PostToolUseFailure` | documente + teste sur fixture (`error`, `is_interrupt`) | n'existe pas (documente) |
+| Code de sortie d'une commande | absent (documente : `stdout`, `stderr`, `interrupted`) | **absent, verifie reellement** : `tool_response` est une chaine de sortie sans code ; AgentWatch laisse le statut `unknown` et pose un indice textuel d'erreur (heuristique) |
+| Appel MCP | documente (`mcp__<serveur>__<outil>`) + teste sur fixture | **verifie reellement** avec `tests/mcp_test_server.py` : `tool_response = {content, isError}` ; en mode `exec` il a fallu `mcp_servers.<id>.default_tools_approval_mode="approve"` (sinon refus « approval policy is never » et appel sans fin) |
+| Duree fournie par le client | partiel : `duration` sur `PostToolUse` a partir de 2.1.267 (documente, non observe) | absent |
+| Sous-agents | documente (`agent_id`, `agent_type`) + fixture | documente (`SubagentStart/Stop`) + fixture |
+| Compaction / reprise | documente (`PreCompact`, `PostCompact`, `session_start_type`) + fixture | documente + fixture |
+| Interruptions | documente (`is_interrupt`) + fixture | evenement `Interrupt` de session (documente + fixture) ; pas de statut par appel |
+| Commandes longues / polling | un appel = un debut + une fin ; aucun evenement intermediaire (documente) | idem |
+| Outils herberges (recherche web) | outils locaux `WebFetch`/`WebSearch` vus par les hooks (documente) | hors hooks (documente) |
+| Usage de tokens | absent des hooks ; interface d'import JSONL (`import-usage`) | absent des hooks ; `[otel]` exporte vers OTLP seulement |
+| Confiance des hooks | non requise | **requise** : approbation via `/hooks` (empreinte de la definition) ; en `exec`, `--dangerously-bypass-hook-trust` |
+
+## Smoke tests reels
+
+Script : `python tests/live_smoke.py --client codex|claude-code`. Il cree un dossier
+temporaire (README.txt, serveur MCP de test), lance le client avec les hooks AgentWatch
+dans un dossier de donnees temporaire, puis resume les evenements. Il utilise le compte
+deja connecte du client et ne modifie aucune configuration globale.
+
+Codex (2026-09-15, deux executions, la seconde avec approbation MCP) : 12 evenements
+(`SessionStart` 1, `UserPromptSubmit` 1, `PreToolUse` 4, `PostToolUse` 4, `Stop` 1,
+`SessionEnd` 1), 4 appels correles (3 shell, 1 MCP), aucun incident de collecte, cout
+dans le processus du hook 54 a 99 ms, duree du tour 39 s, 24 014 tokens rapportes par
+Codex lui-meme (non collectes par AgentWatch).
+
+Claude Code (2026-09-15) : impossible d'obtenir un tour complet (authentification), donc
+**aucune preuve reelle de `PreToolUse`/`PostToolUse`/`PostToolUseFailure` sur cette
+machine**. Preuve partielle avec 2.1.270 : 3 evenements de session enregistres, aucun
+incident, cout 26 a 48 ms. Pour completer : executer `claude login` (ou `/login`) dans un
+terminal, puis relancer le smoke test.
+
+## Mesure de la surcharge
+
+Protocole : `python -m agentwatch bench --runs 20` (sous-processus complet, payload
+`PreToolUse` de 200 octets, dossier temporaire, machine peu chargee) et `python -m
+agentwatch self-test`. Environnement ci-dessus.
+
+| Mesure | Valeur |
+|---|---|
+| temps mural median du hook, 20 executions | 44,6 ms (max 60,1 ms) |
+| interpreteur seul (`python -I -c pass`), meme protocole | 24,2 ms |
+| meme mesure pendant une charge concurrente (smoke tests en cours), 5 executions | 168 a 202 ms |
+| temps dans le processus (`evidence.hook_ms`), Codex reel | 54 a 99 ms |
+| temps dans le processus, Claude Code 2.1.270 reel | 26 a 48 ms |
+
+Chaque appel d'outil coute donc deux hooks (debut et fin), soit de l'ordre de 0,1 s a
+0,4 s selon la charge, sans compter le temps de spawn propre au client (non mesure). La
+surcharge n'est pas nulle et depend de la machine ; les valeurs ci-dessus sont des
+echantillons, pas des garanties. `pythonw.exe` (defaut sous Windows) : 39 ms median sur
+10 executions, identique a `python.exe`.
+
+Cote analyse (pas dans le hook) : sur une session synthetique de 1 073 appels (2 148
+evenements), la correlation prend 0,04 s et les quatre detecteurs 0,03 s, mais la
+premiere lecture de 2 148 petits fichiers prenait 28 s (13 ms par premiere ouverture,
+analyse antivirus Windows ; 0 ms a la seconde ouverture). D'ou la compaction automatique
+en segment JSONL au-dela de `auto_compact_threshold` fichiers : 802 evenements relus en
+23 ms apres compaction.
+
+Robustesse du hook verifiee en sous-processus (code 0, stdout vide, evenement ou
+incident enregistre) : JSON imbrique sur 3 000 niveaux, UTF-8 invalide, types inattendus
+(identifiants non textuels), chemins accentues avec espaces, sortie de 2 Mo, stdin vide,
+stdin tronque par `max_stdin_bytes`.
+
+## Defauts Windows trouves par les tests repetes
+
+- Descripteur `os.open` sans `O_BINARY` : mode texte, `0x0A` ecrit comme `0x0D 0x0A`.
+  Consequence observee : cle HMAC de 33 octets une fois sur ~15 (coherente entre hooks
+  car tous relisent le fichier, mais incorrecte). Corrige ; test deterministe ajoute.
+- Course a la creation de la cle : `os.replace` pouvait ecraser la cle d'un hook
+  concurrent, et un echec transitoire laissait un hook signer avec une cle jamais
+  persistee. Corrige : creation sans ecrasement (`os.rename` Windows / `os.link` POSIX),
+  relecture systematique du disque, incident journalise sinon. Test a 8 processus.
+- `os.replace` refuse par un `PermissionError` transitoire (antivirus) : retente.
+
+## Ce qui n'a pas ete verifie en direct
+
+- Codex : le fichier `~/.codex/hooks.json` ecrit par `configure` n'a pas ete charge par
+  une session reelle (les smoke tests passent les memes definitions via `-c`, forme
+  documentee comme equivalente) ; la portee projet `.codex/hooks.json` exige en plus que
+  le projet soit marque de confiance.
+- Codex : l'approbation d'un hook via `/hooks` (interface interactive) n'a pas ete
+  exercee ; en `exec` elle a ete contournee par `--dangerously-bypass-hook-trust`.
+- Claude Code : tout ce qui suit l'authentification (appels d'outils, `PostToolUse`,
+  `PostToolUseFailure`, `duration`, sous-agents, compaction).
+- `pythonw.exe` : verifie avec des tubes stdin/stdout crees par Python ; non observe
+  lance par Codex ou Claude Code eux-memes.
+
+## Limites connues
+
+- Les hooks n'observent pas : le contenu des raisonnements, la presence d'un resultat
+  dans le contexte du modele, les modifications externes, les outils herberges de Codex,
+  la sortie d'une commande en arriere-plan apres son lancement.
+- Codex : pas de code de sortie ni de duree ; statut d'une commande shell `unknown`
+  (indice textuel seulement) ; approbation manuelle des hooks obligatoire.
+- Claude Code : `duration` et `prompt_id` dependent de la version (>= 2.1.267 et
+  >= 2.1.196) ; le CLI du PATH est en 2.1.87.
+- Linux / macOS / WSL : non executes.
+- Journaux natifs (transcripts JSONL, rollouts Codex) : non lus en V1, volontairement.

@@ -1,0 +1,158 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "'python3' -I 'C:/chemin/vers/Auto_Mcp/agentwatch/hook_entry.py' ingest --client codex --home 'C:/Users/<vous>/.agentwatch'",
+            "commandWindows": "& 'C:/Python314/python.exe' -I 'C:\\chemin\\vers\\Auto_Mcp\\agentwatch\\hook_entry.py' ingest --client codex --home 'C:\\Users\\<vous>\\.agentwatch'",
+            "timeout": 10,
+            "statusMessage": "AgentWatch"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "'python3' -I 'C:/chemin/vers/Auto_Mcp/agentwatch/hook_entry.py' ingest --client codex --home 'C:/Users/<vous>/.agentwatch'",
+            "commandWindows": "& 'C:/Python314/python.exe' -I 'C:\\chemin\\vers\\Auto_Mcp\\agentwatch\\hook_entry.py' ingest --client codex --home 'C:\\Users\\<vous>\\.agentwatch'",
+            "timeout": 10,
+            "statusMessage": "AgentWatch"
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "'python3' -I 'C:/chemin/vers/Auto_Mcp/agentwatch/hook_entry.py' ingest --client codex --home 'C:/Users/<vous>/.agentwatch'",
+            "commandWindows": "& 'C:/Python314/python.exe' -I 'C:\\chemin\\vers\\Auto_Mcp\\agentwatch\\hook_entry.py' ingest --client codex --home 'C:\\Users\\<vous>\\.agentwatch'",
+            "timeout": 10,
+            "statusMessage": "AgentWatch"
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "'python3' -I 'C:/chemin/vers/Auto_Mcp/agentwatch/hook_entry.py' ingest --client codex --home 'C:/Users/<vous>/.agentwatch'",
+            "commandWindows": "& 'C:/Python314/python.exe' -I 'C:\\chemin\\vers\\Auto_Mcp\\agentwatch\\hook_entry.py' ingest --client codex --home 'C:\\Users\\<vous>\\.agentwatch'",
+            "timeout": 10,
+            "statusMessage": "AgentWatch"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "'python3' -I 'C:/chemin/vers/Auto_Mcp/agentwatch/hook_entry.py' ingest --client codex --home 'C:/Users/<vous>/.agentwatch'",
+            "commandWindows": "& 'C:/Python314/python.exe' -I 'C:\\chemin\\vers\\Auto_Mcp\\agentwatch\\hook_entry.py' ingest --client codex --home 'C:\\Users\\<vous>\\.agentwatch'",
+            "timeout": 10,
+            "statusMessage": "AgentWatch"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "'python3' -I 'C:/chemin/vers/Auto_Mcp/agentwatch/hook_entry.py' ingest --client codex --home 'C:/Users/<vous>/.agentwatch'",
+            "commandWindows": "& 'C:/Python314/python.exe' -I 'C:\\chemin\\vers\\Auto_Mcp\\agentwatch\\hook_entry.py' ingest --client codex --home 'C:\\Users\\<vous>\\.agentwatch'",
+            "timeout": 10,
+            "statusMessage": "AgentWatch"
+          }
+        ]
+      }
+    ],
+    "Interrupt": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "'python3' -I 'C:/chemin/vers/Auto_Mcp/agentwatch/hook_entry.py' ingest --client codex --home 'C:/Users/<vous>/.agentwatch'",
+            "commandWindows": "& 'C:/Python314/python.exe' -I 'C:\\chemin\\vers\\Auto_Mcp\\agentwatch\\hook_entry.py' ingest --client codex --home 'C:\\Users\\<vous>\\.agentwatch'",
+            "timeout": 10,
+            "statusMessage": "AgentWatch"
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "'python3' -I 'C:/chemin/vers/Auto_Mcp/agentwatch/hook_entry.py' ingest --client codex --home 'C:/Users/<vous>/.agentwatch'",
+            "commandWindows": "& 'C:/Python314/python.exe' -I 'C:\\chemin\\vers\\Auto_Mcp\\agentwatch\\hook_entry.py' ingest --client codex --home 'C:\\Users\\<vous>\\.agentwatch'",
+            "timeout": 10,
+            "statusMessage": "AgentWatch"
+          }
+        ]
+      }
+    ],
+    "PostCompact": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "'python3' -I 'C:/chemin/vers/Auto_Mcp/agentwatch/hook_entry.py' ingest --client codex --home 'C:/Users/<vous>/.agentwatch'",
+            "commandWindows": "& 'C:/Python314/python.exe' -I 'C:\\chemin\\vers\\Auto_Mcp\\agentwatch\\hook_entry.py' ingest --client codex --home 'C:\\Users\\<vous>\\.agentwatch'",
+            "timeout": 10,
+            "statusMessage": "AgentWatch"
+          }
+        ]
+      }
+    ],
+    "SubagentStart": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "'python3' -I 'C:/chemin/vers/Auto_Mcp/agentwatch/hook_entry.py' ingest --client codex --home 'C:/Users/<vous>/.agentwatch'",
+            "commandWindows": "& 'C:/Python314/python.exe' -I 'C:\\chemin\\vers\\Auto_Mcp\\agentwatch\\hook_entry.py' ingest --client codex --home 'C:\\Users\\<vous>\\.agentwatch'",
+            "timeout": 10,
+            "statusMessage": "AgentWatch"
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "'python3' -I 'C:/chemin/vers/Auto_Mcp/agentwatch/hook_entry.py' ingest --client codex --home 'C:/Users/<vous>/.agentwatch'",
+            "commandWindows": "& 'C:/Python314/python.exe' -I 'C:\\chemin\\vers\\Auto_Mcp\\agentwatch\\hook_entry.py' ingest --client codex --home 'C:\\Users\\<vous>\\.agentwatch'",
+            "timeout": 10,
+            "statusMessage": "AgentWatch"
+          }
+        ]
+      }
+    ]
+  }
+}
