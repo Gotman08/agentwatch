@@ -71,7 +71,9 @@ def compute_stats(view: SessionView) -> dict[str, Any]:
             row["unknown_status"] += 1
         elif c.status == STATUS_OPEN:
             row["open"] += 1
-        if isinstance(c.output_size_bytes, int):
+        # * Edit/Write enregistres avant le schema 1.1 : taille = fichier recopie, non mesuree.
+        echo_only = c.category in (S.CAT_EDIT, S.CAT_WRITE) and (c.output_size_source or "") == "serialized_tool_response"
+        if isinstance(c.output_size_bytes, int) and not echo_only:
             row["output_bytes"] += c.output_size_bytes
             row["output_known"] += 1
         if isinstance(c.duration_ms, int):

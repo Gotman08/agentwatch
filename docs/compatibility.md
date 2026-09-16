@@ -105,6 +105,17 @@ incident enregistre) : JSON imbrique sur 3 000 niveaux, UTF-8 invalide, types in
 (identifiants non textuels), chemins accentues avec espaces, sortie de 2 Mo, stdin vide,
 stdin tronque par `max_stdin_bytes`.
 
+## Observations de cycle de vie (Claude Code 2.1.270, session de bureau)
+
+- Un appel `Edit` refuse a la validation de l'entree (« No changes to make », ancien et
+  nouveau texte identiques) a emis `PreToolUse` mais ni `PostToolUse` ni
+  `PostToolUseFailure` : l'appel reste `open` dans AgentWatch. Observe une fois ; un
+  appel ouvert n'est donc pas forcement en cours.
+- Un sous-agent interrompu par le chien de garde du client (« no progress for 600s »)
+  n'a emis aucun `SubagentStop` ; sa reprise (`SendMessage`) a emis un second
+  `SubagentStart` avec le meme `agent_id`. AgentWatch garde le premier debut, compte les
+  reprises et considere l'agent en cours tant qu'aucun arret ne suit le dernier debut.
+
 ## Defauts Windows trouves par les tests repetes
 
 - Descripteur `os.open` sans `O_BINARY` : mode texte, `0x0A` ecrit comme `0x0D 0x0A`.

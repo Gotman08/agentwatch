@@ -179,8 +179,9 @@ def render_markdown(report: dict[str, Any]) -> str:
             tokens = (f"in {_fmt(u.get('input_tokens'))} / out {_fmt(u.get('output_tokens'))} / cache lu {_fmt(u.get('cache_read_tokens'))}"
                       f" / total {_fmt(u.get('total_tokens'))}") if u else "non rapportes"
             parent = f"#{a['parent_call_seq']} (Agent)" if a.get("parent_call_seq") is not None else "aucun lien"
-            lines.append(f"| `{a['agent_id'][:12]}` | {a.get('agent_type') or 'inconnu'} | {a['classification']} | {a['calls']} | "
-                         f"{a.get('start_time') or '?'} -> {a.get('stop_time') or '?'} | {parent} | {a.get('link_basis') or '-'} | "
+            status_txt = a["classification"] + (f" (repris {a['resumes']}x)" if a.get("resumes") else "")
+            lines.append(f"| `{a['agent_id'][:12]}` | {a.get('agent_type') or 'inconnu'} | {status_txt} | {a['calls']} | "
+                         f"{a.get('start_time') or '?'} -> {a.get('stop_time') or 'en cours'} | {parent} | {a.get('link_basis') or '-'} | "
                          f"{a.get('model') or 'inconnu'} | {tokens} |")
         lines.append("")
         if internal:

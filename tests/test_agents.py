@@ -63,6 +63,23 @@ class AgentLinkTests(unittest.TestCase):
         self.assertIsNone(c.parent_call_key)
         self.assertTrue(c.link_basis and c.link_basis.startswith("ambiguous"))
 
+    def test_resumed_agent_keeps_first_start_and_counts_resumes(self) -> None:
+        s = Synth(self.home, session_id="ag6")
+        s.session_start(); s.user_prompt()
+        s.emit(s._base("PreToolUse", tool_name="Agent", tool_input={"subagent_type": "general-purpose"}, tool_use_id="p"))
+        s.emit(s._base("SubagentStart", agent_id="agent-R", agent_type="general-purpose"))
+        s.set_agent("agent-R", "general-purpose"); s.read("a.py", "A"); s.set_agent(None)
+        s.emit(s._base("SubagentStop", agent_id="agent-R", agent_type="general-purpose", stop_hook_active=False))   # interruption
+        s.tick(5000)
+        # * prompt_id different : en rejeu, deux payloads identiques partageraient le meme event_id.
+        s.emit(s._base("SubagentStart", agent_id="agent-R", agent_type="general-purpose", prompt_id="resume-1"))       # reprise
+        s.set_agent("agent-R", "general-purpose"); s.read("b.py", "B"); s.set_agent(None)
+        v = s.view()
+        r = next(a for a in v.agent_infos if a.agent_id == "agent-R")
+        first_start = min(m.time for m in v.markers if m.phase == "subagent_start" and m.agent_id == "agent-R" and m.time)
+        self.assertEqual((r.start_time, r.resumes, r.calls), (first_start, 1, 2))
+        self.assertIsNone(r.stop_time, "un debut posterieur au dernier arret : l'agent tourne encore")
+
     def test_stop_only_agent_is_classified_not_guessed(self) -> None:
         s = Synth(self.home, session_id="ag4")
         s.session_start(); s.user_prompt()

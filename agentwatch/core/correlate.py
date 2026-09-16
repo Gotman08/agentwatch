@@ -140,6 +140,7 @@ class AgentInfo:
     start_time: str | None
     stop_time: str | None
     calls: int
+    resumes: int
     parent_call_key: str | None
     parent_call_seq: int | None
     link_basis: str | None         # exact:tool_response.agentId | temporal_containment | ambiguous | None
@@ -323,9 +324,15 @@ def _build_agents(view: SessionView) -> list[AgentInfo]:
             s = slot(m.agent_id)
             s["type"] = s["type"] or m.meta.get("agent_type")
             if m.phase == S.PHASE_SUBAGENT_START:
-                s["start"], s["start_ns"] = m.time, m.ns
+                # * Un agent repris re-emet SubagentStart : on garde le premier debut et on compte.
+                s["starts"] = s.get("starts", 0) + 1
+                s["last_start_ns"] = max(s.get("last_start_ns") or 0, m.ns)
+                if s["start_ns"] is None or m.ns < s["start_ns"]:
+                    s["start"], s["start_ns"] = m.time, m.ns
             else:
-                s["stop"], s["stop_ns"] = m.time, m.ns
+                s["stops"] = s.get("stops", 0) + 1
+                if s["stop_ns"] is None or m.ns > s["stop_ns"]:
+                    s["stop"], s["stop_ns"] = m.time, m.ns
     for c in view.calls:
         if c.agent_id:
             s = slot(c.agent_id)
@@ -354,9 +361,16 @@ def _build_agents(view: SessionView) -> list[AgentInfo]:
         else:
             classification, note = "stop_only", ("seulement un SubagentStop : aucun appel observe ; agent interne du client "
                                                   "ou demarre avant l'installation des hooks")
+        starts, stops = s.get("starts", 0), s.get("stops", 0)
+        # ? Un agent repris apres interruption : plus de debuts que d'arrets acheves. Un arret
+        #   suivi d'un nouveau debut signale la reprise ; le dernier arret fait foi pour la fin.
+        resumes = max(0, starts - 1)
+        last_start_ns = s.get("last_start_ns")
+        # * L'arret ne compte que s'il suit le DERNIER debut ; sinon l'agent a ete repris et tourne encore.
+        stop_time = s["stop"] if s["stop_ns"] and (not last_start_ns or s["stop_ns"] >= last_start_ns) else None
         infos.append(AgentInfo(
             agent_id=aid, agent_type=s["type"], classification=classification, classification_note=note,
-            start_time=s["start"], stop_time=s["stop"], calls=len(s["calls"]),
+            start_time=s["start"], stop_time=stop_time, calls=len(s["calls"]), resumes=resumes,
             parent_call_key=parent.key if parent else None, parent_call_seq=parent.seq if parent else None,
             link_basis=basis, model=(parent.evidence.get("spawned_agent_model") if parent else None),
             client_duration_ms=(parent.evidence.get("spawned_agent_duration_ms") if parent else None),
