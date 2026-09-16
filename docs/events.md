@@ -32,10 +32,27 @@ un statut absent est `unknown`, jamais `success`.
 | `duration_ms`, `duration_source` | int/null, str | `client`, `client_mcp_durationMs` ; la reconstruction entre hooks est faite a l'analyse |
 | `resource_state` | {revision, source, freshness}/null | pour `Read` (Claude Code) : empreinte du contenu lu |
 | `result_paths` | liste/null | chemins retournes par un listage/recherche (borne) |
-| `usage` | objet/null | tokens importes (`import-usage`), jamais deduits |
+| `usage` | objet/null | tokens rapportes par le client (Claude Code : reponse de l'outil `Agent`, portee `agent`, observe en 2.1.270) ou importes (`import-usage`) ; jamais deduits |
 | `session_meta` | objet/null | `start_type`, `end_type`, `compact_type`, ... |
 | `warnings` | liste | limites rencontrees pour cet evenement |
 | `evidence` | objet | `payload_keys`, `tool_response_keys`, `stdin_bytes`, `hook_ms`, indices (`error_hint`, `status_basis`, ...) |
+
+## Sous-agents (Claude Code)
+
+Le rapport contient une section `agents` : identifiant, type, classification
+(`subagent` : demarrage et/ou appels observes ; `stop_only` : seulement un `SubagentStop`,
+sans appel, agent interne du client ou demarre avant l'installation des hooks), appels,
+debut et fin, appel `Agent` parent et base du lien :
+
+- `exact:tool_response.agentId` : la reponse de l'outil `Agent` porte l'identifiant du
+  sous-agent (observe sur 2.1.270, avec `agentType`, `resolvedModel`, `status`,
+  `toolStats`, `totalDurationMs`, `totalTokens`, `usage`) ;
+- `temporal_containment (heuristique)` : un seul appel `Agent` du fil principal englobe
+  la vie du sous-agent ;
+- `ambiguous (...)` : plusieurs appels `Agent` candidats, aucun lien retenu.
+
+Les detecteurs ne comparent jamais deux agents entre eux. La cle `duration_ms` du
+`PostToolUse` (observee en direct ; la documentation cite `duration`) fournit la duree client.
 
 ## Correspondance des evenements
 

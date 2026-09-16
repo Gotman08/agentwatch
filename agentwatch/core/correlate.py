@@ -70,6 +70,7 @@ class Call:
     event_ids: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     evidence: dict[str, Any] = field(default_factory=dict)
+    usage: dict[str, Any] | None = None
     ambiguous: bool = False
     has_start: bool = False
     has_end: bool = False
@@ -121,11 +122,30 @@ class Marker:
 
 
 @dataclass
+class AgentInfo:
+    """Un agent (sous-agent ou agent interne) observe dans la session."""
+    agent_id: str
+    agent_type: str | None
+    classification: str            # subagent | stop_only | calls_only
+    classification_note: str
+    start_time: str | None
+    stop_time: str | None
+    calls: int
+    parent_call_key: str | None
+    parent_call_seq: int | None
+    link_basis: str | None         # exact:tool_response.agentId | temporal_containment | ambiguous | None
+    model: str | None
+    client_duration_ms: int | None
+    usage: dict[str, Any] | None
+
+
+@dataclass
 class SessionView:
     client: str
     session_id: str | None
     calls: list[Call] = field(default_factory=list)
     markers: list[Marker] = field(default_factory=list)
+    agent_infos: list[AgentInfo] = field(default_factory=list)
     model: str | None = None
     project_dir: str | None = None
     warnings: list[str] = field(default_factory=list)
@@ -269,7 +289,70 @@ def build_session(events: list[dict[str, Any]], cfg: dict[str, Any]) -> SessionV
     view.turns = turn_index
     view.epochs = epoch + 1
     view.agents = list(agents)
+    view.agent_infos = _build_agents(view)
     return view
+
+
+def _build_agents(view: SessionView) -> list[AgentInfo]:
+    """Resume par agent et lien avec l'appel Agent du fil principal qui l'a lance.
+
+    # * Lien exact quand la reponse de l'outil Agent porte l'identifiant du sous-agent
+    #   (observe sur Claude Code 2.1.270). Sinon, inclusion temporelle dans un unique appel
+    #   Agent du fil principal : heuristique, signalee comme telle. Plusieurs candidats :
+    #   ambigu, aucun lien invente.
+    """
+    ids: dict[str, dict[str, Any]] = {}
+
+    def slot(aid: str) -> dict[str, Any]:
+        return ids.setdefault(aid, {"type": None, "start": None, "stop": None, "start_ns": None, "stop_ns": None,
+                                    "calls": [], "first_ns": None, "last_ns": None})
+
+    for m in view.markers:
+        if m.phase in (S.PHASE_SUBAGENT_START, S.PHASE_SUBAGENT_STOP) and m.agent_id:
+            s = slot(m.agent_id)
+            s["type"] = s["type"] or m.meta.get("agent_type")
+            if m.phase == S.PHASE_SUBAGENT_START:
+                s["start"], s["start_ns"] = m.time, m.ns
+            else:
+                s["stop"], s["stop_ns"] = m.time, m.ns
+    for c in view.calls:
+        if c.agent_id:
+            s = slot(c.agent_id)
+            s["type"] = s["type"] or c.agent_type
+            s["calls"].append(c)
+    spawners = [c for c in view.calls if c.agent_id is None and c.category == S.CAT_AGENT]
+    exact = {c.evidence.get("spawned_agent_id"): c for c in spawners if c.evidence.get("spawned_agent_id")}
+    infos: list[AgentInfo] = []
+    for aid, s in ids.items():
+        call_ns = [c.order_ns for c in s["calls"] if c.order_ns]
+        first_ns = min([n for n in (s["start_ns"], *call_ns) if n] or [0]) or None
+        last_ns = max([n for n in (s["stop_ns"], *call_ns) if n] or [0]) or None
+        parent: Call | None = exact.get(aid)
+        basis: str | None = "exact:tool_response.agentId" if parent else None
+        if parent is None and first_ns:
+            cands = [c for c in spawners if c.start_ns and c.start_ns <= first_ns
+                     and (c.end_ns is None or (last_ns or first_ns) <= c.end_ns)]
+            if len(cands) == 1:
+                parent, basis = cands[0], "temporal_containment (heuristique)"
+                if s["type"] and cands[0].params.get("subagent_type") not in (None, s["type"]):
+                    basis += " ; type different de subagent_type"
+            elif len(cands) > 1:
+                basis = f"ambiguous ({len(cands)} appels Agent candidats, aucun lien retenu)"
+        if s["calls"] or s["start"]:
+            classification, note = "subagent", "sous-agent observe (demarrage et/ou appels d'outils)"
+        else:
+            classification, note = "stop_only", ("seulement un SubagentStop : aucun appel observe ; agent interne du client "
+                                                  "ou demarre avant l'installation des hooks")
+        infos.append(AgentInfo(
+            agent_id=aid, agent_type=s["type"], classification=classification, classification_note=note,
+            start_time=s["start"], stop_time=s["stop"], calls=len(s["calls"]),
+            parent_call_key=parent.key if parent else None, parent_call_seq=parent.seq if parent else None,
+            link_basis=basis, model=(parent.evidence.get("spawned_agent_model") if parent else None),
+            client_duration_ms=(parent.evidence.get("spawned_agent_duration_ms") if parent else None),
+            usage=(parent.usage if parent else None),
+        ))
+    infos.sort(key=lambda a: (a.start_time or a.stop_time or ""))
+    return infos
 
 
 def _apply_tool_event(ev: dict[str, Any], phase: str, ns: int, agent: str, epoch: int, turn_index: int | None,
@@ -335,17 +418,21 @@ def _apply_tool_event(ev: dict[str, Any], phase: str, ns: int, agent: str, epoch
             call.result_paths = ev["result_paths"]
         if isinstance(ev.get("duration_ms"), int):
             call.duration_ms, call.duration_source = ev["duration_ms"], ev.get("duration_source") or "client"
-        for k in ("result_count", "numLines", "totalLines", "stdout_chars", "stderr_chars", "status_basis", "exit_code_source", "error_hint"):
+        for k in ("result_count", "numLines", "totalLines", "stdout_chars", "stderr_chars", "status_basis", "exit_code_source", "error_hint",
+                  "spawned_agent_id", "spawned_agent_type", "spawned_agent_model", "spawned_agent_status",
+                  "spawned_agent_duration_ms", "spawned_agent_tool_calls", "spawned_agent_tool_stats"):
             if k in (ev.get("evidence") or {}):
                 call.evidence[k] = ev["evidence"][k]
+        if isinstance(ev.get("usage"), dict):
+            call.usage = ev["usage"]
         lst = open_by_agent.get(agent, [])
         if call in lst:
             lst.remove(call)
     else:  # observation complementaire : n'ecrase pas les valeurs connues
         if isinstance(ev.get("duration_ms"), int) and call.duration_ms is None:
             call.duration_ms, call.duration_source = ev["duration_ms"], ev.get("duration_source") or "observation"
-        if ev.get("usage"):
-            call.warnings.append("usage observation attached")
+        if isinstance(ev.get("usage"), dict) and call.usage is None:
+            call.usage = ev["usage"]
     for w in ev.get("warnings") or []:
         if w not in call.warnings:
             call.warnings.append(w)

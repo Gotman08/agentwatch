@@ -226,12 +226,15 @@ class ClaudeCodeAdapter:
         ev["warnings"].extend(warns)
         if err:
             ev["error_summary"] = err
-        dur = payload.get("duration")
+        # * Observe en direct (2.1.270) : la cle est `duration_ms` ; la documentation cite `duration`.
+        dur = payload.get("duration_ms", payload.get("duration"))
         if isinstance(dur, (int, float)) and not isinstance(dur, bool):
             ev["duration_ms"], ev["duration_source"] = int(dur), "client"
         elif isinstance(resp, dict) and isinstance(resp.get("durationMs"), (int, float)):
             # * Observe en direct sur Glob (2.1.270) ; documente aussi pour certains outils MCP.
             ev["duration_ms"], ev["duration_source"] = int(resp["durationMs"]), "client_durationMs"
+        if isinstance(resp, dict) and ev["tool_name"] in ("Agent", "Task"):
+            self._parse_agent_response(ev, resp)
         if isinstance(resp, dict):
             ev["output_truncated"] = resp.get("truncated") if isinstance(resp.get("truncated"), bool) else None
             if ev["tool_category"] == S.CAT_SHELL:
@@ -262,6 +265,50 @@ class ClaudeCodeAdapter:
             text = _excerpt_source(resp)
             if text:
                 ev["evidence"]["excerpt"] = text[: int(cfg.get("detailed_excerpt_chars", 240))]
+
+
+    def _parse_agent_response(self, ev: dict[str, Any], resp: dict[str, Any]) -> None:
+        """Reponse de l'outil Agent, observee en direct sur 2.1.270 : identifiant et type du
+        sous-agent lance, modele resolu, statut, duree et usage rapportes par le client.
+
+        # * Ni `prompt` ni `content` ne sont conserves : uniquement des identifiants et des nombres.
+        # * L'usage est etiquete scope=agent, source=reponse de l'outil : ce n'est pas une mesure
+        #   d'AgentWatch et il ne couvre pas le fil principal.
+        """
+        aid = resp.get("agentId")
+        ev["evidence"]["spawned_agent_id"] = aid if isinstance(aid, str) else None
+        ev["evidence"]["spawned_agent_type"] = _str(resp.get("agentType"))
+        ev["evidence"]["spawned_agent_model"] = _str(resp.get("resolvedModel"))
+        ev["evidence"]["spawned_agent_status"] = _str(resp.get("status"))
+        for key, label in (("totalDurationMs", "spawned_agent_duration_ms"), ("totalToolUseCount", "spawned_agent_tool_calls")):
+            v = resp.get(key)
+            if isinstance(v, (int, float)) and not isinstance(v, bool):
+                ev["evidence"][label] = int(v)
+        stats = resp.get("toolStats")
+        if isinstance(stats, dict):
+            ev["evidence"]["spawned_agent_tool_stats"] = {str(k): v for k, v in list(stats.items())[:30]
+                                                          if isinstance(v, (int, float)) and not isinstance(v, bool)}
+        raw_usage = resp.get("usage")
+        usage: dict[str, Any] = raw_usage if isinstance(raw_usage, dict) else {}
+        total = resp.get("totalTokens")
+        if usage or isinstance(total, int):
+            ev["usage"] = {
+                "scope": "agent", "source": "claude-code:Agent.tool_response", "agent_id": ev["evidence"]["spawned_agent_id"],
+                "input_tokens": _first_int(usage, "input_tokens", "inputTokens"),
+                "output_tokens": _first_int(usage, "output_tokens", "outputTokens"),
+                "cache_read_tokens": _first_int(usage, "cache_read_input_tokens", "cache_read_tokens", "cacheReadInputTokens"),
+                "cache_creation_tokens": _first_int(usage, "cache_creation_input_tokens", "cache_creation_tokens", "cacheCreationInputTokens"),
+                "total_tokens": total if isinstance(total, int) and not isinstance(total, bool) else None,
+                "raw_keys": sorted(str(k) for k in usage)[:20],
+            }
+
+
+def _first_int(d: dict[str, Any], *keys: str) -> int | None:
+    for k in keys:
+        v = d.get(k)
+        if isinstance(v, (int, float)) and not isinstance(v, bool):
+            return int(v)
+    return None
 
 
 def _excerpt_source(resp: Any) -> str | None:

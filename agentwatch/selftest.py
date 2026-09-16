@@ -165,6 +165,32 @@ class Synth:
     def mcp(self, server: str, tool: str, tool_input: dict[str, Any], text: str = "ok", **kw: Any) -> str:
         return self.call(f"mcp__{server}__{tool}", tool_input, [{"type": "text", "text": text}], **kw)
 
+    # ---------------------------------------------------------------- sous-agents (Claude Code)
+    def agent_run(self, agent_type: str, body: Any, agent_id: str = "agent-synth", *, with_agent_id: bool = True,
+                  usage: dict[str, Any] | None = None, start_marker: bool = True, background: bool = False) -> str:
+        """Appel Agent du fil principal encadrant un sous-agent : SubagentStart, appels de `body`,
+        SubagentStop, puis PostToolUse de l'outil Agent avec la forme de reponse observee sur 2.1.270."""
+        cid = self._call_id()
+        tool_input = {"subagent_type": agent_type, "prompt": "synthetic", "run_in_background": background}
+        self.emit(self._base("PreToolUse", tool_name="Agent", tool_input=tool_input, tool_use_id=cid), gap_ms=30)
+        if start_marker:
+            self.emit(self._base("SubagentStart", agent_id=agent_id, agent_type=agent_type))
+        previous = self.agent
+        self.set_agent(agent_id, agent_type)
+        body()
+        self.agent = previous
+        self.emit(self._base("SubagentStop", agent_id=agent_id, agent_type=agent_type, stop_hook_active=False, last_assistant_message="done"))
+        resp: dict[str, Any] = {"agentType": agent_type, "content": "synthetic result", "status": "completed",
+                                "resolvedModel": "synthetic-sub-model", "totalDurationMs": 900, "totalToolUseCount": 2,
+                                "toolStats": {"Read": 2}, "prompt": "synthetic"}
+        if with_agent_id:
+            resp["agentId"] = agent_id
+        if usage:
+            resp["usage"] = usage
+            resp["totalTokens"] = sum(v for v in usage.values() if isinstance(v, int))
+        self.emit(self._base("PostToolUse", tool_name="Agent", tool_input=tool_input, tool_use_id=cid, tool_response=resp, duration_ms=1000))
+        return cid
+
     # ---------------------------------------------------------------- vue
     def view(self) -> SessionView:
         store = EventStore(self.home, self.cfg)

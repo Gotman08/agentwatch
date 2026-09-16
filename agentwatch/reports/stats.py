@@ -29,7 +29,7 @@ CAPABILITIES: dict[str, dict[str, tuple[str, str]]] = {
         "background_commands": ("partial", "run_in_background : la fin reelle passe par BashOutput, non correlee"),
         "hosted_tools": ("partial", "WebFetch/WebSearch sont des outils locaux vus par les hooks ; pas de detail reseau"),
         "long_commands_polling": ("partial", "un appel long = un PreToolUse puis un PostToolUse ; le polling interne n'est pas visible"),
-        "token_usage": ("absent", "non fourni aux hooks ; interface d'import OpenTelemetry seulement"),
+        "token_usage": ("partial", "sous-agents : usage rapporte dans la reponse de l'outil Agent (observe 2.1.270) ; fil principal : absent, import seulement"),
     },
     CLIENT_CODEX: {
         "tool_start": ("supported", "PreToolUse"),
@@ -103,7 +103,24 @@ def compute_stats(view: SessionView) -> dict[str, Any]:
         "hook_overhead_ms": _describe(view.hook_ms_samples),
         "correlation": dict(view.counts),
         "turns": view.turns, "context_epochs": view.epochs, "agents": view.agents,
-        "usage": {"status": "non mesure", "note": "aucune donnee d'usage fournie par les hooks ; voir agentwatch import-usage"},
+        "usage": _usage_summary(view),
+    }
+
+
+def _usage_summary(view: SessionView) -> dict[str, Any]:
+    """Usage en tokens : uniquement ce que le client rapporte, avec source et perimetre."""
+    rows = []
+    for a in view.agent_infos:
+        if a.usage:
+            rows.append({"agent_id": a.agent_id, "agent_type": a.agent_type, "model": a.model, **a.usage})
+    imported = [c.usage for c in view.calls if c.usage and c.usage.get("source") not in (None, "claude-code:Agent.tool_response")]
+    if not rows and not imported:
+        return {"status": "non mesure", "note": "aucune donnee d'usage fournie par les hooks pour le fil principal ; voir agentwatch import-usage",
+                "agents": [], "imported": []}
+    return {
+        "status": f"rapporte par le client pour {len(rows)} sous-agent(s) (portee : agent) ; non mesure pour le fil principal",
+        "note": "valeurs telles que fournies dans la reponse de l'outil Agent ; aucune conversion ni estimation de cout",
+        "agents": rows, "imported": imported,
     }
 
 
@@ -136,7 +153,7 @@ def coverage_matrix(view: SessionView) -> list[dict[str, Any]]:
         "background_commands": any(c.params.get("run_in_background") for c in calls),
         "hosted_tools": any(c.category == S.CAT_WEB for c in calls),
         "long_commands_polling": any(isinstance(c.duration_ms, int) and c.duration_ms > 30000 for c in calls),
-        "token_usage": False,
+        "token_usage": any(c.usage for c in calls),
     }
     rows = []
     for cap, (status, basis) in caps.items():

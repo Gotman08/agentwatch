@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import asdict
 from typing import Any
 
 from agentwatch import SCHEMA_VERSION, __version__
@@ -39,6 +40,7 @@ def build_report(view: SessionView, stats: dict[str, Any], coverage: list[dict[s
         "no_issue_statement": None if ranked else "Aucun probleme demontre dans les donnees couvertes.",
         "stats": stats,
         "coverage": coverage,
+        "agents": [asdict(a) for a in view.agent_infos],
         "calls": [c.summary() | {"key": c.key, "warnings": c.warnings, "context_epoch": c.context_epoch,
                                   "target_key": c.target_key, "params": c.params} for c in view.calls],
         "markers": [{"phase": m.phase, "time": m.time, "agent_id": m.agent_id, "meta": m.meta} for m in view.markers],

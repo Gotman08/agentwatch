@@ -150,6 +150,23 @@ def render_markdown(report: dict[str, Any]) -> str:
         lines.append("Appels les plus longs (source de la duree indiquee) :")
         lines += [f"- #{c['seq']} {c['tool']} {c['target']!r} : {c['duration_ms']} ms ({c['duration_source']})" for c in st["longest_calls"]]
         lines.append("")
+    agents = report.get("agents") or []
+    if agents:
+        lines += ["## Agents", "",
+                  "| Agent | Type | Statut | Appels | Debut -> fin | Lance par | Base du lien | Modele | Tokens (rapportes par le client) |",
+                  "|---|---|---|---|---|---|---|---|---|"]
+        for a in agents:
+            u = a.get("usage") or {}
+            tokens = (f"in {_fmt(u.get('input_tokens'))} / out {_fmt(u.get('output_tokens'))} / cache lu {_fmt(u.get('cache_read_tokens'))}"
+                      f" / total {_fmt(u.get('total_tokens'))}") if u else "non rapportes"
+            parent = f"#{a['parent_call_seq']} (Agent)" if a.get("parent_call_seq") is not None else "aucun lien"
+            lines.append(f"| `{a['agent_id'][:12]}` | {a.get('agent_type') or 'inconnu'} | {a['classification']} | {a['calls']} | "
+                         f"{a.get('start_time') or '?'} -> {a.get('stop_time') or '?'} | {parent} | {a.get('link_basis') or '-'} | "
+                         f"{a.get('model') or 'inconnu'} | {tokens} |")
+        lines.append("")
+        notes = sorted({a["classification_note"] for a in agents})
+        lines += [f"- {n}" for n in notes]
+        lines.append("")
     lines += ["## Couverture", "", "| Capacite | Documente | Observe dans cette session | Base |", "|---|---|---|---|"]
     for r in report["coverage"]:
         lines.append(f"| {r['capability']} | {r['documented']} | {r['observed_in_session']} | {r['basis']} |")

@@ -109,7 +109,9 @@ class ReportTests(unittest.TestCase):
         js = json.loads(self._run("report", "--session", "clean", "--format", "json"))
         self.assertEqual(js["findings"], [])
         self.assertEqual(js["session"]["model"], "synthetic-model")
-        self.assertTrue(any(r["capability"] == "token_usage" and r["documented"] == "absent" for r in js["coverage"]))
+        self.assertTrue(any(r["capability"] == "token_usage" and r["documented"] in ("absent", "partial")
+                            and r["observed_in_session"] == "not_observed" for r in js["coverage"]))
+        self.assertEqual(js["stats"]["usage"]["status"], "non mesure")
 
     def test_report_with_findings_and_feedback(self) -> None:
         s = Synth(self.home, session_id="busy")
