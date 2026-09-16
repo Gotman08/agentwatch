@@ -67,6 +67,23 @@ def _is_abs(path: str) -> bool:
     return os.path.isabs(path) or re.match(r"^[A-Za-z]:[\\/]", path) is not None or path.startswith("/")
 
 
+_MSYS_RE = re.compile(r"^/(?:mnt/)?([A-Za-z])(/|$)")
+
+
+def _unmsys(path: str) -> str:
+    """Sous Windows, `/c/Users/x` (Git Bash, MSYS) et `/mnt/c/Users/x` (WSL) designent `C:/Users/x`.
+
+    # * Observe en direct : les commandes emises depuis Git Bash citent le projet sous cette
+    #   forme, ce qui empechait de rattacher leurs chemins au projet.
+    """
+    if os.name != "nt":
+        return path
+    m = _MSYS_RE.match(path)
+    if not m:
+        return path
+    return m.group(1).upper() + ":/" + path[m.end():]
+
+
 def normalize_path(path: str | None, project_dir: str | None, cwd: str | None) -> str | None:
     """Chemin en separateurs '/', relatif au projet s'il est dessous, sinon absolu.
 
@@ -75,14 +92,15 @@ def normalize_path(path: str | None, project_dir: str | None, cwd: str | None) -
     """
     if not path or not isinstance(path, str):
         return None
-    p = to_posix(path.strip().strip('"').strip("'"))
+    p = _unmsys(to_posix(path.strip().strip('"').strip("'")))
     if not p:
         return None
+    cwd = _unmsys(to_posix(cwd)) if cwd else cwd
     if not _is_abs(p) and cwd:
         p = to_posix(os.path.normpath(os.path.join(cwd, p)))
     elif _is_abs(p):
         p = to_posix(os.path.normpath(p))
-    root = to_posix(os.path.normpath(project_dir)) if project_dir else None
+    root = to_posix(os.path.normpath(_unmsys(to_posix(project_dir)))) if project_dir else None
     if root:
         fold = os.name == "nt"
         a, b = (p.lower(), root.lower()) if fold else (p, root)

@@ -91,6 +91,15 @@ class NormalizeTests(unittest.TestCase):
         outside = "D:\\other\\x.py" if os.name == "nt" else "/other/x.py"
         self.assertEqual(N.normalize_path(outside, proj, proj), outside.replace("\\", "/"))
 
+    @unittest.skipUnless(os.name == "nt", "formes MSYS/WSL : Windows seulement")
+    def test_msys_and_wsl_paths_map_to_the_project(self) -> None:
+        proj = "C:\\Users\\me\\proj"
+        self.assertEqual(N.normalize_path("/c/Users/me/proj/src/a.py", proj, proj), "src/a.py")
+        self.assertEqual(N.normalize_path("/mnt/c/Users/me/proj/src/a.py", proj, proj), "src/a.py")
+        self.assertEqual(N.normalize_path("src/a.py", proj, "/c/Users/me/proj"), "src/a.py")
+        self.assertEqual(N.normalize_path("/c/other/x.py", proj, proj), "C:/other/x.py")
+        self.assertEqual(N.normalize_path("/usr/bin/env", proj, proj), "/usr/bin/env")
+
     def test_shell_classification_is_conservative(self) -> None:
         self.assertEqual(N.classify_shell("cat a.txt | grep x")["kind"], "read")
         self.assertEqual(N.classify_shell("git status && git log -3")["kind"], "read")

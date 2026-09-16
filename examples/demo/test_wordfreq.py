@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import unittest
 
-from wordfreq import tokenize, top_words
+import json
+
+from wordfreq import format_rows, tokenize, top_words
 
 
 class WordFreqTests(unittest.TestCase):
@@ -20,6 +22,11 @@ class WordFreqTests(unittest.TestCase):
 
     def test_top_limits_result(self) -> None:
         self.assertEqual(len(top_words("x y z x y z w", top=3)), 3)
+
+    def test_format_rows_text_and_json(self) -> None:
+        rows = [("été", 3), ("ami", 1)]
+        self.assertEqual(format_rows(rows), "     3  été\n     1  ami")
+        self.assertEqual(json.loads(format_rows(rows, as_json=True)), [{"word": "été", "count": 3}, {"word": "ami", "count": 1}])
 
 
 if __name__ == "__main__":
