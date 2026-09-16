@@ -90,7 +90,11 @@ def compute_stats(view: SessionView) -> dict[str, Any]:
             "reconstructed_duration_median_ms": int(median(row["reconstructed_durations"])) if row["reconstructed_durations"] else None,
             "reconstructed_duration_n": len(row["reconstructed_durations"]),
         })
-    biggest = sorted((c for c in calls if isinstance(c.output_size_bytes, int)), key=lambda c: c.output_size_bytes or 0, reverse=True)[:5]
+    # * Les Edit/Write enregistres avant la version 1.1 incluent le fichier recopie dans leur
+    #   taille : on les ecarte du classement plutot que d'afficher un faux volume.
+    biggest = sorted((c for c in calls if isinstance(c.output_size_bytes, int)
+                      and not (c.category in (S.CAT_EDIT, S.CAT_WRITE) and (c.output_size_source or "") == "serialized_tool_response")),
+                     key=lambda c: c.output_size_bytes or 0, reverse=True)[:5]
     longest = sorted((c for c in calls if isinstance(c.duration_ms, int)), key=lambda c: c.duration_ms or 0, reverse=True)[:5]
     return {
         "calls": len(calls),

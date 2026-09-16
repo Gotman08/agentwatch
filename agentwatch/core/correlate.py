@@ -57,6 +57,7 @@ class Call:
     error_signature: str | None = None
     error_summary: str | None = None
     output_size_bytes: int | None = None
+    output_size_source: str | None = None
     output_truncated: bool | None = None
     duration_ms: int | None = None
     duration_source: str | None = None
@@ -416,9 +417,12 @@ def _apply_tool_event(ev: dict[str, Any], phase: str, ns: int, agent: str, epoch
         call.end_ns, call.end_time = ns, ev.get("received_time")
         call.status = ev.get("status") or S.STATUS_UNKNOWN
         call.exit_code = ev.get("exit_code")
-        call.error_signature = ev.get("error_signature")
         call.error_summary = ev.get("error_summary")
+        # * Signature recalculee a l'analyse depuis le resume masque : les evenements anciens
+        #   beneficient des ameliorations de normalisation sans etre re-ingeres.
+        call.error_signature = (N.make_error_signature(call.error_summary) if call.error_summary else None) or ev.get("error_signature")
         call.output_size_bytes = ev.get("output_size_bytes")
+        call.output_size_source = ev.get("output_size_source")
         call.output_truncated = ev.get("output_truncated")
         rf = (ev.get("result_fingerprint") or {}).get("value")
         call.result_fingerprint = rf

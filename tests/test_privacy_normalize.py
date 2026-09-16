@@ -125,7 +125,7 @@ class NormalizeTests(unittest.TestCase):
         self.assertIsNone(N.make_error_signature("   "))
         # forme observee en direct : "Exit code N" seul, puis stdout et stderr melanges
         mixed = "Exit code 127\nbin\ninclude\n/usr/bin/bash: line 1: .venv/bin/python: No such file or directory"
-        self.assertEqual(N.make_error_signature(mixed), "Exit code <n> | <path>: line <n>: .venv/bin/python: No such file or directory")
+        self.assertEqual(N.make_error_signature(mixed), "Exit code <n> | <path>: line <n>: .venv<path>: No such file or directory")
         self.assertEqual(N.make_error_signature("Exit code 2\nsome output\nlast line"), "Exit code <n> | last line")
         self.assertNotEqual(N.make_error_signature("Exit code 1\nx\nModuleNotFoundError: a"), N.make_error_signature("Exit code 1\nx\nModuleNotFoundError: b"))
 
