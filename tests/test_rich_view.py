@@ -77,6 +77,14 @@ class RichViewTests(unittest.TestCase):
             self.assertTrue(out.startswith("# AgentWatch - rapport de session"))
             self.assertIn("-m pip install rich", self._run("doctor"))
 
+    def test_doctor_warns_when_home_is_under_appdata(self) -> None:
+        # * Piege constate : une application MSIX (Claude de bureau) redirige ses ecritures AppData.
+        from unittest import mock
+        with mock.patch.dict("os.environ", {"APPDATA": str(self.home.parent)}):
+            self.assertIn("sous AppData", self._run("doctor"))
+        with mock.patch.dict("os.environ", {"APPDATA": str(self.home / "ailleurs"), "LOCALAPPDATA": str(self.home / "ailleurs2")}):
+            self.assertNotIn("sous AppData", self._run("doctor"))
+
     def test_piped_report_is_utf8(self) -> None:
         # * Sous Windows un tube herite de la page de code locale (cp1252) : le JSON redirige doit rester de l'UTF-8.
         for fmt in ("json", "markdown"):

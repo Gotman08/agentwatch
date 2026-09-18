@@ -127,6 +127,21 @@ stdin tronque par `max_stdin_bytes`.
   relecture systematique du disque, incident journalise sinon. Test a 8 processus.
 - `os.replace` refuse par un `PermissionError` transitoire (antivirus) : retente.
 
+## Applications de bureau empaquetees (MSIX) : redirection d'AppData
+
+Constate le 2026-09-18 avec Claude de bureau (paquet `Claude_pzs8sxrjxfjjc`). Windows
+redirige les ecritures sous `%APPDATA%` et `%LOCALAPPDATA%` faites par l'application et ses
+processus enfants vers `AppData\Local\Packages\<paquet>\LocalCache\...`. Consequences :
+
+- Un `pip install --user` lance PAR L'AGENT installe le paquet dans ce dossier prive : il est
+  visible des outils de l'agent, pas de votre terminal. Rich a ainsi ete "installe" sans
+  l'etre pour l'utilisateur. Installez les dependances optionnelles depuis votre propre
+  terminal (`python -m pip install rich`).
+- Le dossier de donnees d'AgentWatch ne doit pas etre sous AppData, sinon les hooks (lances
+  par l'application) et la commande `report` (lancee dans votre terminal) ne verraient pas
+  les memes fichiers. Le defaut `~/.agentwatch` est hors AppData, donc non redirige ;
+  `doctor` avertit si `--home` ou `AGENTWATCH_HOME` pointe sous AppData.
+
 ## Ce qui n'a pas ete verifie en direct
 
 - Codex : le fichier `~/.codex/hooks.json` ecrit par `configure` n'a pas ete charge par

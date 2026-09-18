@@ -152,6 +152,10 @@ meme `python` que celui de `python -m agentwatch`. En cas d'absence, `--format r
 affiche le chemin exact de l'interpreteur et la commande d'installation correspondante ;
 `doctor` indique aussi si Rich est disponible.
 
+Lancez cette installation depuis votre propre terminal, pas depuis un agent : une application
+de bureau empaquetee (Claude sous Windows) redirige ses ecritures AppData vers un dossier
+prive, et le paquet resterait invisible pour vous (voir `docs/compatibility.md`).
+
 Avec Rich installe, `report --latest` dans un terminal interactif affiche des panneaux
 colores par confiance, des tableaux et des barres proportionnelles (appels, volumes,
 durees). `--format html` ou `--format svg` avec `--out` exportent ce rendu ; `--format

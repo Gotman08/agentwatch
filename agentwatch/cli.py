@@ -31,6 +31,21 @@ def _err(msg: str) -> None:
     print(msg, file=sys.stderr)
 
 
+def _under_appdata(path: Path) -> bool:
+    """Vrai si `path` est sous %APPDATA% ou %LOCALAPPDATA% (zones redirigees pour les applications MSIX)."""
+    try:
+        target = os.path.normcase(os.path.abspath(str(path)))
+    except (OSError, ValueError):
+        return False
+    for var in ("APPDATA", "LOCALAPPDATA"):
+        root = os.environ.get(var)
+        if root:
+            root = os.path.normcase(os.path.abspath(root))
+            if target == root or target.startswith(root + os.sep):
+                return True
+    return False
+
+
 def _install_meta_path(home: Path, client: str) -> Path:
     return home / INSTALL_DIRNAME / f"{client}.json"
 
@@ -298,6 +313,10 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     _out(f"AgentWatch {__version__} - diagnostic")
     _out(f"- Python : {sys.version.split()[0]} ({sys.executable}) ; plateforme {sys.platform}")
     _out(f"- Dossier de donnees : {home} ({'present' if home.is_dir() else 'absent, sera cree'})")
+    if _under_appdata(home):
+        _out("    ! ce dossier est sous AppData : une application de bureau empaquetee (MSIX, ex. Claude) redirige ses "
+             "ecritures AppData vers un dossier prive, donc les hooks et votre terminal ne verraient pas les memes fichiers. "
+             "Choisissez un dossier hors AppData (defaut : ~/.agentwatch).")
     _out(f"- Config : {cfg['_config_path']}" + (" ; avertissements : " + "; ".join(cfg["_config_warnings"]) if cfg["_config_warnings"] else ""))
     key_ok = (home / P.KEY_DIRNAME / P.KEY_FILENAME).is_file()
     _out(f"- Cle HMAC locale : {'presente' if key_ok else 'absente (creee au premier evenement)'}")
