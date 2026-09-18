@@ -23,3 +23,10 @@ Thumbs.db
 # Reglages locaux des clients (ne pas partager)
 .claude/settings.local.json
 .codex/
+
+# Rapports generes a la racine (donnees de session : jamais versionnees)
+/rapport*.json
+/rapport*.md
+/rapport*.html
+/rapport*.svg
+/rapport*.txt

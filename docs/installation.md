@@ -158,6 +158,11 @@ durees). `--format html` ou `--format svg` avec `--out` exportent ce rendu ; `--
 markdown` et `--format json` restent les sorties canoniques et ne dependent de rien.
 Le hook n'importe jamais Rich (verifie par un test).
 
+Pour ecrire un rapport dans un fichier, preferez `--out rapport.json` a la redirection `>` :
+`--out` ecrit toujours de l'UTF-8, alors que Windows PowerShell 5.1 reencode tout ce qui
+passe par `>` en UTF-16. Les fichiers `rapport*` a la racine du depot sont ignores par git,
+car ils contiennent des donnees de session.
+
 ## Reglages utiles (config.json)
 
 | Cle | Defaut | Effet |
