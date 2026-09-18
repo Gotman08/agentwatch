@@ -240,11 +240,13 @@ def build_session(events: list[dict[str, Any]], cfg: dict[str, Any]) -> SessionV
         ns: int = raw_ns if isinstance(raw_ns, int) else 0
         if view.session_id is None and ev.get("session_id"):
             view.session_id = ev["session_id"]
-        first_ns, last_ns = view.first_ns, view.last_ns
-        if first_ns is None or ns < first_ns:
-            view.first_ns, view.first_time = ns, ev.get("received_time")
-        if last_ns is None or ns > last_ns:
-            view.last_ns, view.last_time = ns, ev.get("received_time")
+        if ev.get("source") != S.SOURCE_IMPORT:
+            # * Un import (usage, transcript) date du moment de l'import : il ne deplace ni le debut ni la fin de la session.
+            first_ns, last_ns = view.first_ns, view.last_ns
+            if first_ns is None or ns < first_ns:
+                view.first_ns, view.first_time = ns, ev.get("received_time")
+            if last_ns is None or ns > last_ns:
+                view.last_ns, view.last_time = ns, ev.get("received_time")
         if ev.get("model") and not view.model:
             view.model = ev["model"]
         if ev.get("project_dir") and not view.project_dir:
@@ -266,6 +268,8 @@ def build_session(events: list[dict[str, Any]], cfg: dict[str, Any]) -> SessionV
 
         meta = dict(ev.get("session_meta") or {})
         meta.update({k: v for k, v in (ev.get("evidence") or {}).items() if k in ("prompt_chars", "stop_hook_active")})
+        if phase == S.PHASE_USAGE and isinstance(ev.get("usage"), dict):
+            meta["usage"] = ev["usage"]   # * usage de session (import) : un marqueur, jamais un appel
         view.markers.append(Marker(phase=phase, ns=ns, time=ev.get("received_time"), agent_id=ev.get("agent_id"), meta=meta))
         if phase == S.PHASE_SESSION_START:
             if seen_session_start:

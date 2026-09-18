@@ -14,7 +14,7 @@ champ ajoute en 1.1, `content_fingerprint`, vaut alors `null`).
 | `model` | str/null | tel que fourni par le client (Codex : sur chaque evenement ; Claude Code : `SessionStart` seulement) |
 | `session_id`, `turn_id`, `agent_id`, `agent_type` | str/null | identifiants du client |
 | `call_id` | str/null | `tool_use_id` |
-| `phase` | str | `start`, `end`, `failure`, `interrupt`, `observation`, `session_start`, `session_end`, `turn_start`, `turn_end`, `compact_start`, `compact_end`, `subagent_start`, `subagent_stop`, `unknown` |
+| `phase` | str | `start`, `end`, `failure`, `interrupt`, `observation`, `usage` (usage de session importe : un marqueur, jamais un appel), `session_start`, `session_end`, `turn_start`, `turn_end`, `compact_start`, `compact_end`, `subagent_start`, `subagent_stop`, `unknown` |
 | `hook_event_name` | str | nom d'origine (`PreToolUse`, ...) |
 | `event_time` | str/null | horodatage fourni par le client (aucun des deux clients n'en fournit en V1) |
 | `received_time`, `received_time_ns` | str, int | horodatage de reception par le hook (base d'ordre) |
@@ -34,8 +34,8 @@ champ ajoute en 1.1, `content_fingerprint`, vaut alors `null`).
 | `duration_ms`, `duration_source` | int/null, str | `client`, `client_mcp_durationMs` ; la reconstruction entre hooks est faite a l'analyse |
 | `resource_state` | {revision, source, freshness}/null | pour `Read` (Claude Code) : empreinte du contenu lu |
 | `result_paths` | liste/null | chemins retournes par un listage/recherche (borne) |
-| `usage` | objet/null | tokens rapportes par le client (Claude Code : reponse de l'outil `Agent`, portee `agent`, observe en 2.1.270) ou importes (`import-usage`) ; jamais deduits |
-| `session_meta` | objet/null | `start_type`, `end_type`, `compact_type`, ... |
+| `usage` | objet/null | tokens rapportes par le client (Claude Code : reponse de l'outil `Agent`, portee `agent`, observe en 2.1.270), lus dans le transcript (`import-transcripts`, source `claude-code:transcript`, portee `call` ou `session`) ou importes (`import-usage`) ; jamais deduits |
+| `session_meta` | objet/null | `start_type`, `end_type`, `compact_type`, `transcript_path` (Claude Code, masque par `~`), ... |
 | `warnings` | liste | limites rencontrees pour cet evenement |
 | `evidence` | objet | `payload_keys`, `tool_response_keys`, `stdin_bytes`, `hook_ms`, indices (`error_hint`, `status_basis`, ...) |
 
@@ -99,4 +99,33 @@ Fichier JSONL, une observation par ligne :
 ```
 
 Les compteurs sont pris tels quels (jamais convertis depuis des octets) et affiches avec
-leur source et leur perimetre. Sans import, le rapport affiche « non mesure ».
+leur source et leur perimetre. Sans import, le rapport affiche « non mesure ». Une ligne
+sans `tool_use_id` devient un marqueur `usage` de session, jamais un appel fictif.
+
+## Import des transcripts Claude Code (`agentwatch import-transcripts`)
+
+Format observe en direct (Claude Code 2.1.275) dans `~/.claude/projects/<projet>/<session>.jsonl`,
+ou `<projet>` est le dossier du projet avec tout caractere non alphanumerique remplace par
+`-` (`G:\UnrealEngine\Unearthed` -> `G--UnrealEngine-Unearthed`) ; le chemin exact est
+aussi transmis par le hook `SessionStart` (`session_meta.transcript_path`, prioritaire).
+Les sous-agents ont leur propre fichier `<session>/subagents/**/agent-<id>.jsonl`
+(`agentId` sur chaque ligne, `isSidechain: true`).
+
+- Une reponse API = plusieurs lignes `assistant` (un bloc de contenu par ligne) avec le
+  meme `requestId` et le meme `message.usage` (`input_tokens`, `cache_creation_input_tokens`,
+  `cache_read_input_tokens`, `output_tokens`) : dedoublonnage par `requestId`.
+- Les blocs `tool_use` (`id` = `tool_use_id` des hooks) sont emis par une requete ; les
+  blocs `tool_result` (lignes `user`, un par ligne quand les appels sont paralleles) sont
+  consommes par la requete `assistant` suivante.
+- Attribution par appel : part de l'entree non mise en cache (`input` + `cache_creation`)
+  de la requete consommatrice, partagee a parts egales entre les resultats consommes
+  ensemble, plus la part de la sortie de la requete emettrice. Cette entree non mise en
+  cache contient aussi ce qui s'est ajoute au contexte au meme moment (rappels systeme,
+  sortie precedente) : c'est le cout reellement paye, pas le poids exact du seul resultat.
+  Un `tool_use_id` sans evenement de hook (appel anterieur a l'installation) est seulement
+  compte dans l'usage de session ; aucun appel fictif n'est cree.
+- Chaque observation a un identifiant derive de son contenu : reimporter un transcript qui
+  a grandi n'ajoute que le nouveau. Les evenements importes ne changent pas les dates de
+  debut et de fin de la session.
+- Rien d'autre que des nombres et des identifiants n'est lu : ni prompt, ni reponse, ni
+  resultat d'outil. Rollouts Codex : non lus.

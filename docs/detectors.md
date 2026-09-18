@@ -1,4 +1,4 @@
-# Les quatre detecteurs
+# Les cinq detecteurs
 
 Tous sont deterministes, independants, executes sur la vue de session correlee. Les
 seuils sont dans `config.json` sous `detectors`. Chaque signalement porte : identifiant de
@@ -7,8 +7,19 @@ preuve locale, explication, contre-indications, donnees manquantes, cout observe
 proposition et protocole de validation.
 
 Le niveau de confiance est une heuristique documentee, pas une probabilite calibree.
-Classement des rapports : confiance, puis nombre d'appels, puis octets de sortie observes.
-Aucun score global.
+Classement des rapports : confiance, puis nombre d'appels, puis tokens mesures (si les
+transcripts ont ete importes), puis octets de sortie observes. Aucun score global.
+
+## Cout observe et tokens
+
+Le cout observe d'un signalement somme, par provenance, les octets de sortie et les durees
+des appels concernes. Les tokens ne sont jamais deduits des octets : ils viennent de
+`agentwatch import-transcripts` (Claude Code), qui lit dans le transcript du client l'usage
+de chaque requete API et l'attribue aux appels (part de l'entree non mise en cache de la
+requete qui a consomme le resultat + part de la sortie de la requete qui a emis l'appel ;
+methode dans `docs/events.md`). Quand ils sont mesures, le rapport les affiche a cote de la
+methode, et `trends` les cumule par motif : c'est ce qu'un outil ou une regle eviterait a
+chaque fois que le motif revient.
 
 ## Unites de travail (prealable a A et D)
 
@@ -128,6 +139,72 @@ d'edition variable, commande de structure variable, statut variable selon l'occu
 Le signalement contient une recette (entrees, preconditions, etapes, sortie, tests,
 risques) a valider par un humain. AgentWatch ne genere ni n'execute ce script, et ne
 conclut jamais qu'une tache « n'a pas besoin d'intelligence ».
+
+## E. `E.tool_gap` — service externe manipule a la main
+
+Regle : au moins `min_calls` (3) commandes shell d'une meme famille de service vers la
+meme cible, par le meme agent, dans la session. Familles et cibles :
+
+| Famille | Commandes | Cible comparee |
+|---|---|---|
+| `ssh` | ssh, scp, sftp, rsync, ssh-keygen, ssh-add, ssh-copy-id | hote (apres `user@`, avant `:`) |
+| `slurm` | sbatch, squeue, srun, sacct, scancel, sinfo, scontrol, salloc, seff | `slurm` |
+| `http` | curl, wget, http(ie), Invoke-WebRequest, Invoke-RestMethod | hote de l'URL |
+| `github` | gh | `github` |
+| `cloud` | az, aws, gcloud, kubectl, helm, terraform | la commande |
+| `container` | docker, podman, docker-compose, nerdctl | la commande |
+
+Chaque commande coute un tour complet (la construire, relire une sortie brute) ; un outil
+MCP ou une skill qui expose l'operation rend la meme information en un appel structure,
+avec moins de tokens et plus de contexte pour le modele. Exemple vise : chercher la cle,
+l'ecrire, `ssh` vers le calculateur, alors que le serveur MCP du calculateur fait tout.
+
+| Confiance | Condition |
+|---|---|
+| high | un serveur MCP lie a la cible a ete observe dans la session (nom du serveur citant la cible, ou nom / outils du serveur portant un mot de la famille : `job`, `ssh`, `upload`, `github`, `docker`, ...) : il etait disponible et n'a pas servi |
+| medium | au moins `strong_calls` (6) commandes, ou des echecs dans la serie |
+| low | sinon |
+
+La proposition nomme le serveur MCP a utiliser (ou a etendre), sinon l'outil a ecrire, et
+compte les etapes remplacees. `trends` ajoute les serveurs MCP lies vus dans n'importe
+quelle session de la fenetre. Rien n'est construit.
+
+Exemple positif : `mcp__romeo__romeo_status`, puis `ssh romeo 'squeue'`, `scp job.sh romeo:`,
+`ssh romeo 'sbatch job.sh'` -> high. Contre-exemples : deux `ssh a` et deux `ssh b` ; trois
+`python run.py` (pas un service).
+
+## Vue multi-sessions : `agentwatch trends`
+
+Un signalement isole dans une session ne justifie rien : un `Read` en double ne merite pas
+qu'on y touche. Ce qui justifie un script, une skill ou une regle dans `CLAUDE.md` /
+`AGENTS.md`, c'est un motif qui revient dans plusieurs sessions, eventuellement sur
+plusieurs projets. `trends` reanalyse chaque session de la fenetre (`--days`, appliquee au
+dernier evenement de la session ; `0` = toutes) avec les quatre detecteurs, puis regroupe
+les signalements par une **cle de motif** stable, independante de la session, du client et
+des identifiants d'appel :
+
+| Regle | Cle de motif | Pourquoi |
+|---|---|---|
+| A | operation + cible normalisee (chemin relatif au projet quand il est dessous) ; `repeated_read` et `repeated_read_cross_tool` fusionnes | le meme fichier relu dans plusieurs projets est un seul motif ; le compte de projets le montre |
+| B | type de boucle (`persistent`, `transient_recovered`, `repeated_denial` ; suffixe `_probable` fusionne) + outil + signature d'erreur, sans la cible | la meme erreur sur des cibles differentes est le meme probleme |
+| C | outil | le motif est l'habitude de lire en serie, pas les fichiers lus |
+| D | sequence des formes d'appels | c'est la recette candidate elle-meme |
+| E | famille de service + cible (hote, URL, service) | l'outil qui manque ou qui n'a pas servi |
+
+Un motif est **recurrent** s'il apparait dans au moins `trends.min_sessions` (2) sessions
+distinctes, les signalements marques faux positifs ne comptant pas. Classement : sessions
+distinctes, puis confiance maximale, occurrences, tokens mesures (transcripts importes),
+appels concernes, octets de sortie ; aucun score global. Le rapport donne :
+
+- le top global, avec pour les premiers motifs les sessions les plus recentes, la
+  proposition du signalement le plus sur et les identifiants a marquer via `feedback` ;
+- la meme table restreinte a chaque **projet** puis a chaque **client** (le seuil s'applique
+  a l'interieur du groupe : un projet avec une seule session n'a pas de recurrence mesurable) ;
+- une ligne par **session** : appels, erreurs, signalements A/B/C/D et nombre de motifs de
+  cette session qui reviennent ailleurs dans la fenetre.
+
+Rien de nouveau n'est detecte : ce sont les signalements par session, agreges. Leurs
+contre-indications restent valables et `report --session <id>` donne la preuve.
 
 ## Retours locaux
 

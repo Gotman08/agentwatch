@@ -51,7 +51,7 @@ test reel ci-dessous).
 | Interruptions | documente (`is_interrupt`) + fixture | evenement `Interrupt` de session (documente + fixture) ; pas de statut par appel |
 | Commandes longues / polling | un appel = un debut + une fin ; aucun evenement intermediaire (documente) | idem |
 | Outils herberges (recherche web) | outils locaux `WebFetch`/`WebSearch` vus par les hooks (documente) | hors hooks (documente) |
-| Usage de tokens | absent des hooks ; interface d'import JSONL (`import-usage`) | absent des hooks ; `[otel]` exporte vers OTLP seulement |
+| Usage de tokens | absent des hooks ; **verifie reellement** dans le transcript (2.1.275 : `message.usage` par requete, `requestId` repete sur les lignes d'une meme reponse, blocs `tool_use` / `tool_result`, sous-agents `agent-<id>.jsonl` avec `agentId`) via `import-transcripts` ; import JSONL (`import-usage`) | absent des hooks ; `[otel]` exporte vers OTLP seulement ; rollouts non lus |
 | Confiance des hooks | non requise | **requise** : approbation via `/hooks` (empreinte de la definition) ; en `exec`, `--dangerously-bypass-hook-trust` |
 
 ## Smoke tests reels
@@ -172,4 +172,10 @@ processus enfants vers `AppData\Local\Packages\<paquet>\LocalCache\...`. Consequ
 - Claude Code : `duration` et `prompt_id` dependent de la version (>= 2.1.267 et
   >= 2.1.196) ; le CLI du PATH est en 2.1.87.
 - Linux / macOS / WSL : non executes.
-- Journaux natifs (transcripts JSONL, rollouts Codex) : non lus en V1, volontairement.
+- Journaux natifs : les transcripts Claude Code ne sont lus que pour l'usage en tokens, sur
+  demande (`import-transcripts`) ; leur format interne n'est pas garanti stable (verifie sur
+  2.1.275). Les rollouts Codex ne sont pas lus ; seule leur date de modification sert a la
+  sante de la collecte.
+- Sante de la collecte : le silence d'un client est deduit des dates de modification de ses
+  journaux ; un client qui ecrirait ailleurs (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`) exige de
+  renseigner `transcripts.claude_projects_dir` / `health.codex_sessions_dir`.

@@ -51,8 +51,15 @@ DEFAULTS: dict[str, Any] = {
         "batchable": {"enabled": True, "min_group": 3, "max_gap_calls": 0},
         "automation_candidates": {"enabled": True, "min_occurrences": 3, "min_pattern_len": 2,
                                   "max_pattern_len": 6, "max_calls": 2000},
+        "tool_gap": {"enabled": True, "min_calls": 3, "strong_calls": 6},
     },
     "report": {"max_top_findings": 3, "max_listed_per_rule": 15},
+    # --- vue multi-sessions (`agentwatch trends`) ---
+    "trends": {"days": 7, "min_sessions": 2, "max_top": 5, "max_examples": 8},
+    # --- sante de la collecte (panne silencieuse) : dates de modification seulement ---
+    "health": {"enabled": True, "silence_minutes": 30, "codex_sessions_dir": None},
+    # --- transcripts Claude Code (usage en tokens) : lus a l'analyse, jamais par le hook ---
+    "transcripts": {"auto_import": False, "claude_projects_dir": None, "max_bytes": 64 * 1024 * 1024},
 }
 
 

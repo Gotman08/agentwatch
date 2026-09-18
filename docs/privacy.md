@@ -8,7 +8,8 @@
   `nom + empreinte de la valeur`.
 - Jamais conserves par defaut : prompts (seule la longueur), reponses du modele, contenus
   de fichiers lus ou ecrits (seules longueur et empreinte), sorties de commandes, variables
-  d'environnement, `transcript_path`.
+  d'environnement. `transcript_path` (Claude Code) est conserve masque par `~` : il ne sert
+  qu'a retrouver le transcript pour `import-transcripts`.
 - Les extraits de sortie (`detailed_excerpts`) sont bornes (`detailed_excerpt_chars`) et
   desactives par defaut ; ils passent aussi par le masquage.
 
@@ -43,6 +44,17 @@ rapports avant de les partager.
 
 `mask_home_dir` (defaut : vrai) remplace le prefixe du dossier utilisateur par `~` dans
 les chemins conserves. Les chemins relatifs au projet sont stockes relatifs.
+
+## Journaux natifs des clients
+
+- Transcripts Claude Code : lus seulement par `agentwatch import-transcripts` ou si
+  `transcripts.auto_import` est vrai, a l'analyse, jamais par le hook. Seuls des nombres et
+  des identifiants en sont extraits (usage par requete, `requestId`, `tool_use_id`,
+  horodatage, modele) ; ni prompt, ni reponse, ni resultat d'outil. Le fichier n'est jamais
+  modifie ni copie.
+- Sante de la collecte : seules les dates de modification des transcripts Claude Code et
+  des rollouts Codex sont lues (jamais leur contenu) pour reperer un client actif sans
+  evenement recu.
 
 ## Donnees collectees = donnees non fiables
 

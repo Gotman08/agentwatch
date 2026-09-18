@@ -142,20 +142,37 @@ def work_units(view: SessionView, limit: int = 25) -> list[dict[str, Any]]:
     return rows[:limit]
 
 
+_TRANSCRIPT_SOURCE = "claude-code:transcript"
+
+
 def _usage_summary(view: SessionView) -> dict[str, Any]:
-    """Usage en tokens : uniquement ce que le client rapporte, avec source et perimetre."""
+    """Usage en tokens : ce que le client rapporte ou ce qu'un import (transcript, JSONL) a fourni, avec source et perimetre."""
     rows = []
     for a in view.agent_infos:
         if a.usage:
             rows.append({"agent_id": a.agent_id, "agent_type": a.agent_type, "model": a.model, **a.usage})
-    imported = [c.usage for c in view.calls if c.usage and c.usage.get("source") not in (None, "claude-code:Agent.tool_response")]
+    imported = [c.usage for c in view.calls if c.usage and c.usage.get("source") not in (None, "claude-code:Agent.tool_response", _TRANSCRIPT_SOURCE)]
+    transcript_calls = sum(1 for c in view.calls if isinstance(c.usage, dict) and c.usage.get("source") == _TRANSCRIPT_SOURCE)
+    # * Plusieurs imports d'un transcript qui grandit laissent plusieurs marqueurs : le plus complet fait foi.
+    session_usages = [m.meta["usage"] for m in view.markers if m.phase == S.PHASE_USAGE and isinstance(m.meta.get("usage"), dict)]
+    session = max(session_usages, key=lambda u: int(u.get("requests") or 0)) if session_usages else None
+    if session:
+        return {
+            "status": (f"mesure depuis le transcript : {session.get('requests')} requetes API, {session.get('total_tokens')} tokens "
+                       f"(entree {session.get('input_tokens')}, creation de cache {session.get('cache_creation_tokens')}, "
+                       f"lecture de cache {session.get('cache_read_tokens')}, sortie {session.get('output_tokens')}) ; "
+                       f"{transcript_calls}/{len(view.calls)} appels avec un cout attribue"),
+            "note": ("comptes tels qu'ecrits par le client dans son transcript, dedoublonnes par requete ; par appel : part de "
+                     "l'entree non mise en cache de la requete qui a consomme le resultat + part de la sortie de la requete emettrice"),
+            "session": session, "transcript_calls": transcript_calls, "agents": rows, "imported": imported,
+        }
     if not rows and not imported:
-        return {"status": "non mesure", "note": "aucune donnee d'usage fournie par les hooks pour le fil principal ; voir agentwatch import-usage",
-                "agents": [], "imported": []}
+        return {"status": "non mesure", "note": "aucune donnee d'usage fournie par les hooks ; voir agentwatch import-transcripts (Claude Code) ou import-usage",
+                "session": None, "transcript_calls": 0, "agents": [], "imported": []}
     return {
         "status": f"rapporte par le client pour {len(rows)} sous-agent(s) (portee : agent) ; non mesure pour le fil principal",
         "note": "valeurs telles que fournies dans la reponse de l'outil Agent ; aucune conversion ni estimation de cout",
-        "agents": rows, "imported": imported,
+        "session": None, "transcript_calls": transcript_calls, "agents": rows, "imported": imported,
     }
 
 

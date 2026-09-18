@@ -34,7 +34,12 @@ def _cost_line(cost: dict[str, Any]) -> str:
         parts.append(f"{cost['duration_reconstructed_ms_sum']} ms (reconstruite entre hooks, inclut la surcharge des hooks)")
     if cost.get("duration_unknown_for"):
         parts.append(f"duree inconnue pour {cost['duration_unknown_for']} appel(s)")
-    parts.append("tokens : non mesures")
+    tok = cost.get("tokens")
+    if isinstance(tok, dict):
+        parts.append(f"{tok['total']} tokens mesures ({tok['uncached_input']} d'entree non mise en cache + {tok['output']} de sortie ; "
+                     f"{tok['known_for']}/{cost.get('calls')} appels, transcript)")
+    else:
+        parts.append("tokens : non mesures (agentwatch import-transcripts)")
     return " ; ".join(parts)
 
 
@@ -99,6 +104,9 @@ def render_markdown(report: dict[str, Any]) -> str:
              ""]
     if s.get("warnings"):
         lines.append("Avertissements de lecture : " + " ; ".join(s["warnings"][:5]))
+        lines.append("")
+    if report.get("collection_health"):
+        lines.append("Sante de la collecte : " + " ; ".join(f"{h['client']} : {h['message']}" for h in report["collection_health"]))
         lines.append("")
     lines.append("## Opportunites prioritaires")
     lines.append("")

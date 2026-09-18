@@ -90,6 +90,9 @@ class ClaudeCodeAdapter:
                 "start_type": _str(payload.get("session_start_type") or payload.get("source")),
                 "model": ev["model"],
                 "permission_mode": _str(payload.get("permission_mode")),
+                # * Chemin du transcript (masque par ~ a l'ecriture) : sert a `import-transcripts` pour
+                #   lire l'usage en tokens ; le transcript lui-meme n'est jamais lu par le hook.
+                "transcript_path": _str(payload.get("transcript_path")),
             }
         elif phase == S.PHASE_SESSION_END:
             ev["session_meta"] = {"end_type": _str(payload.get("session_end_type") or payload.get("reason"))}

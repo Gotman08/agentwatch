@@ -54,16 +54,41 @@ class Finding:
         return asdict(self)
 
 
+TRANSCRIPT_SOURCE = "claude-code:transcript"
+
+
+def tokens_of(call: Call) -> int | None:
+    """Tokens mesures d'un appel (import de transcript) : entree non mise en cache + sortie. None sinon."""
+    u = call.usage
+    if not isinstance(u, dict) or u.get("source") != TRANSCRIPT_SOURCE:
+        return None
+    parts = [u.get("uncached_input_tokens"), u.get("output_tokens")]
+    known = [p for p in parts if isinstance(p, int)]
+    return sum(known) if known else None
+
+
 def observed_cost(calls: Iterable[Call]) -> dict[str, Any]:
-    """Cout observe des appels concernes : octets de sortie et durees connues, par provenance.
+    """Cout observe des appels concernes : octets de sortie, durees connues et tokens mesures, par provenance.
 
     # ! Les durees paralleles ne sont pas sommees comme du temps mural : on donne la somme
-    #   par provenance ET le nombre d'appels sans mesure. Pas d'estimation en tokens.
+    #   par provenance ET le nombre d'appels sans mesure. Les tokens ne sont jamais estimes
+    #   depuis des octets : ils viennent d'un import de transcript, avec leur methode.
     """
     calls = list(calls)
     bytes_known = [c.output_size_bytes for c in calls if isinstance(c.output_size_bytes, int)]
     client_dur = [c.duration_ms for c in calls if c.duration_source and c.duration_source.startswith("client") and isinstance(c.duration_ms, int)]
     recon_dur = [c.duration_ms for c in calls if c.duration_source == "reconstructed_between_hooks" and isinstance(c.duration_ms, int)]
+    measured = [(c, tokens_of(c)) for c in calls]
+    with_tokens = [(c, t) for c, t in measured if t is not None]
+    tokens: Any = "non mesure"
+    if with_tokens:
+        tokens = {
+            "total": sum(t for _, t in with_tokens),
+            "uncached_input": sum(int((c.usage or {}).get("uncached_input_tokens") or 0) for c, _ in with_tokens),
+            "output": sum(int((c.usage or {}).get("output_tokens") or 0) for c, _ in with_tokens),
+            "known_for": len(with_tokens), "source": TRANSCRIPT_SOURCE,
+            "note": "entree non mise en cache de la requete qui a consomme chaque resultat (part) + sortie de la requete emettrice (part)",
+        }
     return {
         "calls": len(calls),
         "output_bytes_sum": sum(bytes_known) if bytes_known else None,
@@ -71,9 +96,15 @@ def observed_cost(calls: Iterable[Call]) -> dict[str, Any]:
         "duration_client_ms_sum": sum(client_dur) if client_dur else None,
         "duration_reconstructed_ms_sum": sum(recon_dur) if recon_dur else None,
         "duration_unknown_for": len(calls) - len(client_dur) - len(recon_dur),
-        "tokens": "non mesure",
+        "tokens": tokens,
         "note": "sommes par provenance ; les appels paralleles ne sont pas convertis en temps mural economisable",
     }
+
+
+def cost_tokens(cost: dict[str, Any]) -> int | None:
+    """Total de tokens mesures d'un cout observe, None si non mesure."""
+    t = cost.get("tokens")
+    return int(t["total"]) if isinstance(t, dict) and isinstance(t.get("total"), int) else None
 
 
 def refs(calls: Iterable[Call]) -> list[dict[str, Any]]:
@@ -94,5 +125,6 @@ def same_context(a: Call, b: Call) -> bool:
 
 
 def rank_findings(findings: list[Finding]) -> list[Finding]:
-    """Classement transparent : confiance, puis nombre d'appels, puis octets observes."""
-    return sorted(findings, key=lambda f: (f.confidence_rank, len(f.calls), f.observed_cost.get("output_bytes_sum") or 0), reverse=True)
+    """Classement transparent : confiance, nombre d'appels, tokens mesures (si importes), octets observes."""
+    return sorted(findings, key=lambda f: (f.confidence_rank, len(f.calls), cost_tokens(f.observed_cost) or 0,
+                                           f.observed_cost.get("output_bytes_sum") or 0), reverse=True)

@@ -1,4 +1,4 @@
-"""Quatre detecteurs deterministes, independants et configurables.
+"""Cinq detecteurs deterministes, independants et configurables.
 
 Chaque module expose `detect(view, cfg) -> list[Finding]` et les constantes RULE_ID / RULE_VERSION.
 """
@@ -10,7 +10,7 @@ from typing import Any
 from agentwatch.core.correlate import SessionView
 from agentwatch.detectors.base import Finding
 
-_REGISTRY = ("redundant_reads", "error_loops", "batchable", "automation_candidates")
+_REGISTRY = ("redundant_reads", "error_loops", "batchable", "automation_candidates", "tool_gap")
 
 
 def run_detectors(view: SessionView, cfg: dict[str, Any], only: list[str] | None = None) -> list[Finding]:

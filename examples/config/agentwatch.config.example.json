@@ -57,9 +57,30 @@
       "min_pattern_len": 2,
       "max_pattern_len": 6,
       "max_calls": 2000
+    },
+    "tool_gap": {
+      "enabled": true,
+      "min_calls": 3,
+      "strong_calls": 6
     }
   },
   "report": {
     "max_top_findings": 3
+  },
+  "trends": {
+    "days": 7,
+    "min_sessions": 2,
+    "max_top": 5,
+    "max_examples": 8
+  },
+  "health": {
+    "enabled": true,
+    "silence_minutes": 30,
+    "codex_sessions_dir": null
+  },
+  "transcripts": {
+    "auto_import": false,
+    "claude_projects_dir": null,
+    "max_bytes": 67108864
   }
 }

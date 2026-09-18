@@ -11,6 +11,10 @@ hooks du client ──stdin JSON──▶ agentwatch/hook_entry.py (python -I, ~
                                    │  (dedoublonnage, tri, appariement debut/fin)
                                    ▼
                           detectors/ (A, B, C, D) ──▶ reports/ (Markdown, JSON)
+                                   │
+      agentwatch trends ───────────┘  toutes les sessions de la fenetre : correlation +
+                                      detecteurs par session, puis reports/trends.py agrege
+                                      les signalements par motif (sessions, projets, clients)
 ```
 
 ## Sous-systemes
@@ -21,14 +25,16 @@ hooks du client ──stdin JSON──▶ agentwatch/hook_entry.py (python -I, ~
 | `collector/ingest.py` | lire stdin (borne), decoder, appeler l'adaptateur, masquer, ecrire | oui |
 | `collector/privacy.py` | masquage en une passe, HMAC-SHA256 local (`_sha2`), bornage | oui |
 | `collector/store.py` | spool atomique, segments, diagnostics, quotas, retention | ecriture : oui |
+| `collector/health.py` | sante de la collecte : interpreteur et point d'entree des hooks, entrees presentes, silence apres une activite du client (dates de modification seulement) | non |
+| `collector/transcripts.py` | usage en tokens lu dans les transcripts Claude Code (nombres et identifiants), attribue aux appels par `tool_use_id`, sous-agents compris | non |
 | `adapters/claude_code.py`, `adapters/codex.py` | payload de hook -> evenement du schema commun | oui |
 | `adapters/base.py` | parametres autorises, cibles, deduction de statut | oui |
 | `core/schema.py` | schema versionne (`SCHEMA_VERSION = "1.0"`), constantes | oui |
 | `core/normalize.py` | categories d'outils, chemins, commandes shell, signatures d'erreur | oui |
 | `core/correlate.py` | evenements -> appels (`Call`), marqueurs, agents (`SessionView`) | non |
 | `core/intent.py` | appel -> unite de travail (operation normalisee, cible, parametres) independante de l'outil ; liste blanche de formes shell, `cd ... &&` gere, reste `unknown` | non |
-| `detectors/*.py` | quatre regles independantes, seuils configurables | non |
-| `reports/*.py` | statistiques, matrice de couverture, Markdown, JSON, retours locaux | non |
+| `detectors/*.py` | cinq regles independantes (A lectures refaites, B boucles d'erreurs, C regroupables, D sequences, E service manipule a la main), seuils configurables | non |
+| `reports/*.py` | statistiques, matrice de couverture, Markdown, JSON, retours locaux ; `trends.py` = vue multi-sessions (cle de motif stable, comptes par session / projet / client) | non |
 | `installer/*.py` | diff / apply / remove des hooks, sauvegardes | non |
 | `selftest.py` | constructeur de sessions synthetiques + scenarios de reference | non |
 | `cli.py` | commandes | non |
@@ -87,5 +93,8 @@ direct avec Claude Code 2.1.270).
 - pas de second LLM, pas d'embeddings, pas d'interface web, pas de reseau ;
 - aucune modification des parametres d'appel, aucun blocage, aucun cache substitue ;
 - aucune generation ni execution des scripts proposes par le detecteur D ;
-- pas de lecture des journaux natifs des clients (transcripts, rollouts) : les formats
-  internes ne sont pas stables ; seule l'interface de hooks documentee est utilisee.
+- lecture des journaux natifs limitee et jamais dans le hook : usage en tokens des
+  transcripts Claude Code sur demande (`collector/transcripts.py`, format observe, nombres et
+  identifiants seulement) et dates de modification pour la sante de la collecte
+  (`collector/health.py`) ; les rollouts Codex ne sont pas lus. La collecte elle-meme ne
+  passe que par l'interface de hooks documentee.

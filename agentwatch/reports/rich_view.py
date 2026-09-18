@@ -108,7 +108,8 @@ def _finding_panel(f: dict[str, Any], detailed: bool):
         parts.append(f"{cost['duration_client_ms_sum']} ms (client)")
     if cost.get("duration_reconstructed_ms_sum") is not None:
         parts.append(f"{cost['duration_reconstructed_ms_sum']} ms (reconstruit)")
-    parts.append("tokens non mesures")
+    tok = cost.get("tokens")
+    parts.append(f"{tok['total']} tokens mesures ({tok['known_for']} appels, transcript)" if isinstance(tok, dict) else "tokens non mesures")
     body.append("Cout observe : ", style="bold")
     body.append(" ; ".join(parts) + "\n\n")
     body.append(f["explanation"] + "\n")

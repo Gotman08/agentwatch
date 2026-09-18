@@ -71,6 +71,9 @@ def sanitize_event(ev: dict[str, Any], key: bytes, cfg: dict[str, Any]) -> dict[
     for field in ("cwd", "project_dir"):
         if isinstance(ev.get(field), str):
             ev[field] = P.mask_home(P.mask_secrets(ev[field], key), home)
+    meta = ev.get("session_meta")
+    if isinstance(meta, dict) and isinstance(meta.get("transcript_path"), str):
+        meta["transcript_path"] = P.mask_home(P.mask_secrets(meta["transcript_path"], key), home)
     if isinstance(ev.get("target"), str):
         masked, trunc = P.sanitize_text(ev["target"], key, max_cmd)
         ev["target"] = P.mask_home(masked, home) if ev.get("target_kind") == "path" else masked

@@ -125,11 +125,13 @@ du hook au moment de `configure`, donc les hooks ne dependent pas de l'environne
 
 | Commande | Role |
 |---|---|
-| `doctor` | diagnostic complet |
+| `doctor` | diagnostic complet, dont la sante de la collecte (panne silencieuse : interpreteur des hooks disparu, depot deplace, entrees retirees, client actif sans evenement recu) |
 | `configure --client X [--apply]` | installer les hooks (dry-run par defaut) |
 | `uninstall --client X [--apply]` | retirer les hooks AgentWatch |
 | `sessions [--client X] [--json]` | lister les sessions enregistrees |
 | `report --session ID` ou `report --latest` `[--format auto|markdown|json|rich|html|svg] [--out F]` | analyser une session (ou la derniere) ; `auto` = Rich dans un terminal si installe, sinon Markdown |
+| `trends [--days N] [--client X] [--project TXT] [--min-sessions N] [--import-transcripts] [--format markdown|json] [--out F]` | motifs recurrents sur plusieurs sessions : top global, puis par projet, par client et par session (`--days 0` = toutes les sessions) |
+| `import-transcripts --session ID` ou `--latest` ou `--all` | lire l'usage en tokens des transcripts Claude Code (nombres et identifiants seulement) et l'attacher aux appels ; idempotent |
 | `self-test [--runs N]` | scenarios synthetiques + hook reel en sous-processus |
 | `bench [--runs N]` | mesurer la surcharge du hook |
 | `replay --client X <fichiers>` | reanalyser des payloads enregistres (rien n'est execute) |
@@ -178,6 +180,10 @@ car ils contiennent des donnees de session.
 | `retention_days` | 30 | applique par `prune` |
 | `auto_compact_threshold` | 200 | a la lecture (`report`, `sessions`), fusion du spool en segment au-dela de N fichiers (0 = jamais) ; la premiere ouverture d'un petit fichier coute ~13 ms sous Windows a cause de l'antivirus |
 | `report.max_listed_per_rule` | 15 | nombre de signalements secondaires listes par regle dans le Markdown (tous sont dans le JSON) |
+| `trends.days` / `trends.min_sessions` | 7 / 2 | `trends` : fenetre en jours (0 = toutes les sessions) et nombre de sessions distinctes a partir duquel un motif est recurrent ; `trends.max_top` (5) motifs detailles, `trends.max_examples` (8) signalements cites par motif |
+| `health.silence_minutes` | 30 | silence tolere entre une modification des journaux du client et le dernier evenement recu avant d'avertir ; `health.enabled` (true), `health.codex_sessions_dir` (defaut `~/.codex/sessions`) |
+| `transcripts.auto_import` | false | lire les transcripts Claude Code a chaque `report` / `trends` ; `transcripts.claude_projects_dir` (defaut `~/.claude/projects`), `transcripts.max_bytes` (64 Mio) |
+| `detectors.tool_gap.min_calls` / `strong_calls` | 3 / 6 | detecteur E : commandes de service vers une meme cible a partir desquelles on signale / a partir desquelles la confiance monte sans serveur MCP observe |
 | `mask_home_dir` | true | remplace le dossier utilisateur par `~` |
 | `detailed_excerpts` | false | extraits bornes de sortie (a activer explicitement) |
 | `store_tool_descriptions` | false | descriptions libres des appels |

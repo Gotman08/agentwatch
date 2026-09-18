@@ -1,7 +1,7 @@
 """Interface de commande AgentWatch.
 
-Commandes : doctor, configure, uninstall, sessions, report, self-test, ingest, replay,
-compact, prune, feedback, bench, import-usage. Les messages utilisateur sont en francais.
+Commandes : doctor, configure, uninstall, sessions, report, trends, import-transcripts, self-test,
+ingest, replay, compact, prune, feedback, bench, import-usage. Les messages utilisateur sont en francais.
 """
 
 from __future__ import annotations
@@ -17,9 +17,9 @@ from pathlib import Path
 from typing import Any
 
 from agentwatch import CLIENT_CLAUDE_CODE, CLIENT_CODEX, SUPPORTED_CLIENTS, __version__
+from agentwatch.collector.health import install_meta_path as _install_meta_path
+from agentwatch.collector.health import read_install_meta as _read_install_meta
 from agentwatch.config import home_dir, load_config, write_default_config
-
-INSTALL_DIRNAME = "install"
 
 
 # ---------------------------------------------------------------------------- utilitaires
@@ -46,18 +46,33 @@ def _under_appdata(path: Path) -> bool:
     return False
 
 
-def _install_meta_path(home: Path, client: str) -> Path:
-    return home / INSTALL_DIRNAME / f"{client}.json"
-
-
-def _read_install_meta(home: Path, client: str) -> dict[str, Any] | None:
-    p = _install_meta_path(home, client)
-    if not p.is_file():
-        return None
+def _health(home: Path, cfg: dict[str, Any], store: Any = None) -> list[dict[str, Any]]:
+    """Avertissements de collecte (panne silencieuse) ; jamais d'exception."""
+    from agentwatch.collector.health import check_collection
     try:
-        return json.loads(p.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return None
+        return check_collection(home, cfg, store)
+    except Exception as exc:  # noqa: BLE001 - un diagnostic ne doit pas empecher un rapport
+        return [{"client": "?", "code": "health_failed", "level": "warn", "message": f"verification de la collecte impossible ({exc})"}]
+
+
+def _print_health(items: list[dict[str, Any]]) -> None:
+    from agentwatch.collector.health import format_lines
+    for line in format_lines(items):
+        _err(line)
+
+
+def _auto_import_enabled(cfg: dict[str, Any]) -> bool:
+    tcfg = cfg.get("transcripts")
+    return bool(isinstance(tcfg, dict) and tcfg.get("auto_import"))
+
+
+def _import_transcripts(store: Any, cfg: dict[str, Any], client: str, skey: str) -> dict[str, Any]:
+    from agentwatch.collector.transcripts import import_session
+    from agentwatch.core.session import load_session
+    view = load_session(store, client, skey, cfg)
+    events, _ = store.read_session_events(client, skey)
+    existing = {e.get("event_id") for e in events if isinstance(e, dict) and e.get("event_id")}
+    return import_session(store, cfg, client, skey, view, existing)
 
 
 def _client_version(client: str) -> tuple[str | None, str | None]:
@@ -140,7 +155,9 @@ def cmd_sessions(args: argparse.Namespace) -> int:
     from agentwatch.core.session import list_sessions
     home = home_dir(args.home)
     cfg = load_config(home)
-    rows = list_sessions(EventStore(home, cfg), cfg, client=args.client)
+    store = EventStore(home, cfg)
+    rows = list_sessions(store, cfg, client=args.client)
+    _print_health(_health(home, cfg, store))
     if args.json:
         _out(json.dumps(rows, indent=2, ensure_ascii=False))
         return 0
@@ -162,10 +179,14 @@ def _analyse(home: Path, cfg: dict[str, Any], client: str, skey: str) -> dict[st
     from agentwatch.reports.json_report import build_report
     from agentwatch.reports.stats import compute_stats, coverage_matrix
     store = EventStore(home, cfg)
+    if _auto_import_enabled(cfg):
+        _import_transcripts(store, cfg, client, skey)   # * usage en tokens depuis le transcript, si demande dans config.json
     view = load_session(store, client, skey, cfg)
     findings = run_detectors(view, cfg)
-    return build_report(view, compute_stats(view), coverage_matrix(view), findings, cfg, load_feedback(home),
-                        _read_install_meta(home, client))
+    report = build_report(view, compute_stats(view), coverage_matrix(view), findings, cfg, load_feedback(home),
+                          _read_install_meta(home, client))
+    report["collection_health"] = _health(home, cfg, store)
+    return report
 
 
 def cmd_report(args: argparse.Namespace) -> int:
@@ -202,6 +223,30 @@ def cmd_report(args: argparse.Namespace) -> int:
         text = json.dumps(report, indent=2, ensure_ascii=False)
     else:
         text = render_markdown(report)
+    if args.out:
+        Path(args.out).write_text(text, encoding="utf-8")
+        _out(f"rapport ecrit : {args.out}")
+    else:
+        _out(text)
+    return 0
+
+
+def cmd_trends(args: argparse.Namespace) -> int:
+    """Vue multi-sessions : motifs recurrents par projet, client et session (rien de nouveau n'est detecte)."""
+    from agentwatch.collector.store import EventStore
+    from agentwatch.reports.feedback import load_feedback
+    from agentwatch.reports.trends import build_trends, render_trends_markdown
+    home = home_dir(args.home)
+    cfg = load_config(home)
+    tcfg = cfg.get("trends") if isinstance(cfg.get("trends"), dict) else {}
+    days = args.days if args.days is not None else int(tcfg.get("days", 7))
+    min_sessions = args.min_sessions if args.min_sessions is not None else int(tcfg.get("min_sessions", 2))
+    store = EventStore(home, cfg)
+    importer = (lambda c, k: _import_transcripts(store, cfg, c, k)) if (_auto_import_enabled(cfg) or args.import_transcripts) else None
+    report = build_trends(store, cfg, load_feedback(home), days=days, client=args.client,
+                          project=args.project, min_sessions=min_sessions, importer=importer)
+    report["collection_health"] = _health(home, cfg, store)
+    text = json.dumps(report, indent=2, ensure_ascii=False) if args.format == "json" else render_trends_markdown(report)
     if args.out:
         Path(args.out).write_text(text, encoding="utf-8")
         _out(f"rapport ecrit : {args.out}")
@@ -272,8 +317,10 @@ def cmd_import_usage(args: argparse.Namespace) -> int:
             rejected += 1
             continue
         ev = S.empty_event()
+        # * Sans tool_use_id, l'observation porte sur la session : un marqueur, jamais un appel fictif.
         ev.update({"source": S.SOURCE_IMPORT, "client": row["client"], "session_id": row["session_id"],
-                   "call_id": row.get("tool_use_id"), "phase": S.PHASE_OBSERVATION, "hook_event_name": "usage_import",
+                   "call_id": row.get("tool_use_id"), "phase": S.PHASE_OBSERVATION if row.get("tool_use_id") else S.PHASE_USAGE,
+                   "hook_event_name": "usage_import",
                    "model": row.get("model"), "event_time": row.get("timestamp"),
                    "usage": {k: row.get(k) for k in ("scope", "input_tokens", "output_tokens", "cache_read_tokens",
                                                      "cache_creation_tokens", "source")}})
@@ -282,6 +329,41 @@ def cmd_import_usage(args: argparse.Namespace) -> int:
         written += 1
     _out(f"usage importe : {written} observation(s), {rejected} ligne(s) rejetee(s)")
     return 0
+
+
+def cmd_import_transcripts(args: argparse.Namespace) -> int:
+    """Lire les transcripts de Claude Code (usage en tokens seulement) pour une, la derniere ou toutes les sessions."""
+    from agentwatch.collector.store import EventStore
+    from agentwatch.core.session import list_sessions
+    home = home_dir(args.home)
+    cfg = load_config(home)
+    store = EventStore(home, cfg)
+    targets: list[tuple[str, str]] = []
+    if args.all:
+        targets = [(c, k) for c, k, _ in store.iter_sessions() if c == CLIENT_CLAUDE_CODE]
+    elif args.latest:
+        rows = list_sessions(store, cfg, client=CLIENT_CLAUDE_CODE)
+        if not rows:
+            raise SystemExit("aucune session claude-code enregistree")
+        targets = [(rows[0]["client"], rows[0]["session_key"])]
+    elif args.session:
+        targets = [_resolve_session(store, args.session, CLIENT_CLAUDE_CODE)]
+    else:
+        raise SystemExit("precisez --session <id>, --latest ou --all")
+    failures = 0
+    for client, skey in targets:
+        s = _import_transcripts(store, cfg, client, skey)
+        if s["transcript"]:
+            _out(f"{client}/{skey} : {s['requests']} requetes API, {s['total_tokens']} tokens ; usage attribue a {s['calls_matched']} appel(s), "
+                 f"{s['calls_without_hook_events']} appel(s) du transcript sans evenement de hook ; {s['subagent_transcripts']} transcript(s) "
+                 f"de sous-agent ; {s['written']} observation(s) ecrite(s), {s['skipped']} deja presente(s)")
+        else:
+            failures += 1
+        for w in s["warnings"]:
+            _err(f"  ! {client}/{skey} : {w}")
+    _out(f"import termine : {len(targets) - failures}/{len(targets)} session(s) avec transcript lu ; rien d'autre que des nombres et des "
+         "identifiants n'a ete extrait")
+    return 0 if failures == 0 else 1
 
 
 def cmd_self_test(args: argparse.Namespace) -> int:
@@ -383,6 +465,16 @@ def cmd_doctor(args: argparse.Namespace) -> int:
                     _out(f"    {scope}: {p} : hooks AgentWatch {'complets' if s['complete'] else ('partiels ' + str(s['missing_events']) if s['installed_events'] else 'absents')}"
                          f" ; groupes etrangers preserves : {sum(s['foreign_groups'].values())}")
             _out("    rappel : Codex n'execute un hook qu'apres que vous l'avez approuve via la commande /hooks (confiance par empreinte).")
+    health = _health(home, cfg, store)
+    if health:
+        _out("- Sante de la collecte (panne silencieuse) :")
+        for h in health:
+            _out(f"    ! {h['client']} : {h['message']}")
+    else:
+        _out("- Sante de la collecte : rien a signaler (interpreteur et point d'entree en place, hooks presents, "
+             "aucun silence apres une activite du client)")
+    tcfg = cfg.get("transcripts") if isinstance(cfg.get("transcripts"), dict) else {}
+    _out(f"- Transcripts Claude Code (usage en tokens) : {'import automatique a chaque rapport' if tcfg.get('auto_import') else 'sur demande (agentwatch import-transcripts ; transcripts.auto_import=true pour automatiser)'}")
     _out("Rappel : AgentWatch n'observe que les evenements de hooks ; voir docs/compatibility.md pour les limites par client.")
     return 0
 
@@ -486,6 +578,22 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--width", type=int, default=120, help="largeur du rendu Rich exporte (html/svg/rich vers fichier)")
     s.add_argument("--out", help="fichier de sortie (sinon stdout)")
     s.set_defaults(func=cmd_report)
+
+    s = sub.add_parser("trends", help="gaspillages recurrents sur plusieurs sessions : par motif, projet, client et session")
+    s.add_argument("--days", type=int, help="fenetre en jours sur le dernier evenement de chaque session (defaut : trends.days = 7 ; 0 = toutes)")
+    s.add_argument("--client", choices=SUPPORTED_CLIENTS)
+    s.add_argument("--project", help="ne garder que les sessions dont le chemin de projet contient ce texte")
+    s.add_argument("--min-sessions", type=int, help="sessions distinctes a partir desquelles un motif est recurrent (defaut : trends.min_sessions = 2)")
+    s.add_argument("--import-transcripts", action="store_true", help="importer d'abord l'usage en tokens des transcripts Claude Code des sessions retenues")
+    s.add_argument("--format", default="markdown", choices=("markdown", "json"))
+    s.add_argument("--out", help="fichier de sortie (sinon stdout)")
+    s.set_defaults(func=cmd_trends)
+
+    s = sub.add_parser("import-transcripts", help="lire l'usage en tokens des transcripts Claude Code (nombres et identifiants seulement)")
+    s.add_argument("--session", help="identifiant (complet ou prefixe) ou cle de dossier")
+    s.add_argument("--latest", action="store_true", help="derniere session claude-code enregistree")
+    s.add_argument("--all", action="store_true", help="toutes les sessions claude-code enregistrees")
+    s.set_defaults(func=cmd_import_transcripts)
 
     s = sub.add_parser("self-test", help="scenarios synthetiques + hook reel en sous-processus")
     s.add_argument("--runs", type=int, default=5)
