@@ -275,11 +275,16 @@ class EventStore:
         if not sdir.is_dir():
             return 0
         count = 0
-        for entry in os.scandir(sdir):
-            if entry.name.endswith(".json"):
-                count += 1
-                if count >= threshold:
-                    return self.compact_session(client, skey)
+        # * Sortie anticipee des que le seuil est atteint : le `with` ferme l'iterateur
+        #   scandir meme dans ce cas (sinon ResourceWarning "unclosed scandir iterator").
+        with os.scandir(sdir) as entries:
+            for entry in entries:
+                if entry.name.endswith(".json"):
+                    count += 1
+                    if count >= threshold:
+                        break
+        if count >= threshold:
+            return self.compact_session(client, skey)
         return 0
 
     def prune(self, retention_days: int, now: float | None = None) -> list[str]:
