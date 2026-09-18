@@ -185,13 +185,13 @@ class HostileInputTests(unittest.TestCase):
         self.assertEqual((r.returncode, r.stdout), (0, b""), r.stderr[-300:])
 
     def test_hostile_inputs(self) -> None:
-        deep: dict = {}
-        cur = deep
-        for _ in range(3000):
-            cur["k"] = {}
-            cur = cur["k"]
-        self._hook(json.dumps({"session_id": "h", "hook_event_name": "PostToolUse", "tool_name": "mcp__x__y", "tool_input": {"a": 1},
-                               "tool_use_id": "b", "tool_response": deep}).encode())
+        # * Imbrication construite en texte : `json.dumps` d'un objet de 3000 niveaux depasse la limite de
+        #   recursion de l'encodeur sous Python 3.12 (le test doit tourner sur 3.11+), alors que seul le
+        #   comportement du hook face a ce payload nous interesse.
+        deep = '{"k":' * 3000 + "{}" + "}" * 3000
+        head = json.dumps({"session_id": "h", "hook_event_name": "PostToolUse", "tool_name": "mcp__x__y", "tool_input": {"a": 1},
+                           "tool_use_id": "b"})
+        self._hook((head[:-1] + ',"tool_response":' + deep + "}").encode())
         self._hook(("{\"session_id\":\"h\",\"hook_event_name\":\"PreToolUse\",\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"ls\",\"x\":"
                     + "[" * 3000 + "]" * 3000 + "},\"tool_use_id\":\"a\"}").encode())
         self._hook(b'{"session_id":"h","hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"echo \xff\xfe"},"tool_use_id":"c"}')
@@ -202,7 +202,14 @@ class HostileInputTests(unittest.TestCase):
         store = EventStore(self.home, load_config(self.home))
         events, warnings = store.read_session_events("claude-code", "h")
         self.assertEqual(warnings, [])
-        self.assertEqual(len(events), 4)
+        # * Un JSON imbrique sur 3000 niveaux est accepte par l'analyseur de Python 3.14 et refuse par
+        #   celui de 3.12 (RecursionError). Invariant, quelle que soit la version : chaque payload donne
+        #   soit un evenement, soit un incident compte ; jamais une perte silencieuse.
+        diag_dir = self.home / "diagnostics"
+        diags = [json.loads(f.read_text(encoding="utf-8")) for f in sorted(diag_dir.glob("*.json"))] if diag_dir.is_dir() else []
+        too_deep = [d for d in diags if d["kind"] == "malformed" and d.get("error") == "RecursionError"]
+        self.assertEqual(len(events) + len(too_deep), 4, f"evenements={len(events)} incidents={diags}")
+        self.assertLessEqual(len(too_deep), 2)
         accents = next(e for e in events if e["call_id"] == "d")
         self.assertEqual(accents["target"], "d\u00e9j\u00e0 vu.py")
         buf = io.StringIO()

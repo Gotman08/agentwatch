@@ -62,6 +62,21 @@ class RichViewTests(unittest.TestCase):
         out = self._run("report", "--session", "rich")
         self.assertTrue(out.startswith("# AgentWatch - rapport de session"))
 
+    def test_missing_rich_names_the_running_interpreter(self) -> None:
+        # * Cas reel : deux Python sur la machine, Rich installe dans l'un seulement.
+        from unittest import mock
+        from agentwatch.reports import rich_view
+        with mock.patch.object(rich_view, "rich_available", return_value=False):
+            for fmt in ("rich", "html", "svg"):
+                with self.assertRaises(SystemExit) as ctx:
+                    cli.main(["--home", str(self.home), "report", "--session", "rich", "--format", fmt])
+                message = str(ctx.exception.code)
+                self.assertIn(sys.executable, message)
+                self.assertIn("-m pip install rich", message)
+            out = self._run("report", "--session", "rich")  # auto : repli Markdown silencieux
+            self.assertTrue(out.startswith("# AgentWatch - rapport de session"))
+            self.assertIn("-m pip install rich", self._run("doctor"))
+
     def test_piped_report_is_utf8(self) -> None:
         # * Sous Windows un tube herite de la page de code locale (cp1252) : le JSON redirige doit rester de l'UTF-8.
         for fmt in ("json", "markdown"):

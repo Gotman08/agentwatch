@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import io
 from typing import Any
 
 _CONF_STYLE = {"high": "bold red", "medium": "bold yellow", "low": "dim"}
@@ -20,6 +21,39 @@ def rich_available() -> bool:
         return True
     except ImportError:
         return False
+
+
+def rich_version() -> str | None:
+    try:
+        from importlib.metadata import version
+        return version("rich")
+    except Exception:  # noqa: BLE001 - metadonnees absentes : la version reste inconnue
+        return None
+
+
+def install_command() -> str:
+    """Commande d'installation pour L'INTERPRETEUR COURANT.
+
+    # ! Une machine a souvent plusieurs Python (python.org, Microsoft Store, venv) : un
+    #   `pip install rich` nu peut viser un autre interpreteur que celui qui lance AgentWatch.
+    #   On nomme donc toujours l'executable exact.
+    """
+    import sys
+    exe = sys.executable or "python"
+    return f'& "{exe}" -m pip install rich' if sys.platform == "win32" else f'"{exe}" -m pip install rich'
+
+
+def missing_rich_message() -> str:
+    import sys
+    ver = ".".join(str(x) for x in sys.version_info[:3])
+    lines = [
+        "le format demande necessite Rich, absent de l'interpreteur qui execute AgentWatch :",
+        f"  {sys.executable} (Python {ver})",
+        "Installez-le pour cet interpreteur precis (un `pip install rich` nu peut viser un autre Python) :",
+        f"  {install_command()}",
+        "Sans Rich : --format markdown (defaut hors terminal) ou --format json.",
+    ]
+    return "\n".join(lines)
 
 
 def _bar(value: float, maximum: float, width: int = 28) -> str:
@@ -231,18 +265,10 @@ def render_to_terminal(report: dict[str, Any]) -> None:
 def export(report: dict[str, Any], fmt: str, width: int = 120) -> str:
     """Rendu enregistre puis exporte en 'html', 'svg' ou 'text' (sans terminal)."""
     from rich.console import Console
-    console = Console(record=True, width=width, force_terminal=fmt != "text", color_system="truecolor" if fmt != "text" else None, file=_NullFile())
+    console = Console(record=True, width=width, force_terminal=fmt != "text", color_system="truecolor" if fmt != "text" else None, file=io.StringIO())
     render(report, console)
     if fmt == "html":
         return console.export_html(inline_styles=True)
     if fmt == "svg":
         return console.export_svg(title="AgentWatch - rapport de session")
     return console.export_text()
-
-
-class _NullFile:
-    def write(self, *_args: Any, **_kwargs: Any) -> None:
-        pass
-
-    def flush(self) -> None:
-        pass

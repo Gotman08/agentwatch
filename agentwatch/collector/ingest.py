@@ -201,7 +201,9 @@ def run_hook(argv: list[str], started_ns: int | None = None) -> int:
     try:
         import json
         payload = json.loads(raw.decode("utf-8", errors="replace"))
-    except ValueError as exc:
+    except (ValueError, RecursionError) as exc:
+        # ! RecursionError n'herite pas de ValueError : un JSON imbrique au-dela de la limite de
+        #   l'interpreteur (3000 niveaux sous Python 3.12) serait sinon perdu sans incident compte.
         _diag(home, cfg, "malformed", {"client": client, "stdin_bytes": len(raw),
                                        "truncated": truncated, "error": type(exc).__name__})
         return 0

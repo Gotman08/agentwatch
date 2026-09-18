@@ -6,7 +6,7 @@ officiels, puis les analyse hors ligne.
 
 ## Prerequis
 
-- Python 3.11+ (teste : 3.14.4 sous Windows 11 ; 3.12 sous WSL Ubuntu non teste).
+- Python 3.11+ (suite de tests verte sous 3.14.4 et 3.12.10, Windows 11 ; WSL Ubuntu non teste).
 - Claude Code et/ou Codex installes. Versions verifiees : voir `docs/compatibility.md`.
 - Aucune dependance a installer. Aucune connexion reseau n'est faite par AgentWatch.
 
@@ -142,8 +142,15 @@ du hook au moment de `configure`, donc les hooks ne dependent pas de l'environne
 ## Affichage enrichi (optionnel)
 
 ```bash
-pip install rich
+python -m pip install rich
 ```
+
+Rich doit etre installe pour l'interpreteur qui lance AgentWatch. Une machine Windows a
+souvent plusieurs Python (python.org, Microsoft Store, environnement virtuel) et un
+`pip install rich` nu peut en viser un autre : utilisez toujours `python -m pip`, avec le
+meme `python` que celui de `python -m agentwatch`. En cas d'absence, `--format rich`
+affiche le chemin exact de l'interpreteur et la commande d'installation correspondante ;
+`doctor` indique aussi si Rich est disponible.
 
 Avec Rich installe, `report --latest` dans un terminal interactif affiche des panneaux
 colores par confiance, des tableaux et des barres proportionnelles (appels, volumes,

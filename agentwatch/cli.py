@@ -178,7 +178,7 @@ def cmd_report(args: argparse.Namespace) -> int:
     if fmt in ("rich", "html", "svg"):
         from agentwatch.reports import rich_view
         if not rich_view.rich_available():
-            raise SystemExit("le format demande necessite Rich : pip install rich (ou pip install agentwatch[rich])")
+            raise SystemExit(rich_view.missing_rich_message())
         if fmt == "rich" and not args.out:
             rich_view.render_to_terminal(report)
             return 0
@@ -303,6 +303,11 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     _out(f"- Cle HMAC locale : {'presente' if key_ok else 'absente (creee au premier evenement)'}")
     entry = C.hook_entry_path()
     _out(f"- Point d'entree des hooks : {entry} ({'ok' if entry.is_file() else 'INTROUVABLE'})")
+    from agentwatch.reports import rich_view
+    if rich_view.rich_available():
+        _out(f"- Affichage Rich (optionnel) : disponible pour cet interpreteur (rich {rich_view.rich_version() or 'version inconnue'})")
+    else:
+        _out(f"- Affichage Rich (optionnel) : absent pour cet interpreteur ; installer avec : {rich_view.install_command()}")
     # * doctor ne cree rien : le test d'ecriture ne se fait que si le dossier existe deja.
     if home.is_dir():
         try:
@@ -519,6 +524,33 @@ def _configure_stdout() -> None:
             pass
 
 
+def _stdout_pipe_closed(exc: BaseException) -> bool:
+    """Vrai si l'erreur vient d'un tube de sortie ferme par son lecteur (EPIPE, ou EINVAL sous Windows).
+
+    # ? EINVAL est ambigu : on ne conclut a un tube ferme que si stdout n'est pas une console ET
+    #   qu'un nouveau flush echoue aussi. Stdout est alors redirige vers le neant pour eviter le
+    #   message "Exception ignored" a l'arret de l'interpreteur.
+    """
+    import errno
+    if not isinstance(exc, OSError) or exc.errno not in (errno.EPIPE, errno.EINVAL):
+        return False
+    if not isinstance(exc, BrokenPipeError):  # EPIPE est sans ambiguite ; EINVAL demande une preuve
+        try:
+            if sys.stdout.isatty():
+                return False
+            sys.stdout.flush()
+            return False
+        except (OSError, ValueError):
+            pass
+    try:
+        devnull = os.open(os.devnull, os.O_WRONLY)
+        os.dup2(devnull, sys.stdout.fileno())
+        os.close(devnull)
+    except (OSError, ValueError, AttributeError):
+        pass
+    return True
+
+
 def main(argv: list[str] | None = None) -> int:
     _configure_stdout()
     parser = build_parser()
@@ -530,6 +562,8 @@ def main(argv: list[str] | None = None) -> int:
     except KeyboardInterrupt:
         return 130
     except Exception as exc:  # noqa: BLE001 - message explicite, pas de trace brute pour l'utilisateur
+        if _stdout_pipe_closed(exc):
+            return 0  # * `... | head`, `... | Select-Object -First 5` : le lecteur est parti, ce n'est pas une erreur
         _err(f"erreur : {type(exc).__name__}: {exc}")
         if os.environ.get("AGENTWATCH_DEBUG"):
             raise
