@@ -127,6 +127,35 @@ def same_context(a: Call, b: Call) -> bool:
     return a.agent_key == b.agent_key and a.context_epoch == b.context_epoch and a.session_id == b.session_id
 
 
+def emitter(c: Call) -> str | None:
+    """Requete du modele qui a emis l'appel (transcript Claude Code ou rollout Codex importe), sinon None."""
+    rid = (c.usage or {}).get("emitter_request_id")
+    return rid if isinstance(rid, str) and rid else None
+
+
+def gap_ms(prev: Call, cur: Call) -> int | None:
+    if prev.end_ns is None or cur.start_ns is None:
+        return None
+    return (cur.start_ns - prev.end_ns) // 1_000_000
+
+
+def same_response(prev: Call, cur: Call, gap_threshold_ms: int) -> tuple[bool, str]:
+    """(emis dans la meme reponse du modele ?, base) : requete emettrice si connue (exact), sinon ecart entre la fin
+    de l'un et le debut de l'autre sous le seuil (heuristique : surcout des hooks, pas un aller-retour du modele)."""
+    ea, eb = emitter(prev), emitter(cur)
+    if ea and eb:
+        return ea == eb, "transcript"
+    gap = gap_ms(prev, cur)
+    if gap is None:
+        return False, "inconnu"
+    return gap < gap_threshold_ms, "ecart"
+
+
+def responses_of(calls: list[Call], gap_threshold_ms: int) -> int:
+    """Nombre de reponses du modele (allers-retours) pour une suite d'appels consecutifs d'un meme agent."""
+    return 1 + sum(1 for a, b in zip(calls, calls[1:]) if not same_response(a, b, gap_threshold_ms)[0]) if calls else 0
+
+
 def rank_findings(findings: list[Finding]) -> list[Finding]:
     """Classement transparent : confiance, nombre d'appels, tokens mesures (si importes), octets observes."""
     return sorted(findings, key=lambda f: (f.confidence_rank, len(f.calls), cost_tokens(f.observed_cost) or 0,

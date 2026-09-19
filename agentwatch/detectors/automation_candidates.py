@@ -6,8 +6,15 @@ et de parametres) et des parametres variables (cibles differentes).
 
 Les etapes sont separees en "mecaniques" (structure et parametres stables ou
 simplement substitues) et "jugement" (contenu d'edition variable, commande variable,
-statut different selon l'occurrence). Le resultat est un candidat a valider : rien
-n'est genere ni execute.
+contenu compose par le modele a chaque occurrence : code, message, requete ; statut
+different selon l'occurrence). Le resultat est un candidat a valider : rien n'est genere
+ni execute.
+
+# ! v1.1, constate sur une session Codex reelle (2026-09-19) : 30 signalements sur 32 portaient sur des
+#   messages entre agents (send_message, wait_agent) ou sur des appels MCP dont le modele ecrit le code a
+#   chaque fois (node_repl.js, unreal_editor_py), classes "mecaniques" parce que les NOMS des parametres ne
+#   changeaient pas. La coordination n'entre plus dans les sequences, et un parametre de contenu qui varie
+#   fait de l'etape une etape de jugement.
 """
 
 from __future__ import annotations
@@ -21,7 +28,39 @@ from agentwatch.core.correlate import Call, SessionView
 from agentwatch.detectors import base as B
 
 RULE_ID = "D.automation_candidates"
-RULE_VERSION = "1.0"
+RULE_VERSION = "1.2"
+# * Coordination (messages et attentes entre agents, plan, questions) : pas une etape de travail a scripter.
+_COORDINATION_PREFIXES = ("collaboration.",)
+_COORDINATION_TOOLS = {"wait", "clock.sleep", "request_user_input_async", "update_plan", "write_stdin", "TodoWrite",
+                       "AskUserQuestion", "TaskOutput", "TaskStop", "ToolSearch", "ExitPlanMode", "Skill"}
+# * Parametres qui designent une cible ou un reglage : un script les substitue. Tout autre parametre qui varie
+#   (code, message, requete en langue naturelle) est du contenu compose par le modele : une etape de jugement.
+_TARGET_PARAMS = {"path", "file_path", "filePath", "file", "files", "paths", "directory", "dir", "cwd", "projectPath",
+                  "id", "name", "limit", "offset", "page", "cursor", "target", "workdir", "pattern", "glob", "include",
+                  "type", "output_mode", "pages", "timeout", "timeout_ms", "yield_time_ms", "max_output_tokens",
+                  "login", "shell", "run_in_background", "description"}
+_DERIVED_PARAMS = {"command", "shell_kind", "shell_heads", "shell_paths", "patch_paths", "patch_chars", "patch_fp",
+                   "content_chars", "content_fp", "new_chars", "new_fp", "old_chars", "old_fp", "_input_type", "_dropped"}
+
+
+def _is_coordination(c: Call) -> bool:
+    name = c.tool_name or ""
+    return name.startswith(_COORDINATION_PREFIXES) or name in _COORDINATION_TOOLS or c.category == S.CAT_AGENT
+
+
+def _varying_content(col: list[Call]) -> list[str]:
+    """Parametres de contenu (en clair ou en empreinte) dont la valeur change d'une occurrence a l'autre."""
+    import json as _json
+    keys: set[str] = set()
+    for c in col:
+        keys |= {k for k in c.params if k not in _TARGET_PARAMS and k not in _DERIVED_PARAMS and k != "_fp"}
+        keys |= {k for k in (c.params.get("_fp") or {}) if k not in _TARGET_PARAMS}
+    out = []
+    for k in sorted(keys):
+        vals = {_json.dumps(c.params.get(k, (c.params.get("_fp") or {}).get(k)), sort_keys=True, default=str) for c in col}
+        if len(vals) > 1:
+            out.append(k)
+    return out
 
 
 def _shape(c: Call) -> str:
@@ -81,7 +120,16 @@ def _mine(seq: list[Call], n_min: int, n_max: int, min_occ: int) -> list[tuple[t
         if not dominated:
             closed.append((gram, occ))
     closed.sort(key=lambda g: (len(g[1]), len(g[0])), reverse=True)
-    return closed
+    # * Un meme cycle se lit sous plusieurs rotations (A -> B et B -> A) : seule la plus frequente est gardee.
+    kept: list[tuple[tuple[str, ...], list[list[Call]]]] = []
+    seen_cycles: set[tuple[str, ...]] = set()
+    for gram, occ in closed:
+        cycle = min(gram[i:] + gram[:i] for i in range(len(gram)))
+        if cycle in seen_cycles:
+            continue
+        seen_cycles.add(cycle)
+        kept.append((gram, occ))
+    return kept
 
 
 def _analyse(gram: tuple[str, ...], occ: list[list[Call]]) -> dict[str, Any]:
@@ -103,8 +151,16 @@ def _analyse(gram: tuple[str, ...], occ: list[list[Call]]) -> dict[str, Any]:
             heads = {tuple(c.params.get("shell_heads") or []) for c in col}
             if len(heads) > 1:
                 kind, reason = "judgment", "commande de structure variable"
+            elif any(c.op == "unknown" for c in col):
+                # * Commande non reconnue dont le texte change (script en ligne `@'...'@ | python`, filtre, git) :
+                #   rien ne prouve qu'il ne s'agit que d'une substitution de chemin.
+                kind, reason = "judgment", "commande non reconnue dont le texte change (script en ligne, options) : contenu compose"
             else:
                 reason = "meme commande, chemins substitues"
+        if kind == "mechanical" and first.category not in (S.CAT_EDIT, S.CAT_WRITE, S.CAT_SHELL):
+            content = _varying_content(col)
+            if content:
+                kind, reason = "judgment", f"contenu compose par le modele a chaque occurrence ({', '.join(content[:4])})"
         if len(statuses) > 1:
             kind, reason = "judgment", reason + " ; statut variable selon l'occurrence (branchement)"
         if kind == "judgment":
@@ -125,21 +181,33 @@ def detect(view: SessionView, cfg: dict[str, Any]) -> list[B.Finding]:
     max_calls = int(d.get("max_calls", 2000))
     findings: list[B.Finding] = []
     by_agent: dict[str, list[Call]] = defaultdict(list)
+    gap_threshold = int(cfg.get("detectors", {}).get("batchable", {}).get("same_response_gap_ms", 2000))
     for c in view.calls[-max_calls:]:
-        by_agent[c.agent_key].append(c)
+        if not _is_coordination(c):
+            by_agent[c.agent_key].append(c)
     for agent, seq in by_agent.items():
         for gram, occ in _mine(seq, n_min, n_max, min_occ)[:10]:
             info = _analyse(gram, occ)
             n = len(occ)
             if info["judgment_steps"] >= len(info["steps"]):
                 continue  # * aucune etape mecanique : rien a automatiser, on ne signale pas
+            # * Valeur d'une automatisation : les allers-retours du modele qu'elle evite. Une occurrence deja emise
+            #   en une seule reponse (actions d'un meme exec Codex, appels paralleles) n'en coute aucun de plus.
+            per_occ = [B.responses_of(o, gap_threshold) for o in occ]
+            avoidable = sum(max(0, r - 1) for r in per_occ)
+            if avoidable == 0:
+                continue  # * le modele enchaine deja ces etapes en une reponse : rien a gagner
+            exact = all(B.emitter(c) for o in occ for c in o)
             for step in info["steps"]:
                 if isinstance(step.get("example_target"), str) and len(step["example_target"]) > 80:
                     step["example_target"] = step["example_target"][:80] + "..."
-            if info["judgment_steps"] == 0 and info["all_success"] and n >= min_occ + 1:
+            if info["judgment_steps"] == 0 and info["all_success"] and n >= min_occ + 1 and avoidable >= n:
                 conf, why = B.CONFIDENCE_HIGH, f"{n} occurrences, toutes reussies, aucune etape de jugement detectee"
-            elif info["judgment_steps"] <= 1:
+            elif info["judgment_steps"] <= 1 and avoidable * 2 >= n:
                 conf, why = B.CONFIDENCE_MEDIUM, f"{n} occurrences ; {info['judgment_steps']} etape(s) de jugement ou occurrences au seuil"
+            elif info["judgment_steps"] <= 1:
+                conf, why = B.CONFIDENCE_LOW, (f"{n} occurrences mais la plupart deja emises en une seule reponse "
+                                               f"({avoidable} aller(s)-retour(s) evitable(s) seulement)")
             else:
                 conf, why = B.CONFIDENCE_LOW, f"{n} occurrences mais {info['judgment_steps']} etapes exigent encore un jugement"
             members = [c for o in occ for c in o]
@@ -162,9 +230,12 @@ def detect(view: SessionView, cfg: dict[str, Any]) -> list[B.Finding]:
                 confidence=conf, confidence_rationale=why + ". " + B.LIMIT_HEURISTIC,
                 calls=[c.key for c in members], call_refs=B.refs(members),
                 evidence={"agent": agent, "pattern": list(gram), "occurrences": n, "pattern_length": len(gram),
-                          "occurrence_seqs": [[c.seq for c in o] for o in occ], "judgment_steps": info["judgment_steps"]},
+                          "occurrence_seqs": [[c.seq for c in o] for o in occ], "judgment_steps": info["judgment_steps"],
+                          "responses_per_occurrence": per_occ, "avoidable_round_trips": avoidable,
+                          "round_trip_basis": "requetes emettrices (transcript ou rollout)" if exact else "ecarts entre appels (heuristique)"},
                 explanation=(f"La sequence {recipe['name']} apparait {n} fois avec la meme structure ; "
-                             f"{len(info['inputs'])} position(s) ont une cible variable."),
+                             f"{len(info['inputs'])} position(s) ont une cible variable ; {avoidable} aller(s)-retour(s) du modele "
+                             f"auraient ete evites si elle avait ete faite d'un bloc."),
                 counter_indications=[
                     "Les decisions prises entre deux appels (lecture du resultat, choix de la cible suivante) ne sont pas observables.",
                     "Une structure stable n'implique pas une semantique stable (commandes shell notamment).",

@@ -67,27 +67,7 @@ def _overlaps(prev: Call, cur: Call) -> bool | None:
     return cur.start_ns < prev.end_ns
 
 
-def _emitter(c: Call) -> str | None:
-    """Requete API qui a emis l'appel (transcript Claude Code ou rollout Codex importe), sinon None."""
-    rid = (c.usage or {}).get("emitter_request_id")
-    return rid if isinstance(rid, str) and rid else None
-
-
-def _gap_ms(prev: Call, cur: Call) -> int | None:
-    if prev.end_ns is None or cur.start_ns is None:
-        return None
-    return (cur.start_ns - prev.end_ns) // 1_000_000
-
-
-def _same_response(prev: Call, cur: Call, gap_threshold_ms: int) -> tuple[bool, str]:
-    """(emis dans la meme reponse du modele ?, base de la decision)."""
-    ea, eb = _emitter(prev), _emitter(cur)
-    if ea and eb:
-        return ea == eb, "transcript"
-    gap = _gap_ms(prev, cur)
-    if gap is None:
-        return False, "inconnu"
-    return gap < gap_threshold_ms, "ecart"
+_emitter, _gap_ms, _same_response = B.emitter, B.gap_ms, B.same_response
 
 
 def _path_of(c: Call) -> str:
