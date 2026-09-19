@@ -129,6 +129,19 @@ class RepeatedCallsTests(unittest.TestCase):
         self.assertEqual((g["verdict"], g["kind"]), ("agent", "polling_instead_of_wait"))
         self.assertEqual(g["wait_alternative"]["tool"], "mcp__romeo__wait_for_job")
 
+    def test_a_single_in_progress_repeat_is_not_polling(self) -> None:
+        # * Faux positif du 2026-09-19 : job_status repris une fois "en cours", puis apres une action ; l'etat a change.
+        s = self._synth("thin")
+        s.mcp("romeo", "wait_for_job", {"job_id": 1}, json.dumps({"status": "COMPLETED"}))
+        s.response_gap_ms = 15_000
+        s.mcp("romeo", "job_status", {"job_id": 42}, json.dumps({"status": "PENDING"}))
+        s.mcp("romeo", "job_status", {"job_id": 42}, json.dumps({"status": "RUNNING"}))
+        s.mcp("romeo", "submit_job", {"script": "x"}, json.dumps({"job_id": 43}))
+        s.mcp("romeo", "job_status", {"job_id": 42}, json.dumps({"status": "COMPLETED"}))
+        g = self._group(s.view(), "mcp__romeo__job_status")
+        self.assertNotEqual(g["kind"], "polling_instead_of_wait")
+        self.assertEqual(g["verdict"], "justifie")
+
     def test_retrying_an_unavailable_service_is_legitimate(self) -> None:
         # * Le cas decrit par l'utilisateur : Romeo pas encore actif, l'agent retente ; les reprises sont justifiees.
         s = self._synth("unavail")

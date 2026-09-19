@@ -506,7 +506,9 @@ def _summarise(gk: str, calls: list[Call], reps: list[dict[str, Any]], d: dict[s
     verdict, kind, why, suggestion = "indetermine", None, "", ""
     if n_rt == 0:
         verdict, why = "gratuit", "toutes les repetitions sont dans une meme reponse du modele (script, appels paralleles)"
-    elif polling * 2 >= n_rt or periodic:
+    elif (polling * 2 >= n_rt and polling >= 2) or periodic:
+        # * Au moins deux reprises sur un etat "en cours" ou "indisponible" : une seule ne fait pas un sondage
+        #   (faux positif du 2026-09-19 : job_status repris une fois en cours, puis apres consigne et action).
         cadence = _cadence(calls, reps, episodes, d)
         rec = cadence["recommended"]
         cad_txt = (f"un appel toutes les {fmt_duration(rec['cooldown_s'])} au plus aurait evite {rec['avoided']} appel(s) sur "
