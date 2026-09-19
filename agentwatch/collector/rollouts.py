@@ -288,8 +288,13 @@ class RolloutReader:
         return self.meta.get("cwd") or self.st.get("cwd")
 
     def _tool_events(self, call_id: str, tool: str, tool_input: Any, response: Any, start_ns: int | None, end_ns: int | None,
-                     cwd: str | None, evidence: dict[str, Any], with_start: bool = True) -> dict[str, Any] | None:
-        """Un debut et une fin, fabriques comme des payloads de hook puis passes par l'adaptateur Codex."""
+                     cwd: str | None, evidence: dict[str, Any], with_start: bool = True,
+                     synthetic: bool = False) -> dict[str, Any] | None:
+        """Un debut et une fin, fabriques comme des payloads de hook puis passes par l'adaptateur Codex.
+
+        # ! `synthetic` : la reponse est fabriquee (image vue, patch) ; ses empreintes ne diraient rien du contenu
+        #   reel et feraient passer deux resultats differents pour identiques. Elles sont retirees.
+        """
         ctx = self._ctx_cls(self.cfg, self.fp, self._project())
         base = {"session_id": self.session_id, "turn_id": self.st.get("turn_id"), "cwd": cwd or self.st.get("cwd"),
                 "model": self.st.get("model"), "tool_name": tool, "tool_use_id": call_id, "tool_input": tool_input}
@@ -304,6 +309,11 @@ class RolloutReader:
             ev["warnings"] = [w for w in ev["warnings"] if w not in ("tool_input missing",)]
             ev["evidence"].pop("payload_keys", None)
             ev["evidence"].update(evidence)
+            if synthetic:
+                ev["result_fingerprint"] = None
+                ev["content_fingerprint"] = None
+                ev["output_size_bytes"] = None
+                ev["output_size_source"] = None
             self._finish(ev, end_ns, self._event_id("end", call_id))
             end_ev = ev
         return end_ev
@@ -407,6 +417,7 @@ class RolloutReader:
             if ex is not None:
                 if not ex["actions"]:
                     self.st["execs_without_actions"] += 1
+                self._image_fingerprints(ex, p.get("output"), ns)
                 self.st["done_execs"][cid] = ex
                 self.st["to_consume"].append([cid, size, "exec"])
         elif pt == "function_call":
@@ -421,6 +432,21 @@ class RolloutReader:
             text = _content_text(p.get("content"))
             self._message("agent", text, ns, ("agent_message", p.get("id") or offset),
                           {"author": str(p.get("author") or "")[:120] or None, "recipient": str(p.get("recipient") or "")[:120] or None})
+
+    def _image_fingerprints(self, ex: dict[str, Any], output: Any, ns: int | None) -> None:
+        """Empreinte du contenu de chaque image vue, si l'exec rend exactement une image par vue (dans l'ordre)."""
+        views = ex.get("images") or []
+        if not views or not isinstance(output, list):
+            return
+        images = [c.get("image_url") for c in output if isinstance(c, dict) and c.get("type") == "input_image"]
+        if len(images) != len(views) or not all(isinstance(u, str) for u in images):
+            return     # ? association incertaine : pas d'empreinte plutot qu'une empreinte fausse
+        for iid, url in zip(views, images):
+            ev = S.empty_event()
+            ev.update({"client": CLIENT_CODEX, "phase": S.PHASE_OBSERVATION, "session_id": self.session_id, "call_id": iid,
+                       "hook_event_name": "rollout_image", "tool_name": "view_image",
+                       "content_fingerprint": {"method": "hmac-sha256-image", "value": self.fp(url), "chars": len(url)}})
+            self._finish(ev, ns, self._event_id("image", iid))
 
     def _message(self, role: str, text: str, ns: int | None, eid: tuple[Any, ...], extra: dict[str, Any]) -> None:
         paras, chars = paragraph_fingerprints(text, self.fp)
@@ -499,7 +525,8 @@ class RolloutReader:
             patch = "*** Begin Patch\n" + "\n".join(headers) + "\n*** End Patch"
             resp = {"output": "", "exit_code": 0 if item.get("status") in ("completed", None) else 1}
             evidence["change_kinds"] = kinds
-            self._tool_events(iid, "apply_patch", {"input": patch}, resp, start_ns, end_ns, cwd, evidence, with_start=fn is None)
+            self._tool_events(iid, "apply_patch", {"input": patch}, resp, start_ns, end_ns, cwd, evidence, with_start=fn is None,
+                              synthetic=True)
             # * Taille et empreinte des diffs reels, pas de l'en-tete synthetique ci-dessus.
             diff_text = "\n".join(diffs)
             for ev in self.events[-2:]:
@@ -508,7 +535,10 @@ class RolloutReader:
                     ev["params"]["patch_fp"] = self.fp(diff_text)[:10] if diff_text else None
         elif ty == "ImageView":
             resp = {"output": "", "exit_code": 0}
-            self._tool_events(iid, "view_image", {"path": clean_path(item.get("path"))}, resp, start_ns, end_ns, cwd, evidence, with_start=fn is None)
+            self._tool_events(iid, "view_image", {"path": clean_path(item.get("path"))}, resp, start_ns, end_ns, cwd, evidence,
+                              with_start=fn is None, synthetic=True)
+            if parent is not None and parent in self.st["open_execs"]:
+                self.st["open_execs"][parent].setdefault("images", []).append(iid)
         elif ty == "Extension":
             kind = str(item.get("kind") or "extension")
             action = item.get("action") if isinstance(item.get("action"), dict) else {}

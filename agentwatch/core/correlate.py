@@ -467,6 +467,9 @@ def _apply_tool_event(ev: dict[str, Any], phase: str, ns: int, agent: str, epoch
             call.duration_ms, call.duration_source = ev["duration_ms"], ev.get("duration_source") or "observation"
         if isinstance(ev.get("usage"), dict) and call.usage is None:
             call.usage = ev["usage"]
+        cf = ev.get("content_fingerprint")
+        if isinstance(cf, dict) and cf.get("value") and call.content_fingerprint is None:
+            call.content_fingerprint = cf["value"]     # * ex. image vue : contenu lu dans la sortie de l'exec (rollout)
     for w in ev.get("warnings") or []:
         if w not in call.warnings:
             call.warnings.append(w)

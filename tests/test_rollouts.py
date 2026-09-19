@@ -275,6 +275,34 @@ class RolloutImportTests(unittest.TestCase):
         self.assertIn("rollout", found[0].evidence["separation_basis"])
         self.assertEqual(found[0].evidence["grouped_tool"]["status"], "verified_in_session")
 
+    def test_image_views_compare_the_real_image(self) -> None:
+        # * Faux positif reel (2026-09-19) : 3 "images vues plusieurs fois" alors qu'Unreal les re-rendait entre les vues.
+        from agentwatch.detectors import redundant_reads
+        for name, datas in (("changee", ["data:image/png;base64,AAAA", "data:image/png;base64,BBBB"]),
+                            ("identique", ["data:image/png;base64,AAAA", "data:image/png;base64,AAAA"])):
+            b = RolloutBuilder(ROOT).meta().turn("turn-1")
+            for i, data in enumerate(datas):
+                b.add("response_item", {"type": "custom_tool_call", "id": f"c{i}", "status": "completed", "call_id": f"call_img{i}",
+                                        "name": "exec", "input": "SECRET JS"})
+                b.usage(1000, 900, 20)
+                start = b.ms()
+                b.add("event_msg", {"type": "item_completed", "thread_id": ROOT, "turn_id": "t",
+                                    "item": {"type": "ImageView", "id": f"exec-img{i}", "path": "C:\\proj\\Saved\\icon.png"},
+                                    "started_at_ms": start, "completed_at_ms": start + 20})
+                b.add("response_item", {"type": "custom_tool_call_output", "id": f"o{i}", "call_id": f"call_img{i}",
+                                        "output": [{"type": "input_text", "text": "vue"}, {"type": "input_image", "image_url": data}]})
+            b.end_turn("turn-1")
+            home = Path(self.tmp.name) / name
+            cfg = dict(self.cfg)
+            store = EventStore(home, cfg)
+            R.import_rollouts(store, cfg, [str(self._write(b))])
+            (c, k), = [(c, k) for c, k, _ in store.iter_sessions()]
+            v = load_session(store, c, k, cfg)
+            views = [x for x in v.calls if x.tool_name == "view_image"]
+            self.assertTrue(all(x.content_fingerprint for x in views))
+            found = redundant_reads.detect(v, cfg)
+            self.assertEqual(len(found), 0 if name == "changee" else 1, name)
+
     def test_cli_import_follow_free_and_report(self) -> None:
         self._write(self._main())
         buf, err = io.StringIO(), io.StringIO()
