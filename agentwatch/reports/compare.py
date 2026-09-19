@@ -5,6 +5,10 @@
 #   l'activite (pour 1 000 reponses du modele ou 1 000 appels), avec un intervalle de confiance a 95 % sur le
 #   rapport des taux (loi de Poisson, methode du logarithme). Une difference n'est dite demontree que si
 #   l'intervalle exclut 1 ; avec trop peu d'evenements, rien n'est conclu.
+# ! Les pertes arrivent par grappes (une longue attente produit plusieurs reprises, un signalement plusieurs appels) :
+#   les compter comme independantes donnerait un intervalle trop etroit. L'incertitude est donc calculee sur le
+#   nombre de GRAPPES (groupes d'appels repetes, signalements) : correction prudente, qui suppose les evenements
+#   d'une grappe entierement lies.
 # ! Deux periodes different aussi par le travail fait : une baisse peut venir d'une tache differente. La
 #   comparaison le rappelle toujours ; elle ne vaut que pour des periodes de travail comparable.
 """
@@ -29,6 +33,7 @@ def measure(view: SessionView, cfg: dict[str, Any]) -> dict[str, Any]:
     from agentwatch.detectors import repeated_calls as G
     from agentwatch.detectors import run_detectors
     counts: Counter[str] = Counter()
+    clusters: Counter[str] = Counter()
     ctx: Counter[str] = Counter()
     res = G.analyse(view, cfg)
     by_key = {c.key: c for c in view.calls}
@@ -39,10 +44,12 @@ def measure(view: SessionView, cfg: dict[str, Any]) -> dict[str, Any]:
                   if m.phase == S.PHASE_USAGE and isinstance(m.meta.get("usage"), dict) and m.meta["usage"].get("scope") == "response"}
     nogain_cost: dict[str, Counter[str]] = {"G.sans_apport": Counter(), "G.sans_apport_attente": Counter()}
     for g in res["groups"]:
+        hit: set[str] = set()
         for i, r in enumerate(g["repeats"]):
             if not r.get("round_trip") or r.get("value") not in ("no_gain", "explained_no_gain"):
                 continue
             keys = ["G.sans_apport"] + (["G.sans_apport_attente"] if r.get("reason") in ("waiting", "unavailable") else [])
+            hit.update(keys)
             call = by_key.get(g["call_keys"][i + 1])
             u = (call.usage or {}) if call else {}
             for k in keys:
@@ -57,24 +64,32 @@ def measure(view: SessionView, cfg: dict[str, Any]) -> dict[str, Any]:
                         nogain_cost[k]["responses"] += 1
                         for f in ("input_tokens", "cached_input_tokens", "output_tokens"):
                             nogain_cost[k][f] += int(ru.get(f) or 0)
+        clusters.update(hit)
     for g in res["groups"]:
-        if g["verdict"] in ("agent", "outil"):
+        if g["verdict"] in ("agent", "outil") and g["round_trips"]:
             counts["G.ameliorable"] += g["round_trips"]
+            clusters["G.ameliorable"] += 1
             ctx["G.ameliorable"] += g["context_reread_tokens"] or 0
-        if g["kind"]:
+        if g["kind"] and g["round_trips"]:
             counts[f"G.{g['kind']}|{g['tool']}"] += g["round_trips"]
+            clusters[f"G.{g['kind']}|{g['tool']}"] += 1
             ctx[f"G.{g['kind']}|{g['tool']}"] += g["context_reread_tokens"] or 0
     for f in run_detectors(view, cfg, only=["redundant_reads", "error_loops", "tool_gap"]):
         letter = f.rule_id.split(".", 1)[0]
+        key = {"A": "A.relectures", "B": "B.echecs_en_boucle", "E": "E.service_a_la_main"}.get(letter)
         if letter == "A":
-            counts["A.relectures"] += int(f.evidence.get("items") or 0) if f.kind == "repeated_read_batch" else len(f.calls) - 1
-        elif letter == "B":
-            counts["B.echecs_en_boucle"] += len(f.calls)
-        elif letter == "E":
-            counts["E.service_a_la_main"] += len(f.calls)
+            counts[key] += int(f.evidence.get("items") or 0) if f.kind == "repeated_read_batch" else len(f.calls) - 1
+        elif key:
+            counts[key] += len(f.calls)
+        if key:
+            clusters[key] += 1
     responses = [m.meta["usage"] for m in view.markers if m.phase == S.PHASE_USAGE and isinstance(m.meta.get("usage"), dict)
                  and m.meta["usage"].get("scope") == "response"]
     counts["erreurs"] = sum(1 for c in view.calls if c.status in _FAILED)
+    # * Occasions d'attendre : sans attente, une habitude d'attente disparait faute d'occasion, pas grace a une correction.
+    counts["attentes"] = sum(1 for c in view.calls if c.agent_key not in view.timing_unreliable_agents
+                             and G._WAIT_NAME.search(c.mcp_tool or c.tool_name or ""))
+    clusters["erreurs"] = counts["erreurs"]          # * un appel en erreur n'est pas groupe : grappe = appel
     # * Taches : un tour du fil principal (demande de l'utilisateur) ou d'un sous-agent (tache confiee) ; termine
     #   (task_complete, avec sa duree) ou interrompu (turn_aborted).
     tasks: dict[str, Any] = {"main_done": 0, "main_aborted": 0, "sub_done": 0, "sub_aborted": 0,
@@ -93,7 +108,7 @@ def measure(view: SessionView, cfg: dict[str, Any]) -> dict[str, Any]:
             "cached_input_tokens": sum(int(u.get("cached_input_tokens") or 0) for u in responses),
             "output_tokens": sum(int(u.get("output_tokens") or 0) for u in responses),
             "reasoning_output_tokens": sum(int(u.get("reasoning_output_tokens") or 0) for u in responses),
-            "counts": dict(counts), "ctx": dict(ctx), "sessions": 1 if view.calls else 0, "tasks": tasks,
+            "counts": dict(counts), "clusters": dict(clusters), "ctx": dict(ctx), "sessions": 1 if view.calls else 0, "tasks": tasks,
             "nogain_cost": {k: dict(v) for k, v in nogain_cost.items()},
             "session_ids": [view.session_id] if view.calls else [],
             "first_time": view.first_time, "last_time": view.last_time}
@@ -103,7 +118,8 @@ _SUMS = ("calls", "responses", "input_tokens", "cached_input_tokens", "output_to
 
 
 def merge(measures: list[dict[str, Any]]) -> dict[str, Any]:
-    out: dict[str, Any] = {**{k: 0 for k in _SUMS}, "counts": Counter(), "ctx": Counter(), "first_time": None, "last_time": None,
+    out: dict[str, Any] = {**{k: 0 for k in _SUMS}, "counts": Counter(), "clusters": Counter(), "ctx": Counter(),
+                           "first_time": None, "last_time": None,
                            "nogain_cost": {"G.sans_apport": Counter(), "G.sans_apport_attente": Counter()},
                            "session_ids": [], "tasks": {"main_done": 0, "main_aborted": 0, "sub_done": 0, "sub_aborted": 0,
                                                         "main_durations_ms": [], "sub_durations_ms": []}}
@@ -111,6 +127,7 @@ def merge(measures: list[dict[str, Any]]) -> dict[str, Any]:
         for k in _SUMS:
             out[k] += m.get(k, 0)
         out["counts"].update(m["counts"])
+        out["clusters"].update(m.get("clusters") or m["counts"])
         out["ctx"].update(m["ctx"])
         out["session_ids"] += m.get("session_ids", [])
         for k, v in (m.get("nogain_cost") or {}).items():
@@ -121,23 +138,32 @@ def merge(measures: list[dict[str, Any]]) -> dict[str, Any]:
             out["first_time"] = m["first_time"]
         if m["last_time"] and (out["last_time"] is None or m["last_time"] > out["last_time"]):
             out["last_time"] = m["last_time"]
-    out["counts"], out["ctx"] = dict(out["counts"]), dict(out["ctx"])
+    out["counts"], out["clusters"], out["ctx"] = dict(out["counts"]), dict(out["clusters"]), dict(out["ctx"])
     out["nogain_cost"] = {k: dict(v) for k, v in out["nogain_cost"].items()}
     return out
 
 
-def rate_ratio(k1: int, n1: int, k2: int, n2: int) -> dict[str, Any] | None:
-    """Rapport des taux (apres / avant) et IC 95 % (Poisson, methode du logarithme ; 0,5 ajoute si un compte est nul)."""
+def rate_ratio(k1: int, n1: int, k2: int, n2: int, c1: int | None = None, c2: int | None = None) -> dict[str, Any] | None:
+    """Rapport des taux (apres / avant) et IC 95 % (Poisson, methode du logarithme ; 0,5 ajoute si un compte est nul).
+
+    `c1`, `c2` : nombre de grappes ; l'ecart-type est alors calcule sur les grappes (evenements d'une grappe lies)."""
     if n1 <= 0 or n2 <= 0:
         return None
     a, b = (k1 + 0.5, k2 + 0.5) if 0 in (k1, k2) else (float(k1), float(k2))
     rr = (b / n2) / (a / n1)
-    se = math.sqrt(1 / a + 1 / b)
-    return {"ratio": rr, "low": rr * math.exp(-1.96 * se), "high": rr * math.exp(1.96 * se)}
+    ca = float(c1) if c1 is not None else a
+    cb = float(c2) if c2 is not None else b
+    ca, cb = (ca + 0.5, cb + 0.5) if 0 in (ca, cb) else (ca, cb)
+    se = math.sqrt(1 / ca + 1 / cb)
+    return {"ratio": rr, "low": rr * math.exp(-1.96 * se), "high": rr * math.exp(1.96 * se),
+            "clusters": [c1, c2] if c1 is not None else None}
 
 
-def _conclusion(k1: int, n1: int, k2: int, n2: int, rr: dict[str, Any] | None, loss: bool) -> str:
-    if rr is None or k1 + k2 < MIN_EVENTS or min(n1, n2) < MIN_ACTIVITY:
+MIN_CLUSTERS = 5         # * sous ce nombre de grappes (avant + apres), aucune conclusion
+
+
+def _conclusion(k1: int, n1: int, k2: int, n2: int, rr: dict[str, Any] | None, loss: bool, clusters: int | None = None) -> str:
+    if rr is None or k1 + k2 < MIN_EVENTS or min(n1, n2) < MIN_ACTIVITY or (clusters is not None and clusters < MIN_CLUSTERS):
         return "trop peu de donnees pour conclure"
     if rr["high"] < 1:
         return "baisse demontree" + (" : amelioration" if loss else "")
@@ -169,20 +195,24 @@ def compare(before: dict[str, Any], after: dict[str, Any], top_habits: int = 8) 
         per_response = k.startswith("G.") and before["responses"] and after["responses"]
         n1, n2 = (before["responses"], after["responses"]) if per_response else (before["calls"], after["calls"])
         k1, k2 = int(before["counts"].get(k, 0)), int(after["counts"].get(k, 0))
-        rr = rate_ratio(k1, n1, k2, n2)
+        c1 = int((before.get("clusters") or before["counts"]).get(k, 0))
+        c2 = int((after.get("clusters") or after["counts"]).get(k, 0))
+        rr = rate_ratio(k1, n1, k2, n2, c1, c2)
         label = _LABELS.get(k) or ("habitude G " + k[2:].replace("|", " : "))
         rows.append({"key": k, "label": label, "unit": "pour 1 000 reponses" if per_response else "pour 1 000 appels",
                      "before": {"count": k1, "activity": n1, "rate": 1000 * k1 / n1 if n1 else None,
                                 "context_tokens": before["ctx"].get(k)},
                      "after": {"count": k2, "activity": n2, "rate": 1000 * k2 / n2 if n2 else None,
                                "context_tokens": after["ctx"].get(k)},
-                     "ratio": rr, "conclusion": _conclusion(k1, n1, k2, n2, rr, loss=True)})
+                     "clusters": [c1, c2],
+                     "ratio": rr, "conclusion": _conclusion(k1, n1, k2, n2, rr, loss=True, clusters=c1 + c2)})
     rows += _task_rows(before, after)
     return {"compare_version": COMPARE_VERSION, "rows": rows, "descriptive": _descriptive(before, after),
             "method": ("taux rapportes a l'activite (G : pour 1 000 reponses du modele ; autres : pour 1 000 appels) ; "
-                       "rapport apres/avant avec intervalle de confiance a 95 % (loi de Poisson, methode du logarithme) ; "
-                       f"difference demontree seulement si l'intervalle exclut 1, avec au moins {MIN_EVENTS} evenements et "
-                       f"{MIN_ACTIVITY} reponses ou appels par periode"),
+                       "rapport apres/avant avec intervalle de confiance a 95 % (loi de Poisson, methode du logarithme), "
+                       "incertitude calculee sur les grappes (groupes d'appels repetes, signalements) et non sur les evenements, "
+                       f"qui arrivent groupes ; difference demontree seulement si l'intervalle exclut 1, avec au moins {MIN_EVENTS} "
+                       f"evenements, {MIN_CLUSTERS} grappes et {MIN_ACTIVITY} reponses ou appels par periode"),
             "caveat": ("Deux periodes different aussi par le travail fait : une baisse peut venir d'une tache differente. "
                        "Comparer des periodes de travail comparable (meme projet, meme type de tache).")}
 
@@ -239,6 +269,9 @@ def _descriptive(before: dict[str, Any], after: dict[str, Any]) -> list[dict[str
         ("output_per_response", "tokens de sortie par reponse", lambda m: m["output_tokens"] / m["responses"] if m["responses"] else None),
         ("cache_share", "part de l'entree en cache (%)",
          lambda m: 100 * m["cached_input_tokens"] / m["input_tokens"] if m["input_tokens"] else None),
+        ("waits", "appels d'attente (occasions d'attendre)", lambda m: m["counts"].get("attentes", 0)),
+        ("no_gain_per_100_waits", "reprises d'attente sans apport pour 100 appels d'attente",
+         lambda m: 100 * m["counts"].get("G.sans_apport_attente", 0) / m["counts"]["attentes"] if m["counts"].get("attentes") else None),
         ("ctx_no_gain_per_1000", "contexte relu pour les reprises sans apport, tokens pour 1 000 reponses",
          lambda m: 1000 * m["ctx"].get("G.sans_apport", 0) / m["responses"] if m["responses"] else None),
         ("main_task_median_s", "duree mediane d'une tache du fil principal (s)",
@@ -357,8 +390,11 @@ def render_markdown(result: dict[str, Any]) -> str:
         else:
             ratio = "-"
         unit = r["unit"]
-        lines.append(f"| {r['label']} | {unit} | {_fmt(r['before']['rate'])}{' %' if r.get('percent') else ''} ({r['before']['count']}) | "
-                     f"{_fmt(r['after']['rate'])}{' %' if r.get('percent') else ''} ({r['after']['count']}) | {ratio} | **{r['conclusion']}** |")
+        cl = r.get("clusters")
+        cb = f", {cl[0]} grappe(s)" if cl and not r.get("percent") and r["key"] != "erreurs" else ""
+        ca = f", {cl[1]} grappe(s)" if cl and not r.get("percent") and r["key"] != "erreurs" else ""
+        lines.append(f"| {r['label']} | {unit} | {_fmt(r['before']['rate'])}{' %' if r.get('percent') else ''} ({r['before']['count']}{cb}) | "
+                     f"{_fmt(r['after']['rate'])}{' %' if r.get('percent') else ''} ({r['after']['count']}{ca}) | {ratio} | **{r['conclusion']}** |")
     lines += ["", "## Mesures descriptives (sans test : a lire, pas a conclure)", "",
               "| Mesure | Avant | Apres |", "|---|---|---|"]
     for d in result["comparison"]["descriptive"]:
