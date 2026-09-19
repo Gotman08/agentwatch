@@ -138,7 +138,9 @@ octets deja lus et contexte en cours ; seules les lignes completes nouvelles son
 d'arriere-plan (processeur et disque sous Windows). Faite automatiquement avant `sessions`, `report` et
 `trends` (`rollouts.auto_import`, fenetre `rollouts.days` = 7 jours) ; `--follow` suit en direct.
 Un fil repris ecrit dans le rollout de son jour de creation : la fenetre porte sur la date de
-modification, pas sur le dossier.
+modification, pas sur le dossier. Une session touchee dans la fenetre est lue en entier : ses premiers
+sous-agents, termines, sont souvent dans des fichiers plus anciens (constate le 2026-09-19 : 41 fils sur 71
+d'une session commencee 9 jours plus tot).
 
 Format observe (codex-cli 0.153.4 a 0.155.0-alpha.9.2, rollouts du 2026-09-14 au 2026-09-19) : une
 ligne JSON `{timestamp, ordinal, type, payload}`.

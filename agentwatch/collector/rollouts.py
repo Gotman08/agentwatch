@@ -190,19 +190,35 @@ def sessions_dir(cfg: dict[str, Any]) -> str:
     return str(codex_sessions_dir(cfg))
 
 
-def list_rollouts(cfg: dict[str, Any], days: float | None = None) -> list[str]:
-    """Rollouts modifies dans les `days` derniers jours (tous si None), du plus ancien au plus recent."""
+def list_rollouts(cfg: dict[str, Any], days: float | None = None, whole_sessions: bool = True) -> list[str]:
+    """Rollouts modifies dans les `days` derniers jours (tous si None), du plus ancien au plus recent.
+
+    # * Une session longue garde ses premiers sous-agents, termines, dans des fichiers plus anciens que la
+    #   fenetre : constate le 2026-09-19, session commencee le 10, 41 fils sur 71 hors d'une fenetre de 7 jours.
+    #   Une session touchee dans la fenetre est donc lue en entier (`whole_sessions`) ; on lit pour cela
+    #   l'en-tete de chaque fichier (0,1 s pour 561 rollouts).
+    """
     paths = glob.glob(os.path.join(sessions_dir(cfg), "*", "*", "*", "rollout-*.jsonl"))
     cutoff = time.time() - days * 86400 if days else None
     rows = []
     for p in paths:
         try:
-            m = os.path.getmtime(p)
+            rows.append((os.path.getmtime(p), p))
         except OSError:
             continue
-        if cutoff is None or m >= cutoff:
-            rows.append((m, p))
-    return [p for _, p in sorted(rows)]
+    if cutoff is None:
+        return [p for _, p in sorted(rows)]
+    recent = [(m, p) for m, p in rows if m >= cutoff]
+    if whole_sessions and recent:
+        roots = {_root_of(p) for _, p in recent} - {None}
+        recent += [(m, p) for m, p in rows if m < cutoff and _root_of(p) in roots]
+    return [p for _, p in sorted(recent)]
+
+
+def _root_of(path: str) -> str | None:
+    """Session (fil racine) d'un rollout, lue dans son session_meta ; a defaut, le fil du nom de fichier."""
+    meta = read_thread_meta(path) or {}
+    return meta.get("root_id") or _thread_id_from_path(path)
 
 
 def read_thread_meta(path: str, max_lines: int = 40) -> dict[str, Any] | None:

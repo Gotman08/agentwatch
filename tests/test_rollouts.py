@@ -210,6 +210,22 @@ class RolloutImportTests(unittest.TestCase):
             self.assertIn(ph, phases)
         self.assertEqual(v.epochs, 2)
 
+    def test_window_keeps_whole_sessions(self) -> None:
+        # * Constate le 2026-09-19 : une session commencee 9 jours plus tot avait 41 de ses 71 fils (sous-agents
+        #   termines) dans des fichiers plus anciens que la fenetre de 7 jours ; la vue de la session etait tronquee.
+        import os
+        import time as _t
+        root = self._write(self._main())
+        child = self._write(RolloutBuilder(CHILD, parent=ROOT, nickname="Sagan").meta().turn("turn-c"))
+        other = self._write(RolloutBuilder("01a0bbbb-0000-7000-8000-000000000009").meta().turn("turn-o"))
+        old = _t.time() - 20 * 86400
+        for p in (child, other):
+            os.utime(p, (old, old))
+        got = {Path(p).name for p in R.list_rollouts(self.cfg, 7)}
+        self.assertEqual(got, {root.name, child.name})               # * le fil ancien de la session, pas l'autre session
+        self.assertEqual({Path(p).name for p in R.list_rollouts(self.cfg, 7, whole_sessions=False)}, {root.name})
+        self.assertEqual(len(R.list_rollouts(self.cfg, None)), 3)
+
     def test_nothing_is_stored_in_clear(self) -> None:
         p = self._write(self._main())
         R.import_rollouts(self.store, self.cfg, [str(p)])
