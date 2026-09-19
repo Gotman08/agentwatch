@@ -78,6 +78,15 @@ non par octets. `transcripts.auto_import: true` dans `config.json` pour le faire
 python -m agentwatch import-transcripts --latest
 ```
 
+Codex sans hooks, sans effet sur Codex : ses rollouts (`~/.codex/sessions`) contiennent chaque action
+(code de sortie, duree), l'usage en tokens de chaque reponse et les sous-agents. AgentWatch les lit en
+lecture seule, de facon incrementale et en priorite d'arriere-plan, automatiquement avant `sessions`,
+`report` et `trends` (`rollouts.auto_import`), ou en continu :
+
+```bash
+python -m agentwatch import-rollouts --follow
+```
+
 Panne silencieuse : `doctor`, `sessions`, `report` et `trends` avertissent quand la collecte
 est probablement cassee (Python des hooks desinstalle, depot deplace, entrees retirees,
 client actif sans aucun evenement recu), a partir des seules dates de modification des
@@ -110,7 +119,8 @@ Etat des preuves (documente / fixture / verifie reellement / indisponible) :
 
 ## Perimetre V1
 
-Collecte automatique par hooks, stockage local borne, cinq detecteurs, rapports par session
+Collecte automatique par hooks et, pour Codex, par lecture passive des rollouts (appels, statuts,
+durees, tokens, sous-agents), stockage local borne, cinq detecteurs, rapports par session
 et multi-sessions, cout en tokens depuis les transcripts Claude Code (sur demande), sante de
 la collecte, installation reversible, tests et smoke tests. Pas de second LLM, pas
-d'embeddings, pas d'interface web, pas de lecture des rollouts Codex, pas de profilage Unreal.
+d'embeddings, pas d'interface web, pas de profilage Unreal.

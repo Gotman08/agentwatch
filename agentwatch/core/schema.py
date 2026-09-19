@@ -22,6 +22,7 @@ PHASE_FAILURE = "failure"              # echec signale par le client
 PHASE_INTERRUPT = "interrupt"          # interruption (humaine ou client)
 PHASE_OBSERVATION = "observation"      # mesure complementaire (telemetrie, import)
 PHASE_USAGE = "usage"                  # usage en tokens de la session (import : transcript, JSONL) ; jamais un appel
+PHASE_MESSAGE = "message"              # message ou contexte injecte (import de rollout) : role, longueur, empreintes ; jamais le texte
 PHASE_SESSION_START = "session_start"
 PHASE_SESSION_END = "session_end"
 PHASE_TURN_START = "turn_start"

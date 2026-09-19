@@ -23,6 +23,7 @@ from agentwatch.core import schema as S
 from agentwatch.core.session import load_session
 from agentwatch.detectors import run_detectors
 from agentwatch.detectors.base import Finding, cost_tokens
+from agentwatch.reports.stats import session_tokens
 from agentwatch.detectors.tool_gap import mcp_servers_of, related_servers
 
 TRENDS_VERSION = "1.1"
@@ -118,8 +119,7 @@ def _collect_sessions(store: EventStore, cfg: dict[str, Any], client: str | None
             importer(c, skey)
             view = load_session(store, c, skey, cfg)
         findings = run_detectors(view, cfg)
-        session_usage = next((m.meta["usage"] for m in sorted(view.markers, key=lambda m: -int((m.meta.get("usage") or {}).get("requests") or 0))
-                              if m.phase == S.PHASE_USAGE and isinstance(m.meta.get("usage"), dict)), None)
+        session_usage = session_tokens(view)
         rows.append({
             "client": c, "session_key": skey, "session_id": view.session_id or skey,
             "project_dir": view.project_dir, "project_key": _project_key(view.project_dir, case_insensitive),
@@ -334,7 +334,7 @@ def build_trends(store: EventStore, cfg: dict[str, Any], feedback: dict[str, dic
         "findings": sum(len(r["findings"]) for r in rows), "findings_by_rule": by_rule_total,
         "mcp_servers_seen": {name: sorted(t for t in tools if t) for name, tools in sorted(servers.items())},
         "ranking_criteria": ["sessions distinctes", "confiance maximale (high > medium > low)", "occurrences",
-                             "tokens mesures (transcripts importes)", "appels concernes", "octets de sortie observes"],
+                             "tokens mesures (transcripts ou rollouts importes)", "appels concernes", "octets de sortie observes"],
         "max_top": max_top,
         "recurring": recurring,
         "single_session_patterns": single, "false_positive_only_patterns": false_only,
@@ -393,8 +393,8 @@ def render_trends_markdown(report: dict[str, Any]) -> str:
     window_txt = f"{w['days']} dernier(s) jour(s), depuis {w['since']}" if w["since"] else "toutes les sessions enregistrees"
     filters = f"client = {w['client'] or 'tous'} ; projet = {w['project'] or 'tous'}"
     rules_txt = ", ".join(f"{k} {fb_rule.get(k, 0)}" for k in RULE_LETTERS)
-    tokens_txt = (f"{report['tokens']} tokens mesures sur {report['tokens_sessions']} session(s) (transcripts)"
-                  if report.get("tokens") is not None else "tokens non mesures (agentwatch import-transcripts)")
+    tokens_txt = (f"{report['tokens']} tokens mesures sur {report['tokens_sessions']} session(s) (transcripts ou rollouts)"
+                  if report.get("tokens") is not None else "tokens non mesures (agentwatch import-transcripts ou import-rollouts)")
     lines = ["# AgentWatch - gaspillages recurrents", "",
              f"- Fenetre : {window_txt} (jusqu'a {w['until']}) ; filtres : {filters}",
              f"- Sessions analysees : {report['sessions_analysed']} ({by_client}) sur {report['projects']} projet(s) ; "
@@ -427,7 +427,7 @@ def render_trends_markdown(report: dict[str, Any]) -> str:
                       f"- Regle `{r['rule_id']}` ({', '.join(r['kinds'])}) ; {r['sessions']} session(s) sur {report['sessions_analysed']} ; "
                       f"{r['projects']} projet(s) : " + ", ".join(f"`{p}`" for p in r["project_dirs"]) + f" ; client(s) : {', '.join(r['clients'])}"]
             if r["tokens_sum"] is not None:
-                lines.append(f"- Cout mesure : {r['tokens_sum']} tokens sur {r['tokens_known_for']} appel(s) (transcripts) ; "
+                lines.append(f"- Cout mesure : {r['tokens_sum']} tokens sur {r['tokens_known_for']} appel(s) (transcripts ou rollouts) ; "
                              "c'est ce qu'un outil ou une regle eviterait a chaque fois que le motif revient")
             ex = [e for e in r["examples"] if not e["false_positive"]]
             if ex:

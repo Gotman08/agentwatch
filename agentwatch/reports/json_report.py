@@ -37,10 +37,12 @@ def build_report(view: SessionView, stats: dict[str, Any], coverage: list[dict[s
             "turns": view.turns, "context_epochs": view.epochs, "agents": view.agents,
             "schema_versions_seen": view.schema_versions,
             "client_version_at_configure": (install_meta or {}).get("client_version"),
+            "client_version_observed": next((m.meta.get("cli_version") for m in view.markers
+                                             if m.phase in ("session_start", "subagent_start") and m.meta.get("cli_version")), None),
             "warnings": view.warnings,
         },
         "ranking_criteria": ["confiance (high > medium > low)", "nombre d'appels concernes",
-                             "tokens mesures (transcripts importes)", "octets de sortie observes"],
+                             "tokens mesures (transcripts ou rollouts importes)", "octets de sortie observes"],
         "top_findings": [f.finding_id for f in top],
         "max_listed_per_rule": int(cfg.get("report", {}).get("max_listed_per_rule", 15)),
         "findings": [f.to_dict() for f in ranked],

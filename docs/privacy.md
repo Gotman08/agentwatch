@@ -52,6 +52,16 @@ les chemins conserves. Les chemins relatifs au projet sont stockes relatifs.
   des identifiants en sont extraits (usage par requete, `requestId`, `tool_use_id`,
   horodatage, modele) ; ni prompt, ni reponse, ni resultat d'outil. Le fichier n'est jamais
   modifie ni copie.
+- Rollouts Codex : lus par `agentwatch import-rollouts` et, par defaut, avant `sessions`,
+  `report` et `trends` (`rollouts.auto_import`), jamais par le hook, en lecture seule. Chaque
+  action passe par l'adaptateur et le masquage du hook : memes champs conserves qu'un evenement
+  de hook (commande normalisee et masquee, parametres de la liste blanche, resume d'erreur borne
+  et masque, empreintes). Ni prompt, ni reponse, ni raisonnement, ni code `exec`, ni sortie
+  reussie ne sont conserves. Messages (utilisateur, developpeur, entre agents, consignes aux
+  sous-agents) : role, longueur et empreintes HMAC courtes (16 caracteres) de chaque paragraphe
+  d'au moins 40 caracteres, pour reperer une consigne repetee sans la stocker. `AGENTS.md` et
+  skills injectes : longueur et empreinte. L'etat de lecture (`<home>/import/`) ne contient que
+  des offsets, des identifiants et des compteurs.
 - Sante de la collecte : seules les dates de modification des transcripts Claude Code et
   des rollouts Codex sont lues (jamais leur contenu) pour reperer un client actif sans
   evenement recu.

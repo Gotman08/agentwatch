@@ -60,6 +60,8 @@ DEFAULTS: dict[str, Any] = {
     "health": {"enabled": True, "silence_minutes": 30, "codex_sessions_dir": None},
     # --- transcripts Claude Code (usage en tokens) : lus a l'analyse, jamais par le hook ---
     "transcripts": {"auto_import": False, "claude_projects_dir": None, "max_bytes": 64 * 1024 * 1024},
+    # --- rollouts Codex : lus a l'analyse (lecture seule, incrementale, priorite d'arriere-plan), jamais par le hook ---
+    "rollouts": {"auto_import": True, "days": 7, "background_priority": True, "max_segments": 30, "max_bytes_per_run": 0},
 }
 
 

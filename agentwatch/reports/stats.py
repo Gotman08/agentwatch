@@ -35,19 +35,19 @@ CAPABILITIES: dict[str, dict[str, tuple[str, str]]] = {
         "tool_start": ("supported", "PreToolUse"),
         "tool_end": ("supported", "PostToolUse (y compris apres un code de sortie non nul pour Bash)"),
         "tool_failure": ("partial", "pas de PostToolUseFailure : l'echec doit etre lu dans tool_response"),
-        "exit_code": ("partial", "depend de la forme de tool_response (non entierement documentee)"),
-        "client_duration": ("absent", "aucune duree documentee dans l'entree des hooks"),
+        "exit_code": ("partial", "hooks : depend de tool_response ; rollouts (import-rollouts) : code de sortie de chaque commande"),
+        "client_duration": ("partial", "hooks : aucune duree ; rollouts : duree et horodatages de chaque action"),
         "output_size": ("supported", "taille du tool_response serialise tel que recu par le hook"),
         "result_fingerprint": ("supported", "empreinte HMAC du tool_response"),
         "mcp_calls": ("supported", "outils nommes mcp__<serveur>__<outil>"),
-        "subagents": ("supported", "SubagentStart/SubagentStop ; agent_id sur les evenements"),
+        "subagents": ("supported", "hooks : SubagentStart/SubagentStop ; rollouts : un fil par sous-agent (parent, role, surnom)"),
         "compaction": ("supported", "PreCompact / PostCompact"),
         "interrupts": ("partial", "evenement Interrupt de session ; pas de statut par appel"),
         "turn_boundaries": ("supported", "turn_id sur les evenements de tour ; UserPromptSubmit / Stop"),
         "background_commands": ("partial", "sessions exec/write_stdin non correlees a un appel unique"),
-        "hosted_tools": ("absent", "les outils herberges (WebSearch) ne passent pas par les hooks (documente)"),
+        "hosted_tools": ("partial", "hooks : absents (documente) ; rollouts : recherches web visibles (item Extension)"),
         "long_commands_polling": ("partial", "un appel long = un PreToolUse puis un PostToolUse"),
-        "token_usage": ("absent", "non fourni aux hooks ; [otel] exporte vers OTLP seulement"),
+        "token_usage": ("partial", "hooks : absent ; rollouts : releve par reponse du modele (import-rollouts)"),
     },
 }
 
@@ -143,19 +143,64 @@ def work_units(view: SessionView, limit: int = 25) -> list[dict[str, Any]]:
 
 
 _TRANSCRIPT_SOURCE = "claude-code:transcript"
+_ROLLOUT_SOURCE = "codex:rollout"
+_ROLLOUT_KEYS = ("requests", "input_tokens", "cached_input_tokens", "output_tokens", "reasoning_output_tokens", "total_tokens")
+
+
+def session_tokens(view: SessionView) -> dict[str, Any] | None:
+    """Usage mesure de la session, None si aucun import.
+
+    # * Transcript Claude Code : plusieurs imports d'un transcript qui grandit laissent plusieurs marqueurs ; le
+    #   plus complet fait foi. Rollouts Codex : un marqueur par fil (principal et sous-agents) et par lecture ;
+    #   le plus complet de chaque fil fait foi, puis les fils sont sommes.
+    """
+    usages = [m.meta["usage"] for m in view.markers if m.phase == S.PHASE_USAGE and isinstance(m.meta.get("usage"), dict)]
+    if not usages:
+        return None
+    rollout = [u for u in usages if u.get("source") == _ROLLOUT_SOURCE]
+    if not rollout:
+        best = max(usages, key=lambda u: int(u.get("requests") or 0))
+        return dict(best)
+    per_thread: dict[str, dict[str, Any]] = {}
+    for u in rollout:
+        tid = str(u.get("thread_id") or "?")
+        if tid not in per_thread or int(u.get("requests") or 0) > int(per_thread[tid].get("requests") or 0):
+            per_thread[tid] = u
+    names = {m.meta.get("agent_id"): m.meta for m in view.markers if m.phase == S.PHASE_SUBAGENT_START and m.meta.get("agent_id")}
+    threads = []
+    for tid, u in per_thread.items():
+        meta = names.get(u.get("agent_id")) or {}
+        threads.append({"thread_id": tid, "agent_id": u.get("agent_id"), "agent_type": meta.get("agent_type"),
+                        "agent_nickname": meta.get("agent_nickname"), "windows": u.get("windows"),
+                        **{k: int(u.get(k) or 0) for k in _ROLLOUT_KEYS}})
+    threads.sort(key=lambda r: -r["total_tokens"])
+    tot: dict[str, Any] = {k: sum(r[k] for r in threads) for k in _ROLLOUT_KEYS}
+    tot["uncached_input_tokens"] = tot["input_tokens"] - tot["cached_input_tokens"]
+    return {"source": _ROLLOUT_SOURCE, "scope": "session", **tot, "threads": threads}
 
 
 def _usage_summary(view: SessionView) -> dict[str, Any]:
-    """Usage en tokens : ce que le client rapporte ou ce qu'un import (transcript, JSONL) a fourni, avec source et perimetre."""
+    """Usage en tokens : ce que le client rapporte ou ce qu'un import (transcript, rollout, JSONL) a fourni, avec source et perimetre."""
     rows = []
     for a in view.agent_infos:
         if a.usage:
             rows.append({"agent_id": a.agent_id, "agent_type": a.agent_type, "model": a.model, **a.usage})
-    imported = [c.usage for c in view.calls if c.usage and c.usage.get("source") not in (None, "claude-code:Agent.tool_response", _TRANSCRIPT_SOURCE)]
-    transcript_calls = sum(1 for c in view.calls if isinstance(c.usage, dict) and c.usage.get("source") == _TRANSCRIPT_SOURCE)
-    # * Plusieurs imports d'un transcript qui grandit laissent plusieurs marqueurs : le plus complet fait foi.
-    session_usages = [m.meta["usage"] for m in view.markers if m.phase == S.PHASE_USAGE and isinstance(m.meta.get("usage"), dict)]
-    session = max(session_usages, key=lambda u: int(u.get("requests") or 0)) if session_usages else None
+    imported = [c.usage for c in view.calls if c.usage and c.usage.get("source") not in
+                (None, "claude-code:Agent.tool_response", _TRANSCRIPT_SOURCE, _ROLLOUT_SOURCE)]
+    transcript_calls = sum(1 for c in view.calls if isinstance(c.usage, dict) and c.usage.get("source") in (_TRANSCRIPT_SOURCE, _ROLLOUT_SOURCE))
+    session = session_tokens(view)
+    if session and session.get("source") == _ROLLOUT_SOURCE:
+        return {
+            "status": (f"mesure depuis les rollouts Codex : {session['requests']} reponses du modele, {session['total_tokens']} tokens "
+                       f"(entree {session['input_tokens']} dont {session['cached_input_tokens']} en cache, soit "
+                       f"{session['uncached_input_tokens']} non mis en cache ; sortie {session['output_tokens']} dont "
+                       f"{session['reasoning_output_tokens']} de raisonnement) ; {len(session['threads'])} fil(s) ; "
+                       f"{transcript_calls}/{len(view.calls)} appels avec un cout attribue"),
+            "note": ("releves token_usage_record ecrits par Codex, un par reponse ; par appel : part de l'entree non mise en cache "
+                     "de la reponse qui a consomme la sortie (prorata des tailles) + part de la sortie de la reponse emettrice"),
+            "session": session, "transcript_calls": transcript_calls, "agents": rows, "imported": imported,
+            "threads": session["threads"],
+        }
     if session:
         return {
             "status": (f"mesure depuis le transcript : {session.get('requests')} requetes API, {session.get('total_tokens')} tokens "

@@ -143,7 +143,7 @@ class TranscriptTests(unittest.TestCase):
         js = json.loads(buf.getvalue())
         self.assertIn("4 requetes API", js["stats"]["usage"]["status"])
         self.assertEqual(js["stats"]["usage"]["transcript_calls"], 5)
-        self.assertIn("tokens mesures (transcripts importes)", js["ranking_criteria"])
+        self.assertIn("tokens mesures (transcripts ou rollouts importes)", js["ranking_criteria"])
         buf = io.StringIO()
         with redirect_stdout(buf):
             self.assertEqual(cli.main(["--home", str(self.home), "report", "--session", "tx"]), 0)

@@ -55,12 +55,14 @@ class Finding:
 
 
 TRANSCRIPT_SOURCE = "claude-code:transcript"
+ROLLOUT_SOURCE = "codex:rollout"
+MEASURED_SOURCES = (TRANSCRIPT_SOURCE, ROLLOUT_SOURCE)
 
 
 def tokens_of(call: Call) -> int | None:
-    """Tokens mesures d'un appel (import de transcript) : entree non mise en cache + sortie. None sinon."""
+    """Tokens mesures d'un appel (transcript Claude Code ou rollout Codex) : entree non mise en cache + sortie. None sinon."""
     u = call.usage
-    if not isinstance(u, dict) or u.get("source") != TRANSCRIPT_SOURCE:
+    if not isinstance(u, dict) or u.get("source") not in MEASURED_SOURCES:
         return None
     parts = [u.get("uncached_input_tokens"), u.get("output_tokens")]
     known = [p for p in parts if isinstance(p, int)]
@@ -86,7 +88,8 @@ def observed_cost(calls: Iterable[Call]) -> dict[str, Any]:
             "total": sum(t for _, t in with_tokens),
             "uncached_input": sum(int((c.usage or {}).get("uncached_input_tokens") or 0) for c, _ in with_tokens),
             "output": sum(int((c.usage or {}).get("output_tokens") or 0) for c, _ in with_tokens),
-            "known_for": len(with_tokens), "source": TRANSCRIPT_SOURCE,
+            "known_for": len(with_tokens),
+            "source": "+".join(sorted({str((c.usage or {}).get("source")) for c, _ in with_tokens})),
             "note": "entree non mise en cache de la requete qui a consomme chaque resultat (part) + sortie de la requete emettrice (part)",
         }
     return {

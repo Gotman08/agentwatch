@@ -75,6 +75,55 @@ def _import_transcripts(store: Any, cfg: dict[str, Any], client: str, skey: str)
     return import_session(store, cfg, client, skey, view, existing)
 
 
+def _rollouts_cfg(cfg: dict[str, Any]) -> dict[str, Any]:
+    r = cfg.get("rollouts")
+    return r if isinstance(r, dict) else {}
+
+
+def _rollout_paths(cfg: dict[str, Any], days: float | None, thread: str | None) -> list[str]:
+    """Rollouts de la fenetre ; avec `thread`, ce fil et ses sous-agents (lus dans leur session_meta)."""
+    from agentwatch.collector import rollouts as R
+    paths = R.list_rollouts(cfg, days)
+    if not thread:
+        return paths
+    keep = []
+    for p in paths:
+        if (R._thread_id_from_path(p) or "").startswith(thread):
+            keep.append(p)
+            continue
+        meta = R.read_thread_meta(p) or {}
+        if str(meta.get("root_id") or "").startswith(thread) or str(meta.get("parent_id") or "").startswith(thread):
+            keep.append(p)
+    return keep
+
+
+def _import_rollouts(home: Path, cfg: dict[str, Any], store: Any, days: float | None = None, thread: str | None = None) -> dict[str, Any]:
+    """Import incremental des rollouts Codex (lecture seule, priorite d'arriere-plan). Jamais d'exception."""
+    from agentwatch.collector import rollouts as R
+    rcfg = _rollouts_cfg(cfg)
+    if days is None:
+        days = float(rcfg.get("days", 7) or 0) or None
+    try:
+        todo = R.pending_rollouts(str(home), _rollout_paths(cfg, days, thread))
+        if not todo:
+            return {"files": 0, "lines": 0, "events": 0, "bytes": 0, "sessions": {}, "errors": []}
+        with R.background_priority(bool(rcfg.get("background_priority", True))):
+            return R.import_rollouts(store, cfg, todo)
+    except Exception as exc:  # noqa: BLE001 - un import rate ne doit pas empecher un rapport
+        return {"files": 0, "lines": 0, "events": 0, "bytes": 0, "sessions": {}, "errors": [f"{type(exc).__name__}: {exc}"]}
+
+
+def _auto_import_rollouts(home: Path, cfg: dict[str, Any], store: Any) -> None:
+    """Avant `sessions`, `report`, `trends` : rollouts Codex modifies depuis le dernier import (defaut actif)."""
+    if not _rollouts_cfg(cfg).get("auto_import", True):
+        return
+    out = _import_rollouts(home, cfg, store)
+    if out["files"]:
+        _err(f"(rollouts Codex : {out['files']} fichier(s) mis a jour, {out['events']} evenement(s) importe(s))")
+    for e in out["errors"][:3]:
+        _err(f"! import des rollouts Codex : {e}")
+
+
 def _client_version(client: str) -> tuple[str | None, str | None]:
     """(version, chemin executable) ; (None, None) si indisponible. Jamais d'exception."""
     exe = shutil.which("claude" if client == CLIENT_CLAUDE_CODE else "codex")
@@ -156,6 +205,8 @@ def cmd_sessions(args: argparse.Namespace) -> int:
     home = home_dir(args.home)
     cfg = load_config(home)
     store = EventStore(home, cfg)
+    if args.client in (None, CLIENT_CODEX):
+        _auto_import_rollouts(home, cfg, store)
     rows = list_sessions(store, cfg, client=args.client)
     _print_health(_health(home, cfg, store))
     if args.json:
@@ -195,6 +246,8 @@ def cmd_report(args: argparse.Namespace) -> int:
     home = home_dir(args.home)
     cfg = load_config(home)
     store = EventStore(home, cfg)
+    if args.client in (None, CLIENT_CODEX):
+        _auto_import_rollouts(home, cfg, store)
     if args.latest:
         from agentwatch.core.session import list_sessions
         rows = list_sessions(store, cfg, client=args.client)
@@ -242,6 +295,8 @@ def cmd_trends(args: argparse.Namespace) -> int:
     days = args.days if args.days is not None else int(tcfg.get("days", 7))
     min_sessions = args.min_sessions if args.min_sessions is not None else int(tcfg.get("min_sessions", 2))
     store = EventStore(home, cfg)
+    if args.client in (None, CLIENT_CODEX):
+        _auto_import_rollouts(home, cfg, store)
     importer = (lambda c, k: _import_transcripts(store, cfg, c, k)) if (_auto_import_enabled(cfg) or args.import_transcripts) else None
     report = build_trends(store, cfg, load_feedback(home), days=days, client=args.client,
                           project=args.project, min_sessions=min_sessions, importer=importer)
@@ -364,6 +419,40 @@ def cmd_import_transcripts(args: argparse.Namespace) -> int:
     _out(f"import termine : {len(targets) - failures}/{len(targets)} session(s) avec transcript lu ; rien d'autre que des nombres et des "
          "identifiants n'a ete extrait")
     return 0 if failures == 0 else 1
+
+
+def cmd_import_rollouts(args: argparse.Namespace) -> int:
+    """Lire les rollouts Codex (lecture seule, incrementale, priorite d'arriere-plan) ; --follow pour suivre en direct."""
+    from agentwatch.collector.store import EventStore
+    home = home_dir(args.home)
+    cfg = load_config(home)
+    store = EventStore(home, cfg)
+    days = None if args.all else (args.days if args.days is not None else float(_rollouts_cfg(cfg).get("days", 7) or 0) or None)
+
+    def once() -> dict[str, Any]:
+        return _import_rollouts(home, cfg, store, days=days if days is not None else 0, thread=args.thread)
+
+    def show(out: dict[str, Any], stamp: bool) -> None:
+        prefix = time.strftime("%H:%M:%S ") if stamp else ""
+        sess = " ; ".join(f"{sid[:13]} : {s['threads']} fil(s), {s['events']} evenement(s)" for sid, s in out["sessions"].items())
+        _out(f"{prefix}rollouts Codex : {out['files']} fichier(s) lu(s), {out['lines']} ligne(s), {out['events']} evenement(s), "
+             f"{round(out['bytes'] / 1e6, 1)} Mo" + (f" ; {sess}" if sess else ""))
+        for e in out["errors"]:
+            _err(f"  ! {e}")
+
+    out = once()
+    show(out, args.follow)
+    if not args.follow:
+        _out("rien d'autre que des nombres, des identifiants et des empreintes n'a ete extrait ; les rollouts ne sont jamais modifies")
+        return 0 if not out["errors"] else 1
+    try:
+        while True:
+            time.sleep(max(2.0, float(args.interval)))
+            out = once()
+            if out["files"] or out["errors"]:
+                show(out, True)
+    except KeyboardInterrupt:
+        return 0
 
 
 def cmd_self_test(args: argparse.Namespace) -> int:
@@ -615,6 +704,14 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--latest", action="store_true", help="derniere session claude-code enregistree")
     s.add_argument("--all", action="store_true", help="toutes les sessions claude-code enregistrees")
     s.set_defaults(func=cmd_import_transcripts)
+
+    s = sub.add_parser("import-rollouts", help="lire les rollouts Codex : appels, statuts, durees, tokens, sous-agents (lecture seule, sans effet sur Codex)")
+    s.add_argument("--days", type=float, help="rollouts modifies dans les N derniers jours (defaut : rollouts.days = 7)")
+    s.add_argument("--all", action="store_true", help="tous les rollouts, quelle que soit leur date")
+    s.add_argument("--thread", help="un fil (identifiant ou prefixe) et ses sous-agents")
+    s.add_argument("--follow", action="store_true", help="suivre en direct : relire les lignes nouvelles toutes les --interval secondes")
+    s.add_argument("--interval", type=float, default=30.0, help="periode du suivi en secondes (defaut 30, minimum 2)")
+    s.set_defaults(func=cmd_import_rollouts)
 
     s = sub.add_parser("self-test", help="scenarios synthetiques + hook reel en sous-processus")
     s.add_argument("--runs", type=int, default=5)

@@ -128,4 +128,52 @@ Les sous-agents ont leur propre fichier `<session>/subagents/**/agent-<id>.jsonl
   a grandi n'ajoute que le nouveau. Les evenements importes ne changent pas les dates de
   debut et de fin de la session.
 - Rien d'autre que des nombres et des identifiants n'est lu : ni prompt, ni reponse, ni
-  resultat d'outil. Rollouts Codex : non lus.
+  resultat d'outil.
+
+## Import des rollouts Codex (`agentwatch import-rollouts`)
+
+Sans effet sur Codex : lecture seule de `~/.codex/sessions/AAAA/MM/JJ/rollout-*.jsonl` (ou
+`health.codex_sessions_dir`), incrementale (etat par fichier dans `<home>/import/codex-rollouts.json` :
+octets deja lus et contexte en cours ; seules les lignes completes nouvelles sont lues), en priorite
+d'arriere-plan (processeur et disque sous Windows). Faite automatiquement avant `sessions`, `report` et
+`trends` (`rollouts.auto_import`, fenetre `rollouts.days` = 7 jours) ; `--follow` suit en direct.
+Un fil repris ecrit dans le rollout de son jour de creation : la fenetre porte sur la date de
+modification, pas sur le dossier.
+
+Format observe (codex-cli 0.153.4 a 0.155.0-alpha.9.2, rollouts du 2026-09-14 au 2026-09-19) : une
+ligne JSON `{timestamp, ordinal, type, payload}`.
+
+| Ligne du rollout | Evenement AgentWatch |
+|---|---|
+| `session_meta` du fil (le premier ; un sous-agent recopie ensuite celui de son parent) | `session_start` (fil principal) ou `subagent_start` (parent, role, surnom, `agent_path`, profondeur) |
+| `turn_context` | modele, dossier et `turn_id` courants |
+| `event_msg/task_started`, `task_complete`, `turn_aborted` | `turn_start`, `turn_end` (duree, delai du premier token), `interrupt` (raison) |
+| `compacted` | `compact_end` (numero de fenetre) : nouvelle epoque de contexte |
+| `event_msg/item_completed` : `CommandExecution`, `McpToolCall`, `FileChange`, `ImageView`, `Extension` | un appel (debut a `started_at_ms`, fin a `completed_at_ms`) : `Bash`, `mcp__<serveur>__<outil>`, `apply_patch`, `view_image`, `web_search` |
+| `response_item/function_call` et `function_call_output` | un appel : `collaboration.send_message`, `collaboration.spawn_agent`, `wait`, ... ; un appel de fonction MCP et son item `McpToolCall` de meme identifiant forment un seul appel |
+| `token_usage_record` | usage de la reponse (voir ci-dessous) |
+| `response_item/message`, `agent_message`, arguments `message` des fonctions de collaboration | marqueur `message` : role, longueur, empreintes des paragraphes |
+| `world_state` | marqueur `message` de role `context` : longueur, empreinte et taille d'`AGENTS.md` et des skills injectes |
+| `event_msg/item_completed:SubAgentActivity` (`completed`, `interrupted`) | `subagent_stop` |
+
+- Le modele appelle `exec` (du code) ou une fonction ; les actions imbriquees d'un `exec` portent un
+  identifiant `exec-<uuid>`, le meme que `tool_use_id` dans les hooks Codex. `exec` lui-meme n'est pas
+  un appel AgentWatch : chaque action garde `evidence.exec_call_id`.
+- Statut : code de sortie de chaque commande (`exit_code`, `status: failed`), `isError` ou
+  `status: failed` d'un appel MCP ; fonctions de collaboration : succes sans texte d'erreur, erreur
+  sinon (`wait` rend la sortie d'une commande en cours : son texte ne decide pas du statut).
+- Duree : `duration` de l'item (source `client`).
+- Commandes : `pwsh.exe -Command <script>` ; seul le script est analyse, comme une commande de hook
+  (normalisation, masquage des secrets, traduction en unite de travail). Dossier : URL `file:///` ou
+  prefixe `\\?\` convertis.
+- Tokens : une reponse du modele porte au plus un appel de haut niveau (observe). Par appel : part de
+  l'entree non mise en cache (`input_tokens - cached_input_tokens`) de la reponse qui a consomme sa
+  sortie, au prorata de la taille des sorties consommees ensemble, plus la part de la sortie de la
+  reponse qui l'a emis ; pour un `exec`, repartition sur ses actions au prorata de leurs sorties
+  (parts entieres, somme exacte). `usage.emitter_request_id` sert aussi a C.batchable (appels emis
+  dans une meme reponse). Session : dernier releve de chaque fil (principal et sous-agents), sommes.
+- Sous-agents : rattaches a la session du fil racine (`session_id` du `session_meta`), avec
+  `agent_id` = identifiant de leur fil et `agent_type` = role.
+- Identifiants d'evenement derives du contenu (fil + identifiant d'appel + phase) : un reimport ne
+  cree pas de doublon. Les lots importes sont ecrits dans des segments ; au-dela de
+  `rollouts.max_segments` (30) ils sont fusionnes et dedoublonnes.

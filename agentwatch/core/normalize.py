@@ -40,6 +40,11 @@ _CODEX_TOOL_CATEGORY: dict[str, str] = {
     "Grep": S.CAT_SEARCH, "Glob": S.CAT_LIST, "list_dir": S.CAT_LIST,
     "web_search": S.CAT_WEB, "update_plan": S.CAT_OTHER, "spawn_agent": S.CAT_AGENT,
     "request_user_input": S.CAT_OTHER,
+    # * Fonctions observees dans les rollouts (codex-cli 0.153 a 0.155, mode multi-agents et code) :
+    "collaboration.spawn_agent": S.CAT_AGENT, "collaboration.send_message": S.CAT_OTHER,
+    "collaboration.followup_task": S.CAT_OTHER, "collaboration.wait_agent": S.CAT_OTHER,
+    "collaboration.list_agents": S.CAT_OTHER, "collaboration.interrupt_agent": S.CAT_OTHER,
+    "wait": S.CAT_OTHER, "clock.sleep": S.CAT_OTHER, "request_user_input_async": S.CAT_OTHER,
 }
 _MCP_PREFIX = "mcp__"
 

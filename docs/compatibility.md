@@ -54,6 +54,21 @@ test reel ci-dessous).
 | Usage de tokens | absent des hooks ; **verifie reellement** dans le transcript (2.1.275 : `message.usage` par requete, `requestId` repete sur les lignes d'une meme reponse, blocs `tool_use` / `tool_result`, sous-agents `agent-<id>.jsonl` avec `agentId`) via `import-transcripts` ; import JSONL (`import-usage`) | absent des hooks ; `[otel]` exporte vers OTLP seulement ; rollouts non lus |
 | Confiance des hooks | non requise | **requise** : approbation via `/hooks` (empreinte de la definition) ; en `exec`, `--dangerously-bypass-hook-trust` ; etat par hook **verifie reellement** (0.155.0-alpha.9.2) via `codex app-server`, methode `hooks/list` (`trustStatus` : `untrusted`, `trusted`, `modified`, `managed`), lu par `doctor` |
 
+## Rollouts Codex (lecture passive, sans hooks)
+
+Verifie reellement le 2026-09-19 sur la session en cours (codex-cli 0.153.4 a 0.155.0-alpha.9.2, fil
+principal et 3 sous-agents, 288 Mo de rollouts) : 24 742 lignes lues en 4,5 s, 14 410 evenements,
+4 120 appels (fil principal 1 946, sous-agents 751, 584 et 807), chaque identifiant d'action du
+rollout retrouve dans un appel (seules manquaient les lignes ecrites par Codex apres la lecture), aucun
+doublon, aucune fin orpheline, aucun appel reste ouvert, aucun statut inconnu (3 912 succes,
+208 erreurs issues des codes de sortie et de `isError`), usage en tokens attribue a 4 083 appels,
+85 tours et 45 compactions. Relecture incrementale : 0 ligne quand rien n'a change.
+
+Particularites observees : un appel de fonction MCP (`mcp__cua_repl.js`) produit aussi un item
+`McpToolCall` de meme identifiant (un seul appel) ; un sous-agent recopie le `session_meta` de son
+parent apres le sien ; le dossier de travail des commandes est une URL `file:///` ; GPT-6 Astra
+n'emet qu'un appel de haut niveau par reponse et parallelise a l'interieur d'`exec`.
+
 ## Smoke tests reels
 
 Script : `python tests/live_smoke.py --client codex|claude-code`. Il cree un dossier
@@ -151,8 +166,11 @@ processus enfants vers `AppData\Local\Packages\<paquet>\LocalCache\...`. Consequ
   les 11 etaient `untrusted`, donc ignores : un fichier complet ne prouve pas la collecte,
   d'ou le controle de confiance de `doctor`. La portee projet `.codex/hooks.json` exige en
   plus que le projet soit marque de confiance.
-- Codex : l'approbation d'un hook via `/hooks` (interface interactive) n'a pas ete
-  exercee ; en `exec` elle a ete contournee par `--dangerously-bypass-hook-trust`.
+- Codex : l'approbation d'un hook depuis l'application de bureau (2026-09-19, 11 h 50) n'a ete
+  enregistree nulle part (ni `config.toml`, ni etat global, ni bases SQLite) : une instance fraiche
+  voyait toujours les 11 hooks `untrusted` et le Codex en cours n'a execute aucun hook (19 actions,
+  0 evenement). En `exec`, la confiance a ete contournee par `--dangerously-bypass-hook-trust`.
+  D'ou la lecture des rollouts, qui ne depend d'aucune approbation.
 - Claude Code en sous-processus (`claude -p`) : impossible faute d'authentification ;
   en revanche une session de l'application de bureau (2.1.270) observee en direct le
   2026-09-16 a fourni : 20 evenements, 9 appels du fil principal (Bash, Write, Glob) et
@@ -176,9 +194,9 @@ processus enfants vers `AppData\Local\Packages\<paquet>\LocalCache\...`. Consequ
   >= 2.1.196) ; le CLI du PATH est en 2.1.87.
 - Linux / macOS / WSL : non executes.
 - Journaux natifs : les transcripts Claude Code ne sont lus que pour l'usage en tokens, sur
-  demande (`import-transcripts`) ; leur format interne n'est pas garanti stable (verifie sur
-  2.1.275). Les rollouts Codex ne sont pas lus ; seule leur date de modification sert a la
-  sante de la collecte.
+  demande (`import-transcripts`) ; les rollouts Codex sont lus par `import-rollouts` (et avant
+  les rapports). Leurs formats internes ne sont pas garantis stables (verifies sur 2.1.275 et
+  codex-cli 0.153.4 a 0.155.0-alpha.9.2) : une ligne de forme inconnue est ignoree, pas mal lue.
 - Sante de la collecte : le silence d'un client est deduit des dates de modification de ses
   journaux (Codex : tous les rollouts des `health.codex_days` = 30 derniers jours, car un fil
   repris ecrit dans le dossier de son jour de creation) ; un client qui ecrirait ailleurs (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`) exige de

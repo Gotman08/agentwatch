@@ -36,10 +36,11 @@ def _cost_line(cost: dict[str, Any]) -> str:
         parts.append(f"duree inconnue pour {cost['duration_unknown_for']} appel(s)")
     tok = cost.get("tokens")
     if isinstance(tok, dict):
+        src = {"claude-code:transcript": "transcript", "codex:rollout": "rollout"}.get(str(tok.get("source")), str(tok.get("source")))
         parts.append(f"{tok['total']} tokens mesures ({tok['uncached_input']} d'entree non mise en cache + {tok['output']} de sortie ; "
-                     f"{tok['known_for']}/{cost.get('calls')} appels, transcript)")
+                     f"{tok['known_for']}/{cost.get('calls')} appels, {src})")
     else:
-        parts.append("tokens : non mesures (agentwatch import-transcripts)")
+        parts.append("tokens : non mesures (agentwatch import-transcripts ou import-rollouts)")
     return " ; ".join(parts)
 
 
@@ -145,7 +146,18 @@ def render_markdown(report: dict[str, Any]) -> str:
               f"- Evenements : {st['events']} ; appels correles : {st['calls']} ; statuts : {st['status']}",
               f"- Correlation : {st['correlation']}",
               f"- Surcharge des hooks (dans le processus, hors demarrage de l'interpreteur) : {st['hook_overhead_ms']}",
-              f"- Usage de tokens : {st['usage']['status']} ({st['usage']['note']})", "",
+              f"- Usage de tokens : {st['usage']['status']} ({st['usage']['note']})", ""]
+    threads = st["usage"].get("threads") or []
+    if threads:
+        lines += ["| Fil | Agent | Reponses | Tokens | Entree (dont en cache) | Sortie (dont raisonnement) | Fenetres de contexte |",
+                  "|---|---|---|---|---|---|---|"]
+        for t in threads:
+            who = "principal" if not t.get("agent_id") else f"{t.get('agent_nickname') or '?'} ({t.get('agent_type') or 'sous-agent'})"
+            lines.append(f"| `{str(t['thread_id'])[:13]}` | {who} | {t['requests']} | {t['total_tokens']} | "
+                         f"{t['input_tokens']} ({t['cached_input_tokens']}) | {t['output_tokens']} ({t['reasoning_output_tokens']}) | "
+                         f"{_fmt(t.get('windows'))} |")
+        lines.append("")
+    lines += [
               "| Outil | Appels | Erreurs | Statut inconnu | Ouverts | Sortie (octets, mesures) | Duree client mediane (n) | Duree reconstruite mediane (n) |",
               "|---|---|---|---|---|---|---|---|"]
     for t in st["tools"][:15]:
