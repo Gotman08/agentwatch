@@ -335,7 +335,11 @@ def render_reference(ref: dict[str, Any]) -> str:
              f"| Reprises du modele sans apport (resultat inchange) | {_n(m['counts'].get('G.sans_apport', 0))}, soit "
              f"{_fmt(per_r('G.sans_apport'))} pour 1 000 reponses |",
              f"| dont pendant une attente | {_n(m['counts'].get('G.sans_apport_attente', 0))}, soit "
-             f"{_fmt(per_r('G.sans_apport_attente'))} pour 1 000 reponses |",
+             f"{_fmt(per_r('G.sans_apport_attente'))} pour 1 000 reponses, en "
+             f"{_n((m.get('clusters') or {}).get('G.sans_apport_attente', 0))} episode(s) |",
+             f"| Appels d'attente (occasions d'attendre) | {_n(m['counts'].get('attentes', 0))}, dont "
+             f"{_fmt(100 * m['counts'].get('G.sans_apport_attente', 0) / m['counts']['attentes'] if m['counts'].get('attentes') else None)}"
+             f" % relances sans apport |",
              f"| Cout mesure de ces reponses d'attente sans apport | {_n(nga.get('responses'))} reponses : entree "
              f"{_n(nga.get('input_tokens'))} (dont cache {_n(nga.get('cached_input_tokens'))}), sortie {_n(nga.get('output_tokens'))} |",
              f"| Cout mesure de toutes les reponses sans apport | {_n(ng.get('responses'))} reponses : entree "
