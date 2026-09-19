@@ -162,10 +162,11 @@ def session_tokens(view: SessionView) -> dict[str, Any] | None:
     #   plus complet fait foi. Rollouts Codex : un marqueur par fil (principal et sous-agents) et par lecture ;
     #   le plus complet de chaque fil fait foi, puis les fils sont sommes.
     """
-    usages = [m.meta["usage"] for m in view.markers if m.phase == S.PHASE_USAGE and isinstance(m.meta.get("usage"), dict)]
+    usages = [m.meta["usage"] for m in view.markers if m.phase == S.PHASE_USAGE and isinstance(m.meta.get("usage"), dict)
+              and m.meta["usage"].get("scope") != "response"]      # * releves par reponse : detail, pas un total
     if not usages:
         return None
-    rollout = [u for u in usages if u.get("source") == _ROLLOUT_SOURCE]
+    rollout = [u for u in usages if u.get("source") == _ROLLOUT_SOURCE and u.get("scope") != "response"]
     if not rollout:
         best = max(usages, key=lambda u: int(u.get("requests") or 0))
         return dict(best)

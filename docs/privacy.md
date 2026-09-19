@@ -66,7 +66,11 @@ les chemins conserves. Les chemins relatifs au projet sont stockes relatifs.
   et masque, empreintes). Ni prompt, ni reponse, ni raisonnement, ni code `exec`, ni sortie
   reussie ne sont conserves. Messages (utilisateur, developpeur, entre agents, consignes aux
   sous-agents) : role, longueur et empreintes HMAC courtes (16 caracteres) de chaque paragraphe
-  d'au moins 40 caracteres, pour reperer une consigne repetee sans la stocker. Commentaires de l'agent :
+  d'au moins 40 caracteres, pour reperer une consigne repetee sans la stocker. Messages de l'utilisateur,
+  entre agents et consignes aux sous-agents : en plus, une signature de similarite par paragraphe (MinHash de
+  ses mots tronques, chaque mot passe par un hachage cle derive de la cle locale), pour reconnaitre une
+  consigne reformulee sans garder le texte ; sans la cle elle ne revele rien, avec la cle on ne peut que
+  verifier une hypothese de contenu, comme pour les empreintes. Commentaires de l'agent :
   en plus, des categories fixes de raison annoncee (`retry`, `wait`, `unavailable`...), reconnues par motifs
   dans le texte, qui n'est pas conserve. `AGENTS.md` et
   skills injectes : longueur et empreinte. L'etat de lecture (`<home>/import/`) ne contient que

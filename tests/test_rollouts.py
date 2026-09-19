@@ -226,6 +226,37 @@ class RolloutImportTests(unittest.TestCase):
         self.assertEqual({Path(p).name for p in R.list_rollouts(self.cfg, 7, whole_sessions=False)}, {root.name})
         self.assertEqual(len(R.list_rollouts(self.cfg, None)), 3)
 
+    def test_per_response_usage_compaction_index_and_signatures(self) -> None:
+        # * Matiere premiere du cout de residence en contexte et des consignes reformulees (2026-09-19).
+        p = self._write(self._main())
+        R.import_rollouts(self.store, self.cfg, [str(p)])
+        v = load_session(self.store, "codex", ROOT, self.cfg)
+        per_response = [m.meta["usage"] for m in v.markers if m.phase == "usage" and m.meta.get("usage", {}).get("scope") == "response"]
+        self.assertEqual(len(per_response), 6)                      # * une ligne par reponse du modele
+        self.assertEqual([u["index"] for u in per_response], list(range(6)))
+        self.assertEqual(sum(u["input_tokens"] for u in per_response), 1000 + 2000 + 800 * 3 + 1200)
+        self.assertEqual(session_tokens(v)["requests"], 6)           # * les releves par reponse ne doublent pas les totaux
+        comp = next(m for m in v.markers if m.phase == "compact_end")
+        self.assertIsInstance(comp.meta.get("response_index"), int)
+        self.assertIn("input_tokens_before", comp.meta)
+        user = next(m for m in v.markers if m.phase == "message" and m.meta.get("role") == "user" and m.meta.get("paragraphs"))
+        sigs = user.meta.get("paragraph_sigs") or []
+        self.assertEqual(len(sigs), len(user.meta["paragraphs"]))
+        self.assertTrue(all(s is None or len(s) == 4 * R.SIG_K for s in sigs))
+        assistant = [m for m in v.markers if m.phase == "message" and m.meta.get("role") == "assistant"]
+        self.assertTrue(all("paragraph_sigs" not in m.meta for m in assistant))
+
+    def test_signature_recognises_a_reworded_instruction(self) -> None:
+        sig = R.signature_params(b"k" * 32)
+        a = R.paragraph_signature("rappel : ne jamais toucher au dossier content, seulement source.", sig)
+        b = R.paragraph_signature("rappel important : ne touche jamais le dossier content ; travaille seulement dans source.", sig)
+        c = R.paragraph_signature("lance la suite de tests unitaires puis envoie le rapport de couverture.", sig)
+        assert a and b and c
+        self.assertGreaterEqual(R.signature_similarity(a, b), 0.5)
+        self.assertLess(R.signature_similarity(a, c), 0.2)
+        other = R.signature_params(b"z" * 32)                        # * autre cle, autre signature : rien de comparable
+        self.assertNotEqual(a, R.paragraph_signature("rappel : ne jamais toucher au dossier content, seulement source.", other))
+
     def test_nothing_is_stored_in_clear(self) -> None:
         p = self._write(self._main())
         R.import_rollouts(self.store, self.cfg, [str(p)])

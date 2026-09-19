@@ -87,7 +87,54 @@ def _thread_id_from_path(path: str) -> str | None:
     return m.group(1) if m else None
 
 
-def paragraph_fingerprints(text: str, fp: Any) -> tuple[list[str], int, list[int]]:
+# * Signature de similarite d'un paragraphe (detecteur F, consignes reformulees) : MinHash sur l'ensemble de ses
+#   mots de 3 lettres ou plus, sans accents, tronques a 6 lettres (racine grossiere : touche, toucher, touchez), hors
+#   mots vides. Chaque mot passe par un hachage CLE (blake2b, cle derivee de la cle HMAC locale) : la signature ne
+#   revele rien du texte sans la cle ; avec la cle, on ne peut que verifier une hypothese, comme pour les empreintes.
+#   32 valeurs de 16 bits : estimation de la similarite de Jaccard a +/- 0,09 pres.
+SIG_K = 32
+_SIG_P = (1 << 61) - 1
+_WORD_RE = re.compile(r"[a-z0-9_]{3,}")
+_STOP = frozenset("""les des une pour dans avec que qui pas par sur est sont aux ces cet cette mais tout tous
+toutes plus moins son ses leur leurs nous vous ils elles elle lui eux the and for with that this are you not but
+from have has was were will can your our its all any into then than there their them they what when which who
+etre avoir fait faire comme aussi donc alors ainsi tres bien""".split())
+
+
+def signature_params(key: bytes) -> tuple[bytes, list[tuple[int, int]]]:
+    """(cle de hachage des mots, 32 permutations (a, b)) derivees de la cle locale."""
+    import hashlib
+    wkey = hashlib.blake2b(key, digest_size=32, person=b"aw-minhash-words").digest()
+    params = []
+    for i in range(SIG_K):
+        h = hashlib.blake2b(key + i.to_bytes(2, "big"), digest_size=16, person=b"aw-minhash-perm").digest()
+        params.append((int.from_bytes(h[:8], "big") % (_SIG_P - 1) + 1, int.from_bytes(h[8:], "big") % _SIG_P))
+    return wkey, params
+
+
+def paragraph_signature(norm: str, sig: tuple[bytes, list[tuple[int, int]]]) -> str | None:
+    """Signature MinHash (128 caracteres hexadecimaux) d'un paragraphe normalise ; None s'il a moins de 4 mots utiles."""
+    import hashlib
+    import unicodedata
+    plain = "".join(ch for ch in unicodedata.normalize("NFKD", norm) if not unicodedata.combining(ch))
+    words = {w[:6] for w in _WORD_RE.findall(plain) if w not in _STOP}
+    if len(words) < 4:
+        return None
+    wkey, params = sig
+    hs = [int.from_bytes(hashlib.blake2b(w.encode("utf-8"), key=wkey, digest_size=8).digest(), "big") for w in words]
+    return "".join(f"{min((a * h + b) % _SIG_P for h in hs) & 0xFFFF:04x}" for a, b in params)
+
+
+def signature_similarity(s1: str, s2: str) -> float:
+    """Part des valeurs egales entre deux signatures : estimation de la similarite de Jaccard des mots."""
+    n = len(s1) // 4
+    if not n or len(s2) != len(s1):
+        return 0.0
+    return sum(1 for i in range(n) if s1[4 * i:4 * i + 4] == s2[4 * i:4 * i + 4]) / n
+
+
+def paragraph_fingerprints(text: str, fp: Any, sig: tuple[bytes, list[tuple[int, int]]] | None = None,
+                           sigs_out: list[str | None] | None = None) -> tuple[list[str], int, list[int]]:
     """Empreintes courtes des paragraphes (>= 40 caracteres, espaces normalises, casse ignoree), bornees,
     avec la longueur de chacun (un nombre, jamais le texte)."""
     out: list[str] = []
@@ -99,6 +146,8 @@ def paragraph_fingerprints(text: str, fp: Any) -> tuple[list[str], int, list[int
         if len(norm) >= _PARAGRAPH_MIN_CHARS:
             out.append(fp(norm)[:16])
             sizes.append(len(norm))
+            if sig is not None and sigs_out is not None:
+                sigs_out.append(paragraph_signature(norm, sig))
             if len(out) >= _MAX_PARAGRAPHS:
                 break
     return out, len(text), sizes
@@ -302,6 +351,7 @@ class RolloutReader:
         self.adapter = get_adapter(CLIENT_CODEX)
         self._ctx_cls = AdapterContext
         self._args_cache: dict[str, Any] = {}
+        self._sig: tuple[bytes, list[tuple[int, int]]] | None = None
 
     # ------------------------------------------------------------------ identite du fil
     @property
@@ -419,7 +469,9 @@ class RolloutReader:
             self._on_usage(p, ns)
         elif t == "compacted":
             self.st["window"] = int(p.get("window_number") or self.st.get("window", 0) + 1)
-            self._marker(S.PHASE_COMPACT_END, ns, ("compacted", offset), {"compact_type": "codex", "window": self.st["window"]})
+            self._marker(S.PHASE_COMPACT_END, ns, ("compacted", offset),
+                         {"compact_type": "codex", "window": self.st["window"], "response_index": self.st["responses"],
+                          "input_tokens_before": self.st.get("last_input")})
         elif t == "world_state":
             self._on_world_state(p, ns, offset)
         elif t == "event_msg":
@@ -531,10 +583,16 @@ class RolloutReader:
             self._finish(ev, ns, self._event_id("image", iid))
 
     def _message(self, role: str, text: str, ns: int | None, eid: tuple[Any, ...], extra: dict[str, Any]) -> None:
-        paras, chars, sizes = paragraph_fingerprints(text, self.fp)
+        sigs: list[str | None] = []
+        with_sig = role in ("user", "agent_instruction", "agent")
+        if with_sig and self._sig is None:
+            self._sig = signature_params(self.key)
+        paras, chars, sizes = paragraph_fingerprints(text, self.fp, self._sig if with_sig else None, sigs)
         self.st["messages"] += 1
         meta = {"role": role, "chars": chars, "paragraphs": paras, "paragraph_chars": sizes, "turn_id": self.st.get("turn_id"),
                 **{k: v for k, v in extra.items() if v is not None}}
+        if with_sig and any(sigs):
+            meta["paragraph_sigs"] = sigs
         if role == "assistant" and text:
             meta["declared"] = declared_intents(text)
         self._marker(S.PHASE_MESSAGE, ns, eid, meta, "rollout:message")
@@ -703,6 +761,17 @@ class RolloutReader:
         rid = p.get("response_id") if isinstance(p.get("response_id"), str) else f"resp-{self.st['responses']}"
         idx = self.st["responses"]
         self.st["responses"] += 1
+        self.st["last_input"] = u["input_tokens"]
+        # * Une ligne par reponse du modele : entree (dont cache), sortie, fenetre de contexte. Chaque reponse relit
+        #   tout le contexte : c'est ce qui permet d'attribuer ce cout aux sorties d'outils qui y resident.
+        rev = S.empty_event()
+        rev.update({"client": CLIENT_CODEX, "phase": S.PHASE_USAGE, "session_id": self.session_id, "turn_id": self.st.get("turn_id"),
+                    "hook_event_name": "rollout_response_usage", "model": self.st.get("model"),
+                    "usage": {"scope": "response", "source": SOURCE, "thread_id": self.meta.get("thread_id"), "agent_id": self.agent_id,
+                              "index": idx, "response_id": rid, "window": self.st.get("window", 0),
+                              "consumed_outputs": len(self.st["to_consume"]), "emitted_calls": len(self.st["pending_emit"]),
+                              **{k: u[k] for k in ("input_tokens", "cached_input_tokens", "output_tokens", "reasoning_output_tokens")}}})
+        self._finish(rev, ns, self._event_id("response-usage", idx, rid))
         for k, v in u.items():
             self.st["totals"][k] = self.st["totals"].get(k, 0) + v
         # * Consommation : l'entree non mise en cache de cette reponse contient les sorties apparues depuis la
@@ -989,7 +1058,7 @@ class LiveDigest:
                 self.spawned.append(str(meta.get("agent_nickname") or meta.get("agent_id") or "?"))
             elif ph == S.PHASE_MESSAGE and (ev.get("session_meta") or {}).get("role") == "user":
                 self.user_messages += 1
-            elif ph == S.PHASE_USAGE:
+            elif ph == S.PHASE_USAGE and (ev.get("usage") or {}).get("scope") != "response":
                 u = ev.get("usage") or {}
                 tid = str(u.get("thread_id") or "?")
                 total = int(u.get("total_tokens") or 0)
