@@ -195,12 +195,55 @@ MCP_ERROR_TEXT_RE = _re.compile(
 
 
 def mcp_error_hint(resp: Any) -> str | None:
-    """Premiere ligne d'une reponse MCP 'reussie' qui ressemble a une erreur, sinon None."""
+    """Premiere ligne d'une reponse MCP 'reussie' qui ressemble a une erreur, sinon None.
+
+    # ! Reponse JSON : lue structurellement. Constate le 2026-09-19 : le serveur romeo repond
+    #   `{"erreur": null, ...}` quand tout va bien ; le mot "erreur" de la CLE faisait passer 188 attentes
+    #   d'un job SLURM en file pour 188 pannes. Il faut un champ d'erreur non vide ou un statut d'echec.
+    """
     text = primary_text(resp)
     if not text:
         return None
+    stripped = text.strip()
+    if stripped[:1] in "{[" and len(stripped) <= 500_000:   # * borne : le hook doit rester rapide
+        import json
+        try:
+            obj = json.loads(stripped)
+        except (ValueError, RecursionError):
+            obj = None
+        if obj is not None:
+            return _json_error_hint(obj, 0)
     m = MCP_ERROR_TEXT_RE.search(text[:2000])
     return m.group(0).strip() if m else None
+
+
+_ERROR_KEYS = {"error", "errors", "erreur", "erreurs", "exception", "traceback", "failure", "echec", "stderr_error"}
+_STATUS_KEYS = {"status", "state", "statut", "etat", "result", "outcome"}
+_FAILED_VALUES = {"failed", "failure", "error", "erreur", "echec", "fatal", "crashed"}
+
+
+def _json_error_hint(obj: Any, depth: int) -> str | None:
+    """Champ d'erreur non vide ou statut d'echec dans un JSON (profondeur bornee), sinon None."""
+    if depth > 4:
+        return None
+    if isinstance(obj, dict):
+        for k, v in list(obj.items())[:60]:
+            lk = str(k).lower()
+            if lk in _ERROR_KEYS and v not in (None, "", [], {}, False, 0):
+                return f"{k}: {str(v)[:200]}"
+            if lk in _STATUS_KEYS and isinstance(v, str) and v.strip().lower() in _FAILED_VALUES:
+                return f"{k}: {v}"
+        for v in list(obj.values())[:60]:
+            if isinstance(v, (dict, list)):
+                hint = _json_error_hint(v, depth + 1)
+                if hint:
+                    return hint
+    elif isinstance(obj, list):
+        for v in obj[:30]:
+            hint = _json_error_hint(v, depth + 1)
+            if hint:
+                return hint
+    return None
 
 
 def response_keys(resp: Any) -> list[str] | None:
