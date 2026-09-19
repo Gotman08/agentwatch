@@ -22,7 +22,7 @@ from agentwatch.core.correlate import Call, SessionView
 from agentwatch.detectors import base as B
 
 RULE_ID = "B.error_loops"
-RULE_VERSION = "1.0"
+RULE_VERSION = "1.1"
 _FAIL = {S.STATUS_ERROR, S.STATUS_TIMEOUT}
 
 _CAUSE_HINTS: list[tuple[str, str]] = [
@@ -107,6 +107,64 @@ def _correction_between(a: Call, b: Call, calls: list[Call], case_insensitive: b
     return observed, unknown
 
 
+def _same_failure_different_inputs(calls: list[Call], reported: set[str], min_failures: int, window_calls: int,
+                                    window_seconds: int) -> list[B.Finding]:
+    """Meme outil, meme signature d'erreur, entrees differentes : la meme panne revient (connexion a un service,
+    chemins devines). Constate le 2026-09-19 sur Codex : `Remote Python execution failed ... connection aborted`
+    5 fois avec 5 scripts differents, invisible pour la regle par operation identique."""
+    groups: dict[str, list[list[Call]]] = {}
+    for c in calls:
+        if c.key in reported or c.status not in _FAIL or not c.error_signature:
+            continue
+        key = f"{c.agent_key}|{c.tool_name}|{c.error_signature}"
+        runs = groups.setdefault(key, [[]])
+        if runs[-1] and not B.within_window(runs[-1][-1], c, window_calls, window_seconds):
+            runs.append([])
+        runs[-1].append(c)
+    out: list[B.Finding] = []
+    for key, runs in groups.items():
+        for run in runs:
+            inputs = {(c.target_key, c.params_key) for c in run}
+            if len(run) < min_failures or len(inputs) < 2:
+                continue
+            first = run[0]
+            recovered = any(c.status == S.STATUS_SUCCESS and c.tool_name == first.tool_name and c.agent_key == first.agent_key
+                            for c in calls[first.seq: run[-1].seq])
+            conf = B.CONFIDENCE_LOW if recovered else B.CONFIDENCE_MEDIUM
+            out.append(B.Finding(
+                rule_id=RULE_ID, rule_version=RULE_VERSION, kind="same_failure_different_inputs",
+                title=f"{len(run)} echecs {first.tool_name} de meme signature sur {len(inputs)} entrees differentes",
+                confidence=conf,
+                confidence_rationale=(f"meme outil et meme signature {len(run)} fois dans la fenetre, avec des entrees differentes : "
+                                      "la cause ne tient pas a l'entree" + (" ; l'outil a reussi entre-temps (panne intermittente)"
+                                                                            if recovered else "") + ". " + B.LIMIT_HEURISTIC),
+                calls=[c.key for c in run], call_refs=B.refs(run),
+                evidence={"error_signature": first.error_signature, "error_summary_first": first.error_summary,
+                          "distinct_inputs": len(inputs), "exit_codes": [c.exit_code for c in run],
+                          "recovered_between": recovered, "statuses": [c.status for c in run]},
+                explanation=(f"{first.tool_name} a echoue {len(run)} fois avec la meme signature {first.error_signature!r} "
+                             f"sur {len(inputs)} entrees differentes : changer l'entree n'a pas change l'erreur."),
+                counter_indications=[
+                    "Des entrees differentes peuvent echouer pour des raisons differentes que la signature normalisee confond.",
+                    "Une panne externe (service, reseau) n'est pas une erreur du modele, mais la relancer a l'identique coute des appels.",
+                ],
+                missing_data=["raisonnement du modele entre les tentatives non observe"],
+                observed_cost=B.observed_cost(run),
+                proposal={"type": "fix_common_cause", "hypotheses": _hypotheses(first.error_signature),
+                          "text": ("Traiter la cause commune avant de reessayer (etat du service, chemin reel via un listage ou "
+                                   "une recherche) ; pour un service, un outil d'etat ou de reconnexion evite les tentatives a l'aveugle."),
+                          "tooling": (["Cote serveur MCP : detecter la perte de connexion, la signaler avec un code stable et "
+                                       "proposer une reconnexion, plutot que de laisser le modele relancer ses scripts."]
+                                      if first.category == S.CAT_MCP else [])},
+                validation_protocol=[
+                    "Relire les resumes d'erreur masques et confirmer une cause commune.",
+                    "Verifier si l'etat du service ou le chemin a ete controle avant les tentatives.",
+                    "Marquer le signalement : agentwatch feedback --finding <id> --mark relevant|false-positive.",
+                ],
+            ))
+    return out
+
+
 def detect(view: SessionView, cfg: dict[str, Any]) -> list[B.Finding]:
     d = cfg.get("detectors", {}).get("error_loops", {})
     min_failures = int(d.get("min_failures", 3))
@@ -135,6 +193,8 @@ def detect(view: SessionView, cfg: dict[str, Any]) -> list[B.Finding]:
             else:
                 chains[key] = [c]
     closed.extend(chains.items())
+    reported: set[str] = {c.key for _, chain in closed if len(chain) >= min_failures for c in chain}
+    findings.extend(_same_failure_different_inputs(calls, reported, min_failures, window_calls, window_seconds))
 
     for key, chain in closed:
         if len(chain) < min_failures:

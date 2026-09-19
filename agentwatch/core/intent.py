@@ -219,3 +219,48 @@ def attach_intents(calls: list[Call]) -> None:
     for c in calls:
         it = derive(c)
         c.op, c.op_target, c.op_params, c.op_key, c.op_source = it.op, it.target, it.params, it.key, it.source
+    reinterpret_exit_status(calls)
+
+
+_NO_MATCH_HEADS = {"rg", "grep", "egrep", "fgrep", "ag", "ack", "findstr", "select-string", "sls"}
+_REAL_ERROR_RE = re.compile(r"(?i)no such file|cannot find|cannot access|not found|introuvable|\berror\b|erreur|invalid|"
+                            r"unrecognized|permission denied|is not recognized|regex parse|syntax")
+_DIFF_PROBLEM_RE = re.compile(r"(?i)trailing whitespace|space before tab|conflict marker|new blank line at eof|indent with")
+_EXIT_IN_SUMMARY_RE = re.compile(r"^\s*Exit code (\d+)\b")
+
+
+def reinterpret_exit_status(calls: list[Call]) -> None:
+    """Un code de sortie non nul n'est pas toujours un echec (a l'analyse, sur les appels shell).
+
+    # * Constate sur une session Codex reelle (2026-09-19) : 25 des 179 "echecs" shell n'en etaient pas :
+    #   `rg` sans correspondance (code 1, aucune sortie) et `git diff --no-index` (code 1 = les fichiers
+    #   different, ce que le modele voulait voir). Compter ces cas gonflait les erreurs et pouvait fabriquer
+    #   de fausses boucles d'erreurs. Tout autre texte d'erreur laisse l'echec en place.
+    """
+    for c in calls:
+        if c.category != S.CAT_SHELL or c.status != S.STATUS_ERROR:
+            continue
+        code = c.exit_code
+        summary = c.error_summary or ""
+        if code is None:
+            m = _EXIT_IN_SUMMARY_RE.match(summary)      # * Claude Code : "Exit code 1" dans le message d'echec
+            code = int(m.group(1)) if m else None
+            summary = summary[m.end():] if m else summary
+        if code != 1:
+            continue
+        heads = [str(h).lower() for h in (c.params.get("shell_heads") or [])]
+        command = str(c.params.get("command") or c.target or "").lower()
+        meaning = None
+        if heads and heads[0] in _NO_MATCH_HEADS and not _REAL_ERROR_RE.search(summary):
+            # ? `rg a; rg b` : la derniere recherche seule peut etre vide ; le compte n'est nul que sans aucune sortie.
+            meaning = "code 1 d'une recherche = aucune correspondance (pour au moins un motif), pas un echec"
+            if not summary.strip():
+                c.evidence["result_count"] = 0
+        elif heads[:1] == ["git"] and " diff" in f" {command}" and any(o in command for o in ("--no-index", "--exit-code", "--quiet")) \
+                and not _DIFF_PROBLEM_RE.search(summary) and not _REAL_ERROR_RE.search(summary.replace("warning:", "")):
+            meaning = "code 1 = differences trouvees (git diff), pas un echec"
+        if meaning:
+            c.status = S.STATUS_SUCCESS
+            c.evidence["exit_status_meaning"] = meaning
+            c.evidence["status_basis"] = "reinterpreted_exit_code"
+            c.error_signature = None

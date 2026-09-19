@@ -74,11 +74,16 @@ reprise). Une recherche a zero resultat n'est pas jugee inutile pour autant.
 Limite toujours rappelee : la presence du resultat precedent dans le contexte du modele
 n'est pas observable ; une modification externe non plus.
 
+Images vues (rollouts Codex) : l'empreinte vient de l'image rendue dans la sortie de l'`exec`, quand il y a
+exactement une image par vue ; sinon aucune empreinte (jamais celle d'une reponse fabriquee). Constate le
+2026-09-19 : 3 signalements "image vue plusieurs fois" etaient faux, l'image avait ete re-rendue par
+Unreal entre les vues ; avec l'empreinte reelle, ils disparaissent.
+
 Exemple positif : `Read a.py`, `git status`, `Read a.py` (contenu identique) -> high.
 Contre-exemples : `Read b.py`, `Edit b.py`, `Read b.py` ; lecture par un sous-agent ;
 lecture apres `PostCompact` ; `Read big.log offset=1` puis `offset=101`.
 
-## B. `B.error_loops` — boucles d'erreurs
+## B. `B.error_loops` (v1.1) — boucles d'erreurs
 
 Regle : au moins `min_failures` (3) echecs de meme signature sur la meme operation (outil,
 cible, parametres) dans la fenetre (40 appels / 1800 s), sans correction observable entre
@@ -91,6 +96,16 @@ deux echecs (ecriture touchant la cible ou un chemin de la commande).
 | `persistent_probable` | medium max | Codex : statut non expose, echec infere du texte de sortie |
 | `transient_recovered` | low | la meme operation a fini par reussir sans correction (retry, backoff detecte si les intervalles croissent) |
 | `repeated_denial` | medium | refus repetes ; un refus n'est pas une erreur d'execution |
+
+`same_failure_different_inputs` (v1.1, medium ; low si l'outil a reussi entre-temps) : meme outil, meme
+signature d'erreur, au moins `min_failures` fois dans la fenetre, sur au moins deux entrees differentes :
+changer l'entree ne change pas l'erreur (service deconnecte, chemins devines). La regle par operation
+identique ne voyait pas ce cas.
+
+Codes de sortie (a l'analyse, hooks et rollouts) : `rg`, `grep`, `Select-String`, `findstr` en code 1
+sans texte d'erreur = aucune correspondance ; `git diff --no-index`, `--exit-code`, `--quiet` en code 1
+sans probleme signale = differences trouvees. Ni l'un ni l'autre n'est un echec (statut `success`,
+`evidence.exit_status_meaning`). Constate le 2026-09-19 : 73 des 211 "echecs" d'une session Codex.
 
 Les interruptions (`interrupted`) ne sont jamais comptees. Les causes proposees sont des
 hypotheses tirees de la signature (`No such file`, `permission`, `timeout`, ...).
@@ -144,7 +159,7 @@ ensemble (chevauchants, ou dans une meme reponse) ont ete observes dans la sessi
 all, bulk, list) a ete vu ; sinon `documented_not_verified` (Claude Code) ou `proposal`.
 Des appels deja chevauchants ou emis dans une meme reponse ne sont pas signales.
 
-## D. `D.automation_candidates` — sequences candidates a une automatisation
+## D. `D.automation_candidates` (v1.2) — sequences candidates a une automatisation
 
 Regle : motifs de 2 a 6 appels (`min_pattern_len`, `max_pattern_len`) repetes au moins
 `min_occurrences` (3) fois, par agent, sur les `max_calls` (2000) derniers appels. La
@@ -154,7 +169,18 @@ motif plus long de meme frequence) et comportant au moins deux signatures distin
 retenus. Complexite : O(appels x longueur max).
 
 Etapes classees `mechanical` (structure stable, cible substituee) ou `judgment` (contenu
-d'edition variable, commande de structure variable, statut variable selon l'occurrence).
+d'edition variable, commande de structure variable, commande non reconnue dont le texte change
+(script en ligne), contenu compose par le modele a chaque occurrence : code d'un appel MCP, message,
+requete ; statut variable selon l'occurrence). Les appels de coordination (messages et attentes entre
+agents, plan, questions) n'entrent pas dans les sequences. Un meme cycle n'est rapporte qu'une fois
+(A -> B et B -> A).
+
+Valeur (v1.2) : les allers-retours du modele qu'une automatisation eviterait, `avoidable_round_trips`,
+comptes par occurrence d'apres la requete emettrice (transcript ou rollout), sinon les ecarts. Un motif
+que le modele enchaine deja en une seule reponse (actions d'un meme `exec` Codex) n'est pas signale ; un
+motif dont moins de la moitie des occurrences coute un aller-retour de plus est en confiance basse.
+Constate le 2026-09-19 : 30 des 32 signalements d'une session Codex etaient faux (coordination, code
+reecrit a chaque fois) ; "patch puis verification" (12 fois) tenait 11 fois sur 12 dans une reponse.
 
 | Confiance | Condition |
 |---|---|
