@@ -1,4 +1,4 @@
-# Les cinq detecteurs
+# Les six detecteurs
 
 Tous sont deterministes, independants, executes sur la vue de session correlee. Les
 seuils sont dans `config.json` sous `detectors`. Chaque signalement porte : identifiant de
@@ -224,6 +224,30 @@ quelle session de la fenetre. Rien n'est construit.
 Exemple positif : `mcp__romeo__romeo_status`, puis `ssh romeo 'squeue'`, `scp job.sh romeo:`,
 `ssh romeo 'sbatch job.sh'` -> high. Contre-exemples : deux `ssh a` et deux `ssh b` ; trois
 `python run.py` (pas un service).
+
+## F. `F.repeated_guidance` (v1.0) — consignes redonnees a la main
+
+Repond a « ou lui rappelle-t-on les memes conseils ? ». Source : messages lus dans les rollouts Codex
+(marqueurs `message` : role, longueur, empreintes HMAC courtes des paragraphes d'au moins 40 caracteres ;
+jamais le texte).
+
+| Type | Regle | Confiance |
+|---|---|---|
+| `user_repeated_guidance` | meme(s) paragraphe(s) dans au moins `min_user_messages` (2) messages distincts de l'utilisateur, fil principal | high a partir de 3 messages, medium sinon |
+| `orchestrator_repeated_guidance` | meme(s) paragraphe(s) dans au moins `min_instructions` (3) consignes de l'orchestrateur a ses sous-agents (`message` de send_message, followup_task, spawn_agent) | medium |
+
+Les paragraphes repetes ensemble dans les memes messages forment un signalement ; il faut au moins
+`min_chars` (80) caracteres repetes. Messages dedoublonnes par identifiant (un sous-agent recopie
+l'historique de son parent) ; seuls les messages de l'utilisateur du fil principal comptent. Les blocs que
+Codex injecte lui-meme dans un message `user` (instructions `AGENTS.md`, `<environment_context>` et autres
+balises) sont exclus des empreintes et comptes a part (`injected_chars`), un titre Markdown seul aussi.
+Constate le 2026-09-19 : sans cette exclusion, `AGENTS.md` reinjecte a la reprise du fil passait pour une
+consigne redonnee par l'utilisateur. Sur les deux sessions Codex du 10 au 19 septembre, apres correction :
+aucun signalement (25 messages de l'utilisateur, 2 116 consignes aux sous-agents).
+
+Limite : une consigne reformulee n'est pas reconnue (empreinte exacte au paragraphe, apres normalisation
+des espaces et de la casse). Proposition : inscrire la consigne dans `AGENTS.md`, une skill ou la
+definition du sous-agent. Cle de motif pour `trends` : role + empreinte du premier paragraphe.
 
 ## Vue multi-sessions : `agentwatch trends`
 

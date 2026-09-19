@@ -27,7 +27,7 @@ from agentwatch.reports.stats import session_tokens
 from agentwatch.detectors.tool_gap import mcp_servers_of, related_servers
 
 TRENDS_VERSION = "1.1"
-RULE_LETTERS = ("A", "B", "C", "D", "E")
+RULE_LETTERS = ("A", "B", "C", "D", "E", "F")
 UNKNOWN_PROJECT = "(inconnu)"
 _ERRORS = (S.STATUS_ERROR, S.STATUS_TIMEOUT, S.STATUS_DENIED)
 _CONF_RANK = {"high": 3, "medium": 2, "low": 1}
@@ -75,6 +75,10 @@ def pattern_key(f: Finding) -> tuple[str, str]:
     if letter == "E":
         family, target = ev.get("family") or "?", ev.get("target") or "?"
         return f"E|{family}|{target}", f"commandes {family} vers {target!r} faites a la main"
+    if letter == "F":
+        # * F : la consigne elle-meme (empreinte de son premier paragraphe, cle locale) : redonnee dans plusieurs sessions.
+        fps = ev.get("paragraph_fingerprints") or ["?"]
+        return f"F|{ev.get('role')}|{fps[0]}", f"consigne redonnee ({ev.get('role')}, {ev.get('paragraph_chars')} caracteres, empreinte {str(fps[0])[:8]})"
     return f"{f.rule_id}|{f.kind}|{f.title}", f.title
 
 

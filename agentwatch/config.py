@@ -52,6 +52,8 @@ DEFAULTS: dict[str, Any] = {
         "automation_candidates": {"enabled": True, "min_occurrences": 3, "min_pattern_len": 2,
                                   "max_pattern_len": 6, "max_calls": 2000},
         "tool_gap": {"enabled": True, "min_calls": 3, "strong_calls": 6},
+        "repeated_guidance": {"enabled": True, "min_user_messages": 2, "min_instructions": 3, "min_chars": 80,
+                              "max_findings": 10},
     },
     "report": {"max_top_findings": 3, "max_listed_per_rule": 15},
     # --- vue multi-sessions (`agentwatch trends`) ---

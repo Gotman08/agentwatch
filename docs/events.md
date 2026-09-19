@@ -14,7 +14,7 @@ champ ajoute en 1.1, `content_fingerprint`, vaut alors `null`).
 | `model` | str/null | tel que fourni par le client (Codex : sur chaque evenement ; Claude Code : `SessionStart` seulement) |
 | `session_id`, `turn_id`, `agent_id`, `agent_type` | str/null | identifiants du client |
 | `call_id` | str/null | `tool_use_id` |
-| `phase` | str | `start`, `end`, `failure`, `interrupt`, `observation`, `usage` (usage de session importe : un marqueur, jamais un appel), `session_start`, `session_end`, `turn_start`, `turn_end`, `compact_start`, `compact_end`, `subagent_start`, `subagent_stop`, `unknown` |
+| `phase` | str | `start`, `end`, `failure`, `interrupt`, `observation`, `usage` (usage de session importe : un marqueur, jamais un appel), `session_start`, `session_end`, `turn_start`, `turn_end`, `compact_start`, `compact_end`, `subagent_start`, `subagent_stop`, `message` (import de rollout : role, longueurs, empreintes ; jamais le texte), `unknown` |
 | `hook_event_name` | str | nom d'origine (`PreToolUse`, ...) |
 | `event_time` | str/null | horodatage fourni par le client (aucun des deux clients n'en fournit en V1) |
 | `received_time`, `received_time_ns` | str, int | horodatage de reception par le hook (base d'ordre) |
@@ -152,7 +152,7 @@ ligne JSON `{timestamp, ordinal, type, payload}`.
 | `event_msg/item_completed` : `CommandExecution`, `McpToolCall`, `FileChange`, `ImageView`, `Extension` | un appel (debut a `started_at_ms`, fin a `completed_at_ms`) : `Bash`, `mcp__<serveur>__<outil>`, `apply_patch`, `view_image`, `web_search` |
 | `response_item/function_call` et `function_call_output` | un appel : `collaboration.send_message`, `collaboration.spawn_agent`, `wait`, ... ; un appel de fonction MCP et son item `McpToolCall` de meme identifiant forment un seul appel |
 | `token_usage_record` | usage de la reponse (voir ci-dessous) |
-| `response_item/message`, `agent_message`, arguments `message` des fonctions de collaboration | marqueur `message` : role, longueur, empreintes des paragraphes |
+| `response_item/message`, `agent_message`, arguments `message` des fonctions de collaboration | marqueur `message` : role, identifiant du message, tour, longueur, empreintes et longueurs des paragraphes ; pour un message `user`, blocs injectes par Codex (`AGENTS.md`, balises) exclus et comptes (`injected_chars`, `injected_blocks`) |
 | `world_state` | marqueur `message` de role `context` : longueur, empreinte et taille d'`AGENTS.md` et des skills injectes |
 | `event_msg/item_completed:SubAgentActivity` (`completed`, `interrupted`) | `subagent_stop` |
 

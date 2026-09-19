@@ -87,16 +87,21 @@ def _thread_id_from_path(path: str) -> str | None:
     return m.group(1) if m else None
 
 
-def paragraph_fingerprints(text: str, fp: Any) -> tuple[list[str], int]:
-    """Empreintes courtes des paragraphes (>= 40 caracteres, espaces normalises, casse ignoree), bornees."""
+def paragraph_fingerprints(text: str, fp: Any) -> tuple[list[str], int, list[int]]:
+    """Empreintes courtes des paragraphes (>= 40 caracteres, espaces normalises, casse ignoree), bornees,
+    avec la longueur de chacun (un nombre, jamais le texte)."""
     out: list[str] = []
+    sizes: list[int] = []
     for para in re.split(r"\n\s*\n", text.replace("\r\n", "\n")):
         norm = " ".join(para.split()).lower()
+        if norm.startswith("#") and "\n" not in para.strip():
+            continue    # * un titre seul (ex. en-tete ajoute par l'application autour de fichiers colles) n'est pas une consigne
         if len(norm) >= _PARAGRAPH_MIN_CHARS:
             out.append(fp(norm)[:16])
+            sizes.append(len(norm))
             if len(out) >= _MAX_PARAGRAPHS:
                 break
-    return out, len(text)
+    return out, len(text), sizes
 
 
 def _content_text(content: Any) -> str:
@@ -106,6 +111,27 @@ def _content_text(content: Any) -> str:
         parts: list[str] = [c["text"] for c in content if isinstance(c, dict) and isinstance(c.get("text"), str)]
         return "\n\n".join(parts)
     return ""
+
+
+_INJECTED_PREFIXES = ("<", "# agents.md instructions", "# agents.md")
+
+
+def split_injected(content: Any) -> tuple[list[str], list[str]]:
+    """(blocs ecrits par l'utilisateur, blocs injectes par le client) d'un message "user" Codex.
+
+    # * Observe (rollouts du 2026-09-15 au 2026-09-19) : le premier message d'un fil et celui d'une reprise
+    #   portent, en blocs separes, les instructions AGENTS.md ("# AGENTS.md instructions for ...") et le contexte
+    #   d'environnement (<environment_context>...). Ils se repetent par construction : ce ne sont pas des rappels.
+    """
+    human: list[str] = []
+    injected: list[str] = []
+    blocks = [content] if isinstance(content, str) else [c.get("text") for c in content or [] if isinstance(c, dict)]
+    for b in blocks:
+        if not isinstance(b, str) or not b.strip():
+            continue
+        head = b.lstrip()[:40].lower()
+        (injected if head.startswith(_INJECTED_PREFIXES) or "<instructions>" in b[:400].lower() else human).append(b)
+    return human, injected
 
 
 def split_exact(total: int, weights: list[int]) -> list[int]:
@@ -426,12 +452,20 @@ class RolloutReader:
             self._on_function_output(p, ns)
         elif pt == "message":
             role = p.get("role") if isinstance(p.get("role"), str) else "?"
-            text = _content_text(p.get("content"))
-            self._message(role, text, ns, ("message", p.get("id") or offset), {"phase": p.get("phase")})
+            extra: dict[str, Any] = {"phase": p.get("phase"), "message_id": p.get("id")}
+            if role == "user":
+                # * Codex glisse dans des messages "user" du contexte qu'il injecte lui-meme (environnement, AGENTS.md) :
+                #   seuls les blocs ecrits par l'utilisateur sont empreints ; les autres sont comptes a part.
+                human, injected = split_injected(p.get("content"))
+                text = "\n\n".join(human)
+                extra.update({"injected_chars": sum(len(b) for b in injected), "injected_blocks": len(injected)})
+            else:
+                text = _content_text(p.get("content"))
+            self._message(role, text, ns, ("message", p.get("id") or offset), extra)
         elif pt == "agent_message":
             text = _content_text(p.get("content"))
             self._message("agent", text, ns, ("agent_message", p.get("id") or offset),
-                          {"author": str(p.get("author") or "")[:120] or None, "recipient": str(p.get("recipient") or "")[:120] or None})
+                          {"message_id": p.get("id"), "author": str(p.get("author") or "")[:120] or None, "recipient": str(p.get("recipient") or "")[:120] or None})
 
     def _image_fingerprints(self, ex: dict[str, Any], output: Any, ns: int | None) -> None:
         """Empreinte du contenu de chaque image vue, si l'exec rend exactement une image par vue (dans l'ordre)."""
@@ -449,9 +483,10 @@ class RolloutReader:
             self._finish(ev, ns, self._event_id("image", iid))
 
     def _message(self, role: str, text: str, ns: int | None, eid: tuple[Any, ...], extra: dict[str, Any]) -> None:
-        paras, chars = paragraph_fingerprints(text, self.fp)
+        paras, chars, sizes = paragraph_fingerprints(text, self.fp)
         self.st["messages"] += 1
-        meta = {"role": role, "chars": chars, "paragraphs": paras, **{k: v for k, v in extra.items() if v is not None}}
+        meta = {"role": role, "chars": chars, "paragraphs": paras, "paragraph_chars": sizes, "turn_id": self.st.get("turn_id"),
+                **{k: v for k, v in extra.items() if v is not None}}
         self._marker(S.PHASE_MESSAGE, ns, eid, meta, "rollout:message")
 
     # ------------------------------------------------------------------ appels
@@ -575,7 +610,7 @@ class RolloutReader:
             for k in MESSAGE_ARGS:
                 if isinstance(args.get(k), str) and args[k].strip():
                     self._message("agent_instruction", args[k], ns, ("instruction", cid, k),
-                                  {"tool": tool, "target": str(args.get("target") or args.get("task_name") or "")[:120] or None})
+                                  {"message_id": cid, "tool": tool, "target": str(args.get("target") or args.get("task_name") or "")[:120] or None})
                     break
 
     def _on_function_output(self, p: dict[str, Any], ns: int | None) -> None:

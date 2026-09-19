@@ -66,7 +66,8 @@ class RolloutBuilder:
         self.add("turn_context", {"turn_id": turn_id, "cwd": "C:\\proj", "model": "gpt-synth", "effort": "high"})
         self.add("event_msg", {"type": "task_started", "turn_id": turn_id, "model_context_window": 400000})
         if prompt is not None:
-            self.add("response_item", {"type": "message", "role": "user", "content": [{"type": "input_text", "text": prompt}]})
+            self.add("response_item", {"type": "message", "id": f"msg_{turn_id}", "role": "user",
+                                       "content": [{"type": "input_text", "text": prompt}]})
         return self
 
     def usage(self, inp: int, cached: int, out: int) -> None:
@@ -302,6 +303,50 @@ class RolloutImportTests(unittest.TestCase):
             self.assertTrue(all(x.content_fingerprint for x in views))
             found = redundant_reads.detect(v, cfg)
             self.assertEqual(len(found), 0 if name == "changee" else 1, name)
+
+    def test_repeated_guidance_counts_distinct_messages_only(self) -> None:
+        from agentwatch.detectors import repeated_guidance as F
+        rappel = "Rappel : ne jamais toucher au dossier Content, seulement Source, et compiler avant de conclure."
+        b = RolloutBuilder(ROOT).meta().turn("turn-1", f"Corrige l'inventaire.\n\n{rappel}")
+        b.end_turn("turn-1")
+        b.turn("turn-2", f"Maintenant le craft.\n\n{rappel}")
+        b.end_turn("turn-2")
+        b.turn("turn-3", f"Puis les sauvegardes.\n\n{rappel}")
+        for i in range(3):   # * l'orchestrateur redit trois fois la meme consigne a un sous-agent
+            b.fn(f"call_m{i}", "collaboration", "send_message",
+                 {"target": "/root/tache", "message": f"Etape {i}.\n\nN'oublie pas : chaque patch doit garder la compatibilite des sauvegardes existantes du joueur."}, "")
+        b.end_turn("turn-3")
+        # * un sous-agent recopie l'historique du parent (meme identifiant de message) : pas un nouveau rappel
+        child = RolloutBuilder(CHILD, parent=ROOT).meta().turn("turn-c")
+        child.lines.append(next(line for line in b.lines if '"role": "user"' in line))
+        child.end_turn("turn-c")
+        R.import_rollouts(self.store, self.cfg, [str(self._write(b)), str(self._write(child))])
+        found = F.detect(self._view(), self.cfg)
+        kinds = {f.kind: f for f in found}
+        self.assertEqual(set(kinds), {"user_repeated_guidance", "orchestrator_repeated_guidance"})
+        user = kinds["user_repeated_guidance"]
+        self.assertEqual((user.evidence["messages"], user.confidence), (3, "high"))
+        self.assertEqual(len(user.evidence["turns"]), 3)
+        self.assertEqual(kinds["orchestrator_repeated_guidance"].evidence["messages"], 3)
+        blob = "".join(f.read_text(encoding="utf-8") for f in (self.home / "segments").rglob("*.jsonl"))
+        self.assertNotIn("compatibilite des sauvegardes", blob)   # * empreintes seulement
+
+    def test_context_injected_by_codex_is_not_a_user_reminder(self) -> None:
+        # * Faux positif reel (2026-09-19) : AGENTS.md et l'environnement, reinjectes par Codex a la reprise du fil.
+        from agentwatch.detectors import repeated_guidance as F
+        agents_md = "# AGENTS.md instructions for C:\\proj\n\n<INSTRUCTIONS>\n" + "Toujours compiler avant de conclure. " * 10 + "\n</INSTRUCTIONS>"
+        env = "<environment_context>\n  <cwd>C:\\proj</cwd>\n  <shell>pwsh</shell>\n" + "  <note>contexte machine</note>\n" * 5 + "</environment_context>"
+        b = RolloutBuilder(ROOT).meta()
+        for i in range(3):
+            b.add("turn_context", {"turn_id": f"t{i}", "cwd": "C:\\proj", "model": "gpt-synth"})
+            b.add("response_item", {"type": "message", "id": f"msg_ctx{i}", "role": "user",
+                                    "content": [{"type": "input_text", "text": agents_md}, {"type": "input_text", "text": env},
+                                                {"type": "input_text", "text": f"Tache numero {i} : quelque chose de different a chaque fois."}]})
+        R.import_rollouts(self.store, self.cfg, [str(self._write(b))])
+        v = self._view()
+        self.assertEqual(F.detect(v, self.cfg), [])
+        user = [m for m in v.markers if m.phase == "message" and m.meta.get("role") == "user"]
+        self.assertTrue(all(m.meta["injected_blocks"] == 2 and m.meta["injected_chars"] > 300 for m in user))
 
     def test_live_digest_summarises_what_codex_just_did(self) -> None:
         lines = self._main().text().splitlines(keepends=True)
