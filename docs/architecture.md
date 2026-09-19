@@ -21,7 +21,7 @@ hooks du client ──stdin JSON──▶ agentwatch/hook_entry.py (python -I, ~
 
 | Dossier | Role | Chemin chaud ? |
 |---|---|---|
-| `agentwatch/hook_entry.py` | point d'entree autonome des hooks (ajoute la racine a `sys.path`) | oui |
+| `agentwatch/hook_entry.py` | point d'entree autonome des hooks (ajoute la racine a `sys.path`) ; un echec avant l'ingestion (import casse, depot en cours de mise a jour) laisse un incident `hook_crash` au lieu d'une perte silencieuse | oui |
 | `collector/ingest.py` | lire stdin (borne), decoder, appeler l'adaptateur, masquer, ecrire | oui |
 | `collector/privacy.py` | masquage en une passe, HMAC-SHA256 local (`_sha2`), bornage | oui |
 | `collector/store.py` | spool atomique, segments, diagnostics, quotas, retention | ecriture : oui |
