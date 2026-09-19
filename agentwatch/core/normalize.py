@@ -167,6 +167,7 @@ _REDIRECT_RE = re.compile(r"(?<![<>\d])>{1,2}(?!&\d)|\d>{1,2}(?!&)")
 _PATHLIKE_RE = re.compile(r"""(?<![\w@:])(?:~|\.{1,2})?[/\\]?(?:[\w.\-+@]+[/\\])+[\w.\-+@*?]*|[\w.\-+]+\.[A-Za-z0-9]{1,8}(?![\w/\\])""")
 _OPTION_RE = re.compile(r"^-{1,2}[\w\-]*(=.*)?$")
 _TOKEN_RE = re.compile(r'"[^"]*"|\'[^\']*\'|\S+')
+_URL_HEAD_RE = re.compile(r"^[\"']?[A-Za-z][A-Za-z0-9+.\-]*://")
 
 
 def normalize_command(command: str) -> str:
@@ -198,7 +199,9 @@ def classify_shell(command: str) -> dict[str, Any]:
         toks = [t for t in toks if t and not _ENV_ASSIGN_RE.match(t)]
         if not toks:
             continue
-        head = os.path.basename(toks[0]).lower()
+        # ! Un segment qui commence par une URL (ligne d'un script) : sa "tete" serait la fin de l'URL, requete
+        #   et signature comprises. Constate le 2026-09-19 (URL presignees GCS dans les tetes de commande).
+        head = "<url>" if _URL_HEAD_RE.match(toks[0]) else os.path.basename(toks[0]).lower()
         if head.endswith(".exe"):
             head = head[:-4]
         if head in {"sudo", "doas", "time", "nice", "rtk"} and len(toks) > 1:

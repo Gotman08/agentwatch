@@ -37,7 +37,10 @@ _SECRET_RE = re.compile(
     r"(?P<pem>-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----)"
     r"|(?P<bearer_prefix>\b[Bb]earer\s+)(?P<bearer>[A-Za-z0-9_\-\.=]{12,})"
     r"|(?P<kv_prefix>(?<![<\w])(?:api[_\-]?key|secret(?:[_\-]?key)?|access[_\-]?token|refresh[_\-]?token"
-    r"|auth[_\-]?token|token|password|passwd|pwd|authorization|client[_\-]?secret|private[_\-]?key)"
+    r"|auth[_\-]?token|token|password|passwd|pwd|authorization|client[_\-]?secret|private[_\-]?key"
+    # * URL presignees (constate le 2026-09-19 dans un rollout Codex : x-goog-signature et x-goog-credential
+    #   conserves en clair) : GCS x-goog-*, S3 X-Amz-*, CloudFront Signature, Azure SAS sig.
+    r"|signature|credential|sig)"
     r"\s*[:=]\s*[\"']?)(?!bearer\b)(?P<kv>[^\s\"'&;,<>]{6,})"
     r"|(?P<tok>\b(?:AKIA|ASIA)[0-9A-Z]{16}\b"
     r"|\bgh[pousr]_[A-Za-z0-9]{20,}\b"
