@@ -155,6 +155,33 @@ class RepeatedCallsTests(unittest.TestCase):
         self.assertIn("timeout_ms=['30000']", g["why"])
         self.assertIn("consigne", g["suggestion"])
 
+    def test_wait_to_deadline_cites_the_longest_delay_honored(self) -> None:
+        # * Constate le 2026-09-19 (117 sessions) : wait_agent respecte 300 s et 600 s, mais l'agent demande 30 s
+        #   (818 fois, 627 encore en cours au retour). La preuve qu'un delai plus long passe est dans la session.
+        s = self._synth("deadline", CLIENT_CODEX)
+        s.response_gap_ms = 2_000
+        s.call("collaboration.wait_agent", {"targets": ["other"], "timeout_ms": 300000},
+               {"output": json.dumps({"timed_out": True})}, duration_ms=300_000)
+        for _ in range(4):
+            s.call("collaboration.wait_agent", {"targets": ["worker"], "timeout_ms": 30000},
+                   {"output": json.dumps({"timed_out": True})}, duration_ms=30_000)
+        g = self._group(s.view(), "collaboration.wait_agent")
+        self.assertIn("4 attente(s) sur 4 vont jusqu'au delai demande", g["why"])
+        self.assertIn("5 min", g["why"])
+        self.assertIn("5 min deja respecte", g["suggestion"])
+
+    def test_wait_returning_early_points_to_intermediate_output(self) -> None:
+        # * `wait` de Codex rend la main des qu'une sortie arrive : un script bavard la reveille sans cesse.
+        s = self._synth("early", CLIENT_CODEX)
+        s.response_gap_ms = 2_000
+        for _ in range(5):
+            s.call("wait", {"cell_id": "7", "yield_time_ms": 30000}, {"output": "Script running with cell ID 7\nOutput:\nstep"},
+                   duration_ms=200)
+        g = self._group(s.view(), "wait")
+        self.assertEqual(g["kind"], "wait_timeout")
+        self.assertIn("5 rendent la main avant", g["why"])
+        self.assertIn("fichier journal", g["suggestion"])
+
     def test_mcp_wait_tool_timing_out_is_a_tool_issue(self) -> None:
         s = self._synth("mcp-wait-timeout")
         s.response_gap_ms = 3_000

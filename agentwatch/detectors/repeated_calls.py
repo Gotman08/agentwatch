@@ -377,6 +377,37 @@ def _context_reread(calls: list[Call]) -> int | None:
     return sum(seen.values()) if seen else None
 
 
+def requested_delay_s(c: Call) -> float | None:
+    """Delai d'attente demande, en secondes, quand l'unite est explicite dans le nom du parametre."""
+    for k, v in c.params.items():
+        if not isinstance(v, (int, float)) or isinstance(v, bool) or v <= 0:
+            continue
+        lk = k.lower()
+        if not re.search(r"(timeout|yield|wait|sleep|duration|delay)", lk):
+            continue
+        if lk.endswith("_ms"):
+            return float(v) / 1000
+        if lk.endswith(("_s", "_sec", "_secs", "_seconds")):
+            return float(v)
+    return None
+
+
+def _wait_profile(calls: list[Call]) -> dict[str, Any]:
+    """Les attentes vont-elles jusqu'au delai demande (echeance) ou rendent-elles la main avant (sortie, fin) ?"""
+    full = early = n = 0
+    for c in calls:
+        req = requested_delay_s(c)
+        if req is None or c.duration_ms is None or req < 1:
+            continue
+        n += 1
+        dur = c.duration_ms / 1000
+        if dur >= 0.9 * req:
+            full += 1
+        elif dur < 0.5 * req:
+            early += 1
+    return {"measured": n, "to_deadline": full, "returned_early": early}
+
+
 def _timeouts_used(calls: list[Call]) -> dict[str, list[Any]]:
     """Delais demandes par l'agent (parametres numeriques de delai, gardes en clair), tries, 6 au plus par parametre."""
     from agentwatch.core.normalize import is_timing_param
@@ -410,8 +441,12 @@ def analyse(view: SessionView, cfg: dict[str, Any]) -> dict[str, Any]:
         if c.category == S.CAT_MCP and c.mcp_server and _WAIT_NAME.search(c.mcp_tool or ""):
             wait_tools[c.mcp_server][c.tool_name or "?"] += 1
     same_request_agents: dict[str, set[str]] = defaultdict(set)
+    honored: dict[str, float] = {}
     for c in view.calls:
         same_request_agents["\x1f".join((str(c.tool_name), str(c.target_key), c.params_key))].add(c.agent_key)
+        req = requested_delay_s(c)
+        if req is not None and c.duration_ms is not None and c.duration_ms / 1000 >= 0.9 * req:
+            honored[str(c.tool_name)] = max(honored.get(str(c.tool_name), 0.0), req)
 
     repeat_of: dict[str, dict[str, Any]] = {}
     groups: list[dict[str, Any]] = []
@@ -423,7 +458,7 @@ def analyse(view: SessionView, cfg: dict[str, Any]) -> dict[str, Any]:
             repeat_of[r["key"]] = r
         if len(calls) < min_calls:
             continue
-        groups.append(_summarise(gk, calls, reps, d, episode_gap, wait_tools, same_request_agents))
+        groups.append(_summarise(gk, calls, reps, d, episode_gap, wait_tools, same_request_agents, honored))
     groups.sort(key=lambda g: (g["verdict"] in IMPROVABLE, g["round_trips"], g["calls"]), reverse=True)
     result = {"groups": groups, "rhythm": _rhythm(view, repeat_of, gap_ms, int(d.get("rhythm_top", 15))),
               "totals": _totals(groups), "min_calls": min_calls}
@@ -432,7 +467,8 @@ def analyse(view: SessionView, cfg: dict[str, Any]) -> dict[str, Any]:
 
 
 def _summarise(gk: str, calls: list[Call], reps: list[dict[str, Any]], d: dict[str, Any], episode_gap: float,
-               wait_tools: dict[str, Counter[str]], same_request_agents: dict[str, set[str]]) -> dict[str, Any]:
+               wait_tools: dict[str, Counter[str]], same_request_agents: dict[str, set[str]],
+               honored: dict[str, float] | None = None) -> dict[str, Any]:
     first = calls[0]
     rt = [r for r in reps if r["round_trip"]]
     n_rt = len(rt)
@@ -491,12 +527,24 @@ def _summarise(gk: str, calls: list[Call], reps: list[dict[str, Any]], d: dict[s
         elif is_wait_tool or timed_out:
             verdict, kind = by_tool_owner, "wait_timeout"
             used = _timeouts_used(calls)
+            prof = _wait_profile(calls)
+            best = (honored or {}).get(str(first.tool_name))
             why = (f"l'attente est relancee {max(timed_out, reasons['waiting'])} fois avant que ce qu'elle attend n'arrive"
-                   + (f" (delai demande : {', '.join(f'{k}={v}' for k, v in used.items())})" if used else ""))
-            suggestion = ("consigne : demander un delai d'attente plus long (parametre de l'outil) ; une attente par evenement "
-                          "attendu" if by_tool_owner == "agent" else
-                          "cote serveur : relever le delai maximal d'attente (ou attendre jusqu'au changement d'etat) ; une "
-                          "attente par evenement attendu")
+                   + (f" (delai demande : {', '.join(f'{k}={v}' for k, v in used.items())})" if used else "")
+                   + (f" ; {prof['to_deadline']} attente(s) sur {prof['measured']} vont jusqu'au delai demande, "
+                      f"{prof['returned_early']} rendent la main avant" if prof["measured"] else "")
+                   + (f" ; delai le plus long respecte par cet outil dans la session : {fmt_duration(best)}" if best else ""))
+            if prof["measured"] and prof["returned_early"] > prof["to_deadline"]:
+                # * L'attente rend la main avant l'echeance : une sortie intermediaire (progression) la reveille.
+                suggestion = ("l'attente rend la main avant l'echeance (sortie intermediaire du traitement attendu) : envoyer la "
+                              "progression dans un fichier journal et n'attendre que la fin, en un appel")
+            elif by_tool_owner == "agent":
+                suggestion = ("consigne : demander un delai d'attente plus long (parametre de l'outil"
+                              + (f" ; {fmt_duration(best)} deja respecte dans la session" if best else "")
+                              + ") ; une attente par evenement attendu")
+            else:
+                suggestion = ("cote serveur : relever le delai maximal d'attente (ou attendre jusqu'au changement d'etat) ; une "
+                              "attente par evenement attendu")
         else:
             verdict, kind = by_tool_owner, "polling_cadence"
             if polling * 2 >= n_rt:

@@ -290,6 +290,12 @@ Verdict par groupe, sur les reprises qui ont coute un aller-retour :
 | sans aller-retour | toutes les repetitions dans une meme reponse | aucune |
 | indetermine | apport inconnu pour la majorite | aucune |
 
+Attente relancee (`wait_timeout`) : G distingue l'attente qui va jusqu'au delai demande (demander plus long ;
+le rapport cite le plus long delai que l'outil a respecte dans la session, preuve qu'il est accepte) de celle
+qui rend la main avant (la sortie intermediaire du traitement attendu la reveille : journal dans un fichier,
+une seule attente de la fin). Constate sur 117 sessions Codex : `wait_agent` respecte 300 s et 600 s, mais
+l'agent demande 30 s dans la moitie des cas (818 attentes, 627 encore en cours au retour).
+
 Un suivi periodique est reconnu meme quand la sortie change (compteurs de progression) : au moins 5
 reprises, intervalle regulier (coefficient de variation < 0,5), rien d'observe entre deux pour 60 % d'entre
 elles, phase inchangee. Qui peut changer la cadence decide entre agent et outil : un serveur MCP se modifie ;
