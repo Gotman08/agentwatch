@@ -1,4 +1,4 @@
-# Les six detecteurs
+# Les sept detecteurs
 
 Tous sont deterministes, independants, executes sur la vue de session correlee. Les
 seuils sont dans `config.json` sous `detectors`. Chaque signalement porte : identifiant de
@@ -253,6 +253,79 @@ aucun signalement (25 messages de l'utilisateur, 2 116 consignes aux sous-agents
 Limite : une consigne reformulee n'est pas reconnue (empreinte exacte au paragraphe, apres normalisation
 des espaces et de la casse). Proposition : inscrire la consigne dans `AGENTS.md`, une skill ou la
 definition du sous-agent. Cle de motif pour `trends` : role + empreinte du premier paragraphe.
+
+## G. `G.repeated_calls` (v1.0) — appels repetes : pourquoi, a quel rythme, ameliorable ou non
+
+Repond a « pourquoi l'agent refait-il cet appel, et puis-je l'aider ? ». Tous les outils : shell, MCP,
+fonctions du client (`wait`, `wait_agent`, `clock.sleep`), lectures. Un groupe = un meme appel (meme agent,
+meme outil, meme cible, memes parametres ; les delais demandes et les tailles de sortie ne comptent pas)
+fait au moins `min_calls` (3) fois. Chaque reprise (appel precedent, appel suivant) recoit :
+
+| Element | Contenu |
+|---|---|
+| raison observee | la premiere qui s'applique : `same_response` (meme reponse du modele : boucle de script, appels paralleles ; aucun aller-retour), `context_loss` (compaction de CET agent entre les deux), `new_input` (message de l'utilisateur ou d'un autre agent, nouveau tour), `after_change` (ecriture sur la cible ; action non-lecture sur le meme serveur MCP ; message ou tache donnee a un sous-agent pour une attente), `unavailable` (le resultat precedent disait le service indisponible), `after_failure`, `waiting` (le resultat precedent disait « en cours », ou l'attente est arrivee a echeance), `possible_change` (action a effet inconnu du meme agent entre les deux), `none` |
+| raison completee | si rien n'est observe : un outil dont la fonction est d'attendre attend encore (`waiting`, base « nature de l'outil ») ; sinon la raison annoncee par l'agent (`unavailable`, `waiting`, base « annoncee ») |
+| raison annoncee | categories reconnues dans les commentaires de l'agent entre les deux appels : `retry`, `wait`, `unavailable`, `in_progress`, `verify`, `after_change`, `fix`, `explore` (rollouts Codex ; jamais le texte) |
+| apport | etat du resultat identique ou change (empreinte `state_fp`, horodatages et durees neutralises ; a defaut empreinte du contenu) ; changement de phase |
+| rythme | intervalle depuis l'appel precedent (debut a debut), temps mort (fin a debut), episodes (ecart > `episode_gap_s`, 20 min), pics par minute et par 10 minutes |
+| cout | allers-retours du modele, tokens mesures, contexte relu pour decider (entree totale des reponses emettrices, dont cache, une fois par reponse) |
+
+La phase d'un resultat (`result_phase`) est lue a l'ingestion : `unavailable` (champ `error`, `message`,
+`status`... ou drapeau `available`/`connected`... a faux ; tete ou fin d'une sortie texte), `in_progress`
+(champ `status`/`state` a `RUNNING`, `PENDING`...; `timed_out` d'une attente ; « Script running with cell ID »
+de la fonction `wait` de Codex), `failed`, `done`. Elle n'est lue dans le texte que pour un outil dont le nom
+annonce un etat (`status`, `wait`, `job`, `health`, `check`...) ou une commande d'etat (`squeue`, `docker`,
+`kubectl`, `curl`...) : un ticket Linear « In Progress » relu n'est pas un traitement en cours, un fichier lu
+qui contient « unavailable » n'est pas un service indisponible.
+
+Verdict par groupe, sur les reprises qui ont coute un aller-retour :
+
+| Verdict | Quand | Proposition |
+|---|---|---|
+| ameliorable : agent | reprises sans raison ni apport (`unexplained_repeats`) ; sondage avec un outil d'etat alors qu'un outil d'attente du meme serveur sert dans la session (`polling_instead_of_wait`) ; attente d'un outil du client relancee a chaque echeance (`wait_timeout`) ; suivi periodique par le shell (`polling_cadence`) | consigne : reutiliser le resultat, attendre avec l'outil d'attente, demander un delai plus long, boucler dans un seul appel |
+| ameliorable : outil | sondage ou attente d'un serveur MCP (`polling_cadence`, `wait_timeout`) | attente bloquante jusqu'au changement d'etat, delai maximal releve, cadence minimale |
+| environnement | reessais apres « indisponible » (`retry_cadence`) : legitimes | cote outil : rendre un delai de reprise ou attendre la disponibilite ; cadence simulee |
+| apres echec | reprises apres echec | detecteur B |
+| justifie | reprises expliquees (modification, nouvelle consigne, perte de contexte) ou qui ont appris quelque chose | aucune ; si les compactions dominent : garder l'information hors du contexte |
+| sans aller-retour | toutes les repetitions dans une meme reponse | aucune |
+| indetermine | apport inconnu pour la majorite | aucune |
+
+Un suivi periodique est reconnu meme quand la sortie change (compteurs de progression) : au moins 5
+reprises, intervalle regulier (coefficient de variation < 0,5), rien d'observe entre deux pour 60 % d'entre
+elles, phase inchangee. Qui peut changer la cadence decide entre agent et outil : un serveur MCP se modifie ;
+un outil du client (shell, `wait`, `wait_agent`) non, c'est l'agent qui choisit sa boucle et ses delais.
+
+Cadence simulee (sondages, reessais) : pour chaque delai minimal de `cooldowns_s` (10 s a 10 min), appels
+gardes, evites (dont allers-retours) et retard ajoute a la detection de chaque changement de phase. Modele :
+un appel arrive avant la fin du delai est retenu jusqu'a cette fin puis servi, les appels intermediaires
+disparaissent ; retard <= delai. Delai suggere : le plus long dont le retard reste sous
+max(`min_tolerated_delay_s`, `tolerated_delay_ratio` x attente typique), soit 10 % de la duree typique d'un
+episode. Sans changement de phase observe, le retard n'est pas estimable et le rapport le dit.
+
+Signalements : un par habitude (nature x outil), qui rassemble ses groupes ; seulement pour les verdicts
+ameliorables, avec au moins `min_avoidable_calls` (3) appels evitables pour une cadence. Les lectures et
+executions locales refaites sans raison restent au detecteur A (qui ecarte desormais une reprise apres un
+resultat « en cours » ou « indisponible »), les boucles d'echec au detecteur B. Le rapport ajoute la section
+« Appels repetes : pourquoi, a quel rythme » : tous les groupes, justifies compris (ce qu'on ne peut pas
+ameliorer se lit la), la cadence simulee des trois premiers sondages, et le rythme de chaque outil
+(appels, intervalle median, pics par minute et par 10 minutes, appels identiques a un precedent et sans
+apport). Cle de motif pour `trends` : nature + outil.
+
+Constate le 2026-09-19 sur la session Codex `01a08ca6` (13 403 appels, analyse en 0,25 s) : 202 groupes,
+1 231 reprises avec aller-retour (justifiees 696, agent 509, outil 26). La fonction `wait` a relance 233 fois
+l'attente d'un script encore en cours (`yield_time_ms` de 1 s a 60 s) : 38,2 millions de tokens de contexte
+relus pour decider ces reprises. `wait_agent` : 116 attentes relancees. Les 188 `wait_for_job` du serveur
+romeo n'ont coute que 26 allers-retours : les autres s'enchainaient a moins de 2 s, sans reponse du modele
+entre deux (boucle hors modele, `timeout_seconds=60`).
+Deux scripts de suivi relances a la main toutes les 34 s et 55 s (43 et 98 fois) : une boucle dans un seul
+appel aurait suffi. Les relectures de tickets Linear suivaient des compactions (39 dans le fil principal) :
+justifiees.
+
+Limites : le raisonnement du modele n'est pas observe (seuls les faits et les categories annoncees) ; un
+etat identique a l'empreinte peut cacher un detail utile ; la simulation suppose qu'un etat observe persiste
+jusqu'a l'appel suivant. Reglages : `detectors.repeated_calls` (`min_calls`, `episode_gap_s`,
+`min_avoidable_calls`, `cooldowns_s`, `min_tolerated_delay_s`, `tolerated_delay_ratio`, `rhythm_top`,
+`report_top`).
 
 ## Vue multi-sessions : `agentwatch trends`
 

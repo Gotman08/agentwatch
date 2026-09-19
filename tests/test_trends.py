@@ -104,7 +104,7 @@ class TrendsTests(unittest.TestCase):
         self.assertTrue(b["proposal"])
         # * Le motif C (une session) et la relecture Codex de notes.txt (une session) ne sont pas listes.
         self.assertEqual(r["single_session_patterns"], 2)
-        self.assertEqual(r["findings_by_rule"], {"A": 5, "B": 3, "C": 1, "D": 0, "E": 0, "F": 0})
+        self.assertEqual(r["findings_by_rule"], {"A": 5, "B": 3, "C": 1, "D": 0, "E": 0, "F": 0, "G": 0})
 
     def test_breakdown_by_project_client_and_session(self) -> None:
         r = self._trends(days=7)
@@ -123,7 +123,7 @@ class TrendsTests(unittest.TestCase):
         self.assertEqual(clients["codex"]["recurring"], [])
         self.assertEqual(len(r["by_session"]), 5)
         by_id = {s["session_id"]: s for s in r["by_session"]}
-        self.assertEqual(by_id["p2s1"]["findings_by_rule"], {"A": 1, "B": 0, "C": 1, "D": 0, "E": 0, "F": 0})
+        self.assertEqual(by_id["p2s1"]["findings_by_rule"], {"A": 1, "B": 0, "C": 1, "D": 0, "E": 0, "F": 0, "G": 0})
         self.assertEqual(by_id["p2s1"]["recurring_patterns"], 1, "seule la relecture de a.py revient ailleurs")
         self.assertEqual(by_id["p1s1"]["recurring_patterns"], 2)
         self.assertEqual(by_id["thr_p1"]["recurring_patterns"], 0)

@@ -2,7 +2,7 @@
 
 Observateur local et passif pour **Claude Code** et **Codex**. Il enregistre les appels
 d'outils via les hooks officiels des deux clients, les normalise dans un schema commun,
-puis produit des rapports Markdown/JSON avec six detecteurs deterministes :
+puis produit des rapports Markdown/JSON avec sept detecteurs deterministes :
 
 - **A** travail de lecture refait (meme fichier lu via `Read`, `cat` ou `sed -n`, meme
   recherche via `Grep` ou `rg`) et executions relancees sans changement ;
@@ -12,7 +12,10 @@ puis produit des rapports Markdown/JSON avec six detecteurs deterministes :
 - **E** service externe manipule a la main (ssh, SLURM, curl, gh, cloud, docker) alors
   qu'un outil MCP lie existe ou manque ;
 - **F** consignes redonnees a la main (utilisateur, orchestrateur de sous-agents), a partir des rollouts
-  Codex : empreintes de paragraphes, jamais le texte.
+  Codex : empreintes de paragraphes, jamais le texte ;
+- **G** appels repetes, tous outils : pourquoi chacun est refait (attente, service indisponible, modification,
+  compaction, rien), a quel rythme, ce qu'il a appris, et si l'agent ou l'outil peut faire mieux (cadence
+  simulee, attente bloquante, delai plus long) ; plus le rythme de chaque outil.
 
 ## A quoi ca sert
 
@@ -122,7 +125,7 @@ Etat des preuves (documente / fixture / verifie reellement / indisponible) :
 ## Perimetre V1
 
 Collecte automatique par hooks et, pour Codex, par lecture passive des rollouts (appels, statuts,
-durees, tokens, sous-agents, messages en empreintes), stockage local borne, six detecteurs, rapports par session
+durees, tokens, sous-agents, messages en empreintes), stockage local borne, sept detecteurs, rapports par session
 et multi-sessions, cout en tokens depuis les transcripts Claude Code (sur demande), sante de
 la collecte, installation reversible, tests et smoke tests. Pas de second LLM, pas
 d'embeddings, pas d'interface web, pas de profilage Unreal.

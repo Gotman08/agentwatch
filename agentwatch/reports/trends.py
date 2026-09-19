@@ -27,7 +27,7 @@ from agentwatch.reports.stats import session_tokens
 from agentwatch.detectors.tool_gap import mcp_servers_of, related_servers
 
 TRENDS_VERSION = "1.1"
-RULE_LETTERS = ("A", "B", "C", "D", "E", "F")
+RULE_LETTERS = ("A", "B", "C", "D", "E", "F", "G")
 UNKNOWN_PROJECT = "(inconnu)"
 _ERRORS = (S.STATUS_ERROR, S.STATUS_TIMEOUT, S.STATUS_DENIED)
 _CONF_RANK = {"high": 3, "medium": 2, "low": 1}
@@ -79,6 +79,11 @@ def pattern_key(f: Finding) -> tuple[str, str]:
         # * F : la consigne elle-meme (empreinte de son premier paragraphe, cle locale) : redonnee dans plusieurs sessions.
         fps = ev.get("paragraph_fingerprints") or ["?"]
         return f"F|{ev.get('role')}|{fps[0]}", f"consigne redonnee ({ev.get('role')}, {ev.get('paragraph_chars')} caracteres, empreinte {str(fps[0])[:8]})"
+    if letter == "G":
+        # * G : l'outil et la nature de la repetition (sondage, attente relancee...), pas la cible : sonder un autre job
+        #   avec le meme outil est la meme habitude.
+        tool = ev.get("tool") or "?"
+        return f"G|{f.kind}|{tool}", f"{tool} : {f.title.split(' (')[0].lower()}"
     return f"{f.rule_id}|{f.kind}|{f.title}", f.title
 
 
@@ -448,7 +453,7 @@ def render_trends_markdown(report: dict[str, Any]) -> str:
             lines.append("")
 
     lines += ["## Par projet", "",
-              "| Projet | Sessions | Clients | Appels | Erreurs | Tokens mesures | Signalements (A/B/C/D/E) | Motifs recurrents dans le projet | Derniere activite |",
+              "| Projet | Sessions | Clients | Appels | Erreurs | Tokens mesures | Signalements (" + "/".join(RULE_LETTERS) + ") | Motifs recurrents dans le projet | Derniere activite |",
               "|---|---|---|---|---|---|---|---|---|"]
     for g in report["by_project"]:
         br = g["findings_by_rule"]
@@ -468,7 +473,7 @@ def render_trends_markdown(report: dict[str, Any]) -> str:
         lines.append("")
 
     lines += ["## Par client", "",
-              "| Client | Sessions | Projets | Appels | Erreurs | Tokens mesures | Signalements (A/B/C/D/E) | Motifs recurrents chez ce client |",
+              "| Client | Sessions | Projets | Appels | Erreurs | Tokens mesures | Signalements (" + "/".join(RULE_LETTERS) + ") | Motifs recurrents chez ce client |",
               "|---|---|---|---|---|---|---|---|"]
     for g in report["by_client"]:
         br = g["findings_by_rule"]
@@ -480,8 +485,8 @@ def render_trends_markdown(report: dict[str, Any]) -> str:
             lines += [f"### Client {g['client']}", ""] + _pattern_table(g["recurring"]) + [""]
 
     lines += ["## Par session", "",
-              "| Debut | Client | Projet | Session | Appels | Erreurs | Tokens | A | B | C | D | E | Motifs recurrents |",
-              "|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
+              "| Debut | Client | Projet | Session | Appels | Erreurs | Tokens | " + " | ".join(RULE_LETTERS) + " | Motifs recurrents |",
+              "|" + "---|" * (8 + len(RULE_LETTERS))]
     for s in report["by_session"]:
         br = s["findings_by_rule"]
         labels = " ; ".join(_cell(x, 50) for x in s["recurring_labels"])

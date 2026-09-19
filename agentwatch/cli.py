@@ -235,7 +235,7 @@ def _analyse(home: Path, cfg: dict[str, Any], client: str, skey: str) -> dict[st
         _import_transcripts(store, cfg, client, skey)   # * usage en tokens depuis le transcript, si demande dans config.json
     view = load_session(store, client, skey, cfg)
     findings = run_detectors(view, cfg)
-    report = build_report(view, compute_stats(view), coverage_matrix(view), findings, cfg, load_feedback(home),
+    report = build_report(view, compute_stats(view, cfg), coverage_matrix(view), findings, cfg, load_feedback(home),
                           _read_install_meta(home, client))
     report["collection_health"] = _health(home, cfg, store)
     return report

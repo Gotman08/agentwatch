@@ -215,6 +215,12 @@ class CodexAdapter:
         ev["result_fingerprint"] = {"method": S.FINGERPRINT_METHOD_HMAC, "value": ctx.fp(N.canonical_json(resp))}
         if ev["tool_category"] in (S.CAT_READ, S.CAT_SEARCH, S.CAT_LIST, S.CAT_SHELL, S.CAT_MCP):
             ev["content_fingerprint"] = base.content_fingerprint(_output_text(resp), ctx.fp)
+        kind = base.facts_kind(ev["tool_category"], ev["params"], ev["tool_name"])
+        if kind:
+            text = _output_text(resp)
+            if text is None and isinstance(resp, (dict, list)):
+                text = N.canonical_json(resp)
+            ev["evidence"].update(base.result_facts(text, ev["status"], ctx.fp, ev["tool_name"], kind))
         if cfg.get("detailed_excerpts"):
             text = _output_text(resp)
             if text:

@@ -148,11 +148,11 @@ ligne JSON `{timestamp, ordinal, type, payload}`.
 | `session_meta` du fil (le premier ; un sous-agent recopie ensuite celui de son parent) | `session_start` (fil principal) ou `subagent_start` (parent, role, surnom, `agent_path`, profondeur) |
 | `turn_context` | modele, dossier et `turn_id` courants |
 | `event_msg/task_started`, `task_complete`, `turn_aborted` | `turn_start`, `turn_end` (duree, delai du premier token), `interrupt` (raison) |
-| `compacted` | `compact_end` (numero de fenetre) : nouvelle epoque de contexte |
+| `compacted` | `compact_end` (numero de fenetre) : nouvelle epoque de contexte de CET agent (les epoques sont propres a chaque agent : la compaction d'un sous-agent ne vide pas le contexte du fil principal) |
 | `event_msg/item_completed` : `CommandExecution`, `McpToolCall`, `FileChange`, `ImageView`, `Extension` | un appel (debut a `started_at_ms`, fin a `completed_at_ms`) : `Bash`, `mcp__<serveur>__<outil>`, `apply_patch`, `view_image`, `web_search` |
 | `response_item/function_call` et `function_call_output` | un appel : `collaboration.send_message`, `collaboration.spawn_agent`, `wait`, ... ; un appel de fonction MCP et son item `McpToolCall` de meme identifiant forment un seul appel |
 | `token_usage_record` | usage de la reponse (voir ci-dessous) |
-| `response_item/message`, `agent_message`, arguments `message` des fonctions de collaboration | marqueur `message` : role, identifiant du message, tour, longueur, empreintes et longueurs des paragraphes ; pour un message `user`, blocs injectes par Codex (`AGENTS.md`, balises) exclus et comptes (`injected_chars`, `injected_blocks`) |
+| `response_item/message`, `agent_message`, arguments `message` des fonctions de collaboration | marqueur `message` : role, identifiant du message, tour, longueur, empreintes et longueurs des paragraphes ; pour un message `user`, blocs injectes par Codex (`AGENTS.md`, balises) exclus et comptes (`injected_chars`, `injected_blocks`) ; pour un message `assistant`, `declared` : categories de raison annoncees (`retry`, `wait`, `unavailable`, `in_progress`, `verify`, `after_change`, `fix`, `explore`), reconnues par motifs |
 | `world_state` | marqueur `message` de role `context` : longueur, empreinte et taille d'`AGENTS.md` et des skills injectes |
 | `event_msg/item_completed:SubAgentActivity` (`completed`, `interrupted`) | `subagent_stop` |
 
@@ -163,6 +163,13 @@ ligne JSON `{timestamp, ordinal, type, payload}`.
   `status: failed` d'un appel MCP ; fonctions de collaboration : succes sans texte d'erreur, erreur
   sinon (`wait` rend la sortie d'une commande en cours : son texte ne decide pas du statut).
 - Duree : `duration` de l'item (source `client`).
+- Faits de resultat (detecteur G), pour tout appel sauf les editions : `evidence.result_phase`
+  (`unavailable`, `in_progress`, `failed`, `done`, `unknown`) et `evidence.state_fp` (empreinte HMAC de
+  l'etat : JSON canonique ou texte, horodatages, durees et compteurs de temps ecoule neutralises ; `empty`
+  pour une sortie vide ; absente pour un contenu lu, dont l'empreinte de contenu fait foi). Calcules de la
+  meme facon par les hooks Claude Code et Codex. Une attente arrivee a echeance garde `evidence.timed_out`.
+- Delais demandes (`timeout_ms`, `yield_time_ms`, `timeout_seconds`, `poll_seconds`...) : un nombre, garde en
+  clair meme hors liste blanche, et exclu de la cle de comparaison des appels.
 - Commandes : `pwsh.exe -Command <script>` ; seul le script est analyse, comme une commande de hook
   (normalisation, masquage des secrets, traduction en unite de travail). Dossier : URL `file:///` ou
   prefixe `\\?\` convertis.
@@ -171,7 +178,9 @@ ligne JSON `{timestamp, ordinal, type, payload}`.
   sortie, au prorata de la taille des sorties consommees ensemble, plus la part de la sortie de la
   reponse qui l'a emis ; pour un `exec`, repartition sur ses actions au prorata de leurs sorties
   (parts entieres, somme exacte). `usage.emitter_request_id` sert aussi a C.batchable (appels emis
-  dans une meme reponse). Session : dernier releve de chaque fil (principal et sous-agents), sommes.
+  dans une meme reponse). `usage.emitter_input_tokens` et `emitter_cached_input_tokens` : entree totale de
+  la reponse emettrice (non partagee : a compter une fois par reponse), le contexte relu pour decider
+  l'appel. Session : dernier releve de chaque fil (principal et sous-agents), sommes.
 - Sous-agents : rattaches a la session du fil racine (`session_id` du `session_meta`), avec
   `agent_id` = identifiant de leur fil et `agent_type` = role.
 - Identifiants d'evenement derives du contenu (fil + identifiant d'appel + phase) : un reimport ne

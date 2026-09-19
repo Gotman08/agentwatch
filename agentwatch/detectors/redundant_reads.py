@@ -76,6 +76,10 @@ def _assess_pair(prev: Call, cur: Call, between: list[Call], case_insensitive: b
     degrade: list[str] = []
     if prev.status in _FAILED or (prev.evidence.get("error_hint") and prev.error_signature):
         reasons.append("premier appel en echec (ou reponse decrivant une panne) : relecture legitime, voir detecteur B")
+    if prev.evidence.get("result_phase") in ("in_progress", "unavailable"):
+        # * Un etat "en cours" ou "indisponible" appelle une nouvelle lecture : c'est un sondage ou un reessai,
+        #   juge (raison, cadence) par le detecteur G.
+        reasons.append(f"premier resultat {prev.evidence['result_phase']} : sondage ou reessai, voir detecteur G")
     if cur.status in _FAILED:
         reasons.append("second appel en echec : pas une repetition reussie")
     same, basis = _same_result(prev, cur)

@@ -45,6 +45,7 @@ def build_report(view: SessionView, stats: dict[str, Any], coverage: list[dict[s
                              "tokens mesures (transcripts ou rollouts importes)", "octets de sortie observes"],
         "top_findings": [f.finding_id for f in top],
         "max_listed_per_rule": int(cfg.get("report", {}).get("max_listed_per_rule", 15)),
+        "repetitions_top": int(cfg.get("detectors", {}).get("repeated_calls", {}).get("report_top", 15)),
         "findings": [f.to_dict() for f in ranked],
         "no_issue_statement": (None if top else
                                (f"Aucune opportunite demontree : {len(ranked)} signalement(s) a faible confiance seulement, listes ci-dessous."

@@ -189,6 +189,9 @@ class ClaudeCodeAdapter:
             else:
                 ev["status"] = S.STATUS_ERROR
             ev["evidence"]["is_interrupt"] = payload.get("is_interrupt")
+            kind = base.facts_kind(ev["tool_category"], ev["params"], ev["tool_name"])
+            if kind:
+                ev["evidence"].update(base.result_facts(ev["error_summary"], ev["status"], ctx.fp, ev["tool_name"], kind))
 
     def _edit_fingerprints(self, ev: dict[str, Any], tool: str | None, tool_input: Any, ctx: Any) -> None:
         if not isinstance(tool_input, dict):
@@ -281,6 +284,12 @@ class ClaudeCodeAdapter:
         ev["result_fingerprint"] = {"method": S.FINGERPRINT_METHOD_HMAC, "value": ctx.fp(N.canonical_json(resp))}
         if ev["tool_category"] in (S.CAT_READ, S.CAT_SEARCH, S.CAT_LIST, S.CAT_SHELL, S.CAT_MCP):
             ev["content_fingerprint"] = base.content_fingerprint(base.primary_text(resp, ev["tool_name"]), ctx.fp)
+        kind = base.facts_kind(ev["tool_category"], ev["params"], ev["tool_name"])
+        if kind:
+            text = base.primary_text(resp, ev["tool_name"])
+            if text is None and isinstance(resp, (dict, list)):
+                text = N.canonical_json(resp)
+            ev["evidence"].update(base.result_facts(text, ev["status"], ctx.fp, ev["tool_name"], kind))
         if cfg.get("detailed_excerpts"):
             text = _excerpt_source(resp)
             if text:

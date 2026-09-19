@@ -22,7 +22,7 @@ def pick_params(tool_input: Any, allowed: list[str], ctx: Any, max_chars: int = 
     hidden: dict[str, str] = {}
     for key, value in list(tool_input.items())[:40]:
         skey = str(key)
-        if skey in allowed:
+        if skey in allowed or N.is_timing_param(skey, value):
             params[skey] = _bounded_value(value, max_chars)
         else:
             hidden[skey] = ctx.fp(N.canonical_json(value))[:10]
@@ -244,6 +244,179 @@ def _json_error_hint(obj: Any, depth: int) -> str | None:
             if hint:
                 return hint
     return None
+
+
+# --------------------------------------------------------------------------- faits sur un resultat (detecteur G)
+# * Pourquoi un appel est-il refait ? L'agent reessaie apres une indisponibilite, attend un traitement en cours,
+#   ou redemande sans raison. Deux faits par resultat, sans jamais conserver le texte :
+#   - `state_fp` : empreinte de l'ETAT, calculee apres avoir neutralise heures, durees et compteurs de temps ecoule
+#     (une reponse d'attente change a chaque appel par son horodatage, pas par son etat) ;
+#   - `result_phase` : unavailable | in_progress | failed | done | unknown.
+_TS_RE = _re.compile(r"\d{4}-\d{2}-\d{2}[T ]\d{1,2}:\d{2}(?::\d{2}(?:[.,]\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?"
+                     r"|\b\d{1,2}:\d{2}:\d{2}(?:[.,]\d+)?\b|\b\d{10,13}(?:\.\d+)?\b")
+_DUR_RE = _re.compile(r"(?i)\b\d+(?:[.,]\d+)?\s?(?:ms|us|ns|s|sec|secs|second|seconds|seconde|secondes|min|mins|minute|minutes"
+                      r"|h|hr|hrs|hour|hours|heure|heures|d|day|days|jour|jours)\b")
+_VOLATILE_KEY_RE = _re.compile(r"(?i)(?:^|[_\-.])(?:time|timestamp|ts|date|elapsed|duration|uptime|age|since|until|updated|created|"
+                               r"modified|now|eta|ttl|expires?|expiry|checked|polled|heartbeat|waited|latency|"
+                               r"ms|secs?|seconds|minutes|at)(?:$|[_\-.])")
+_STATUS_KEYS = {"status", "state", "etat", "statut", "job_state", "jobstate", "phase", "result"}
+_PROGRESS_VALUES = {"pending", "queued", "running", "in_progress", "inprogress", "configuring", "starting", "completing",
+                    "requeued", "suspended", "waiting", "building", "compiling", "en_cours", "en_attente"}
+_DONE_VALUES = {"completed", "complete", "done", "success", "succeeded", "finished", "ok", "ready", "available", "active"}
+_FAILED_STATE_VALUES = {"failed", "failure", "error", "cancelled", "canceled", "timeout", "node_fail", "out_of_memory",
+                        "oom", "preempted", "boot_fail", "deadline", "echec", "erreur"}
+_UNAVAILABLE_FLAGS = {"available", "active", "reachable", "connected", "online", "up", "alive", "running_service"}
+_MESSAGE_KEYS = {"error", "erreur", "message", "detail", "details", "reason", "raison", "status", "state", "etat", "statut"}
+_UNAVAILABLE_RE = _re.compile(
+    r"(?i)(connection (?:refused|aborted|reset|closed)|actively refused|no running|not (?:active|available|reachable|connected|"
+    r"started|up)\b|\binactive\b|\bunavailable\b|indisponible|injoignable|\bunreachable\b|\boffline\b|hors ligne|econnrefused|"
+    r"winerror 1006[01]|winerror 10053|n'est pas (?:actif|active|lanc|disponible|d[ée]marr|joignable|ouvert)|"
+    r"pas encore (?:actif|active|disponible|pr[eê]t|lanc|d[ée]marr)|no .{0,20}answered|failed to (?:connect|attempt))")
+_PROGRESS_RE = _re.compile(
+    r"(?i)\b(pending|queued|in[ _-]progress|en cours|en file|en attente|configuring|compiling|building|"
+    r"not (?:yet )?(?:finished|done|complete|completed|ready)|pas (?:encore )?(?:fini|termin[ée]e?|pr[eê]t)|"
+    r"still (?:running|waiting|compiling|building|pending|in progress)|"
+    r"(?:script|process|job|task|build|command|cell|compilation) (?:is )?(?:still )?running|running with (?:cell|session|pid))\b")
+# * Outil dont le resultat decrit un etat : son nom le dit. Un ticket Linear "In Progress" relu n'est pas un job
+#   en cours (constate le 2026-09-19 sur get_issue) : hors de ces noms, seule l'indisponibilite est lue.
+_STATUS_TOOL_RE = _re.compile(r"(?i)(status|state|wait|poll|progress|watch|health|ready|check|job|task|queue|monitor|"
+                              r"ping|alive|sleep|result)")
+_WAIT_TOOL_RE = _re.compile(r"(?i)(wait|poll|status|progress|watch)")
+_STATE_TEXT_CHARS = 50_000     # * au-dela, le debut suffit a distinguer deux etats ; borne le cout sur le chemin du hook
+_PROBE_CHARS = 600             # * un message d'etat ou d'indisponibilite tient en tete (ou en fin) de sortie
+
+
+def _state_value(v: Any, key: str) -> Any:
+    if isinstance(v, str):
+        return _DUR_RE.sub("<d>", _TS_RE.sub("<t>", v[:2000]))
+    if isinstance(v, (int, float)) and not isinstance(v, bool) and _VOLATILE_KEY_RE.search(key):
+        return "<n>"
+    return v
+
+
+def _state_json(o: Any, depth: int = 0, key: str = "") -> Any:
+    if depth > 8:
+        return "<...>"
+    if isinstance(o, dict):
+        return {str(k): _state_json(v, depth + 1, str(k)) for k, v in list(o.items())[:200]
+                if not (_VOLATILE_KEY_RE.search(str(k)) and not isinstance(v, (dict, list, bool)))}
+    if isinstance(o, list):
+        return [_state_json(v, depth + 1, key) for v in o[:500]]
+    return _state_value(o, key)
+
+
+def _json_phase(o: Any, tool: str, depth: int = 0) -> str | None:
+    """Phase lue dans un champ d'etat JSON (status, state, etat...), sinon None."""
+    if depth > 4:
+        return None
+    if isinstance(o, dict):
+        for k, v in list(o.items())[:80]:
+            lk = str(k).lower()
+            if lk in _STATUS_KEYS and isinstance(v, str):
+                val = v.strip().lower().replace(" ", "_").replace("-", "_")
+                if val in _FAILED_STATE_VALUES:
+                    return "failed"
+                if val in _PROGRESS_VALUES:
+                    return "in_progress"
+                if val in _DONE_VALUES:
+                    return "done"
+            if lk in ("timed_out", "timedout") and v is True and _WAIT_TOOL_RE.search(tool or ""):
+                return "in_progress"   # * attente arrivee a echeance : ce qu'on attend n'est pas encore la
+        for v in list(o.values())[:80]:
+            if isinstance(v, (dict, list)):
+                ph = _json_phase(v, tool, depth + 1)
+                if ph:
+                    return ph
+    elif isinstance(o, list):
+        for v in o[:30]:
+            ph = _json_phase(v, tool, depth + 1)
+            if ph:
+                return ph
+    return None
+
+
+def _json_unavailable(o: Any, depth: int = 0) -> bool:
+    """Indisponibilite declaree par un champ, jamais par un mot perdu dans le contenu : drapeau `available`,
+    `connected`... a faux, ou message d'erreur/d'etat qui la decrit."""
+    if depth > 3 or not isinstance(o, dict):
+        return False
+    for k, v in list(o.items())[:80]:
+        lk = str(k).lower()
+        if lk in _UNAVAILABLE_FLAGS and v is False:
+            return True
+        if lk in _MESSAGE_KEYS and isinstance(v, str) and _UNAVAILABLE_RE.search(v[:_PROBE_CHARS]):
+            return True
+        if isinstance(v, dict) and _json_unavailable(v, depth + 1):
+            return True
+    return False
+
+
+_STATUS_HEADS = {"squeue", "sacct", "scontrol", "sinfo", "qstat", "docker", "kubectl", "get-process", "tasklist", "curl", "wget",
+                 "invoke-webrequest", "invoke-restmethod", "iwr", "irm", "gh", "test-netconnection", "ping", "systemctl", "sc"}
+
+
+def facts_kind(category: str | None, params: dict[str, Any] | None, tool: str | None = None) -> str | None:
+    """Comment lire la phase d'un resultat : `status` (etat d'un service ou d'un traitement), `run` (execution :
+    seule l'indisponibilite compte), `content` (contenu lu : phase tiree du seul statut), None (edition : rien)."""
+    params = params or {}
+    if category in (S.CAT_EDIT, S.CAT_WRITE):
+        return None
+    if category in (S.CAT_READ, S.CAT_SEARCH, S.CAT_LIST, S.CAT_WEB):
+        return "content"
+    if category == S.CAT_SHELL:
+        heads = {str(h).lower() for h in params.get("shell_heads") or []}
+        if heads & _STATUS_HEADS:
+            return "status"
+        return "content" if params.get("shell_kind") == "read" else "run"
+    # * MCP, fonctions (attente d'un sous-agent), autres : etat si le nom de l'outil l'annonce.
+    return "status" if _STATUS_TOOL_RE.search(tool or "") else "run"
+
+
+def result_facts(text: str | None, status: str | None, fp: Any, tool: str | None = None, kind: str = "status") -> dict[str, Any]:
+    """{"state_fp", "result_phase"} d'un resultat ; aucun texte conserve.
+
+    # ! La phase n'est lue dans le texte que pour un resultat qui decrit un etat (`status`) ou une execution
+    #   (`run`, indisponibilite seulement) : un fichier lu qui contient le mot "indisponible" n'est pas un service
+    #   indisponible ; un journal de build termine qui contient "building" n'est pas un traitement en cours.
+    #   Un contenu lu (`content`) n'a pas d'empreinte d'etat : son empreinte de contenu fait deja foi.
+    """
+    out: dict[str, Any] = {"state_fp": None, "result_phase": "unknown"}
+    by_status = {S.STATUS_ERROR: "failed", S.STATUS_TIMEOUT: "failed", S.STATUS_DENIED: "failed",
+                 S.STATUS_INTERRUPTED: "failed", S.STATUS_SUCCESS: "done"}.get(status or "", "unknown")
+    if not isinstance(text, str) or kind == "content":
+        out["result_phase"] = by_status
+        return out
+    head = text[:_STATE_TEXT_CHARS]
+    obj: Any = None
+    stripped = head.strip()
+    if stripped[:1] in ("{", "[") and len(text) <= 200_000:
+        import json
+        try:
+            obj = json.loads(stripped)
+        except (ValueError, RecursionError):
+            obj = None
+    if obj is not None:
+        norm = N.canonical_json(_state_json(obj))
+        phase = _json_phase(obj, tool or "") if kind == "status" else None
+        unavailable = _json_unavailable(obj)
+    else:
+        norm = " ".join(_DUR_RE.sub("<d>", _TS_RE.sub("<t>", head)).split())
+        phase = None
+        probe = head[:_PROBE_CHARS] + "\n" + text[-_PROBE_CHARS:]
+        unavailable = bool(_UNAVAILABLE_RE.search(probe))
+        if kind == "status" and _PROGRESS_RE.search(head[:_PROBE_CHARS]):
+            phase = "in_progress"
+    # * Sortie vide : un etat comme un autre (`git apply --check` reussi, attente sans sortie).
+    out["state_fp"] = fp(norm)[:16] if norm.strip() else "empty"
+    if unavailable:
+        out["result_phase"] = "unavailable"
+    elif phase == "failed" or by_status == "failed":
+        out["result_phase"] = "failed"
+    elif phase:
+        out["result_phase"] = phase
+    else:
+        out["result_phase"] = by_status
+    return out
 
 
 def response_keys(resp: Any) -> list[str] | None:

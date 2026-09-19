@@ -104,6 +104,36 @@ def paragraph_fingerprints(text: str, fp: Any) -> tuple[list[str], int, list[int
     return out, len(text), sizes
 
 
+# * Raison qu'un agent annonce dans ses commentaires ("Romeo n'est pas encore actif, je retente dans 30 s") :
+#   des categories fixes, reconnues par motifs ; le texte n'est jamais conserve.
+_DECLARED = (
+    ("retry", re.compile(r"(?i)r[ée]essa|retent|relanc|nouvelle tentative|\bre-?try|try again|once more|encore une fois|"
+                         r"[àa] nouveau|de nouveau|\bagain\b")),
+    ("wait", re.compile(r"(?i)\battend(?:re|s|ons|ez|ant)\b|j'attends|patient|\bwait|\bpoll|\bsond|surveill|monitor|"
+                        r"toutes les \d|every \d+|"
+                        r"dans \d+ ?(?:s|sec|min)|in \d+ ?(?:s|sec|min)|en attendant|meanwhile|\bsleep")),
+    ("unavailable", re.compile(r"(?i)pas (?:encore )?(?:actif|active|disponible|pr[êe]t|joignable|lanc[ée]|d[ée]marr[ée]|up\b)|"
+                               r"indisponible|injoignable|not (?:yet )?(?:available|ready|running|up|reachable|responding)|"
+                               r"unavailable|unreachable|offline|hors ligne|ne r[ée]pond pas|\bdown\b|connexion refus|"
+                               r"connection refused")),
+    ("in_progress", re.compile(r"(?i)(?:toujours|encore|est|sont|reste|restent) en cours|en cours d'ex[ée]cution|"
+                               r"en cours de (?:compil|build|trait|charg|lanc|d[ée]marr|calcul|g[ée]n[ée]r|mesure|ex[ée]cution)|"
+                               r"still (?:running|pending|queued|building|compiling|in progress)|"
+                               r"pas (?:encore )?(?:fini|termin)|\bpending\b|\bqueued\b|en file")),
+    ("verify", re.compile(r"(?i)v[ée]rifi|contr[ôo]l|confirm|\bcheck|valid|m'assurer|s'assurer|make sure|ensure|double-check")),
+    ("after_change", re.compile(r"(?i)maintenant que|now that|apr[èe]s (?:avoir|la|le|ma|mon|ces|cette|ce) "
+                                r"(?:modif|correct|chang|patch|[ée]dit|appliqu)|after (?:the|my|this) (?:change|fix|edit|patch)")),
+    ("fix", re.compile(r"(?i)corrig|r[ée]par|\bfix|\bpatch")),
+    ("explore", re.compile(r"(?i)regard|explor|cherch|inspect|examin|\blook|\bsearch|investig")),
+)
+
+
+def declared_intents(text: str) -> list[str]:
+    """Categories de raison annoncees dans un message de l'agent (liste fixe, triee), jamais le texte."""
+    probe = text[:4000]
+    return sorted(label for label, rx in _DECLARED if rx.search(probe))
+
+
 def _content_text(content: Any) -> str:
     if isinstance(content, str):
         return content
@@ -247,6 +277,7 @@ class RolloutReader:
         st.setdefault("done_execs", {})        # exec ferme en attente de sa reponse consommatrice : call_id -> actions
         st.setdefault("emitters", {})          # appel de haut niveau -> reponse emettrice
         st.setdefault("emit_tokens", {})       # appel de haut niveau -> tokens de sortie de sa reponse emettrice
+        st.setdefault("emit_input", {})        # appel de haut niveau -> [entree totale, dont cache] de sa reponse emettrice
         st.setdefault("totals", _usage_numbers(None))
         st.setdefault("messages", 0)
         st.setdefault("execs_without_actions", 0)
@@ -340,6 +371,7 @@ class RolloutReader:
                 ev["content_fingerprint"] = None
                 ev["output_size_bytes"] = None
                 ev["output_size_source"] = None
+                ev["evidence"].pop("state_fp", None)
             self._finish(ev, end_ns, self._event_id("end", call_id))
             end_ev = ev
         return end_ev
@@ -487,6 +519,8 @@ class RolloutReader:
         self.st["messages"] += 1
         meta = {"role": role, "chars": chars, "paragraphs": paras, "paragraph_chars": sizes, "turn_id": self.st.get("turn_id"),
                 **{k: v for k, v in extra.items() if v is not None}}
+        if role == "assistant" and text:
+            meta["declared"] = declared_intents(text)
         self._marker(S.PHASE_MESSAGE, ns, eid, meta, "rollout:message")
 
     # ------------------------------------------------------------------ appels
@@ -671,10 +705,10 @@ class RolloutReader:
                 in_parts = split_exact(share, aw)
                 out_parts = split_exact(out_tok, aw) if isinstance(out_tok, int) else [None] * len(acts)
                 for (iid, _s), a_in, a_out in zip(acts, in_parts, out_parts):
-                    self._usage_obs(iid, a_in, a_out, ex.get("emitter"), rid, idx, ns, len(acts))
+                    self._usage_obs(iid, a_in, a_out, ex.get("emitter"), rid, idx, ns, len(acts), ex.get("in_tokens"))
             else:
                 self._usage_obs(cid, share, self.st["emit_tokens"].pop(cid, None), self.st["emitters"].pop(cid, None),
-                                rid, idx, ns, 1)
+                                rid, idx, ns, 1, self.st.setdefault("emit_input", {}).pop(cid, None))
         self.st["to_consume"] = []
         # * Emission : la sortie de cette reponse est l'appel qu'elle vient d'emettre (un appel par reponse observe).
         pend = self.st["pending_emit"]
@@ -682,19 +716,25 @@ class RolloutReader:
             if cid in self.st["open_execs"]:
                 self.st["open_execs"][cid]["emitter"] = rid
                 self.st["open_execs"][cid]["out_tokens"] = u["output_tokens"] // max(1, len(pend))
+                self.st["open_execs"][cid]["in_tokens"] = [u["input_tokens"], u["cached_input_tokens"]]
             else:
                 self.st["emitters"][cid] = rid
                 self.st["emit_tokens"][cid] = u["output_tokens"] // max(1, len(pend))
+                self.st.setdefault("emit_input", {})[cid] = [u["input_tokens"], u["cached_input_tokens"]]
         self.st["pending_emit"] = []
 
     def _usage_obs(self, call_id: str, uncached: int, out_tok: int | None, emitter: str | None, consumer: str, idx: int,
-                   ns: int | None, siblings: int) -> None:
+                   ns: int | None, siblings: int, emit_in: list[int] | None = None) -> None:
+        emit_in = emit_in if isinstance(emit_in, list) and len(emit_in) == 2 else [None, None]
         ev = S.empty_event()
         ev.update({"client": CLIENT_CODEX, "phase": S.PHASE_OBSERVATION, "session_id": self.session_id, "call_id": call_id,
                    "hook_event_name": "rollout_usage", "model": self.st.get("model"),
                    "usage": {"scope": "call", "source": SOURCE, "uncached_input_tokens": uncached, "output_tokens": out_tok,
                              "emitter_request_id": emitter, "consumer_request_id": consumer, "consumer_index": idx,
                              "window": self.st.get("window", 0), "siblings": siblings,
+                             # * Entree totale de la reponse EMETTRICE (non partagee, dont cache) : le contexte relu pour
+                             #   decider cet appel. A compter une fois par reponse (emitter_request_id).
+                             "emitter_input_tokens": emit_in[0], "emitter_cached_input_tokens": emit_in[1],
                              "method": ("part de l'entree non mise en cache de la reponse qui a consomme la sortie (prorata des tailles) "
                                         "+ part de la sortie de la reponse emettrice (appels de haut niveau)")}})
         self._finish(ev, ns, self._event_id("usage", call_id, consumer))

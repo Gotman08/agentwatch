@@ -169,6 +169,8 @@ class SessionView:
     agents: list[str] = field(default_factory=list)
     hook_ms_samples: list[float] = field(default_factory=list)
     schema_versions: list[str] = field(default_factory=list)
+    # * Analyses partagees entre detecteurs et rapport (ex. repetitions du detecteur G), calculees une fois.
+    cache: dict[str, Any] = field(default_factory=dict)
 
 
 def _sort_key(ev: dict[str, Any]) -> tuple[int, int]:
@@ -181,7 +183,7 @@ def _sort_key(ev: dict[str, Any]) -> tuple[int, int]:
 def _params_key(params: dict[str, Any] | None) -> str:
     if not params:
         return "{}"
-    kept = {k: v for k, v in params.items() if k not in _VOLATILE_PARAMS}
+    kept = {k: v for k, v in params.items() if k not in _VOLATILE_PARAMS and not N.is_timing_param(k, v)}
     return N.canonical_json(kept)
 
 
@@ -230,8 +232,10 @@ def build_session(events: list[dict[str, Any]], cfg: dict[str, Any]) -> SessionV
     open_by_agent: dict[str, list[Call]] = {}
     turn_index = 0
     turn_ids: dict[str, int] = {}
-    epoch = 0
-    seen_session_start = False
+    # * Epoque de contexte PAR AGENT : la compaction d'un sous-agent, ou le debut du fil d'un sous-agent Codex
+    #   (son propre session_meta), ne vident pas le contexte du fil principal.
+    epochs: dict[str, int] = {}
+    started: set[str] = set()
     agents: dict[str, None] = {}
 
     for ev in valid:
@@ -263,7 +267,8 @@ def build_session(events: list[dict[str, Any]], cfg: dict[str, Any]) -> SessionV
             turn_ids[tid] = turn_index
 
         if phase in (S.PHASE_START, S.PHASE_END, S.PHASE_FAILURE, S.PHASE_OBSERVATION):
-            _apply_tool_event(ev, phase, ns, agent, epoch, turn_ids.get(tid) if isinstance(tid, str) else turn_index or None,
+            _apply_tool_event(ev, phase, ns, agent, epochs.get(agent, 0),
+                              turn_ids.get(tid) if isinstance(tid, str) else turn_index or None,
                               calls_by_key, open_by_agent, counts, cfg)
             continue
 
@@ -273,14 +278,16 @@ def build_session(events: list[dict[str, Any]], cfg: dict[str, Any]) -> SessionV
             meta["usage"] = ev["usage"]   # * usage de session (import) : un marqueur, jamais un appel
         view.markers.append(Marker(phase=phase, ns=ns, time=ev.get("received_time"), agent_id=ev.get("agent_id"), meta=meta))
         if phase == S.PHASE_SESSION_START:
-            if seen_session_start:
-                epoch += 1   # ? reprise / clear / compact : le contexte du modele a change
-            seen_session_start = True
+            if agent in started:
+                epochs[agent] = epochs.get(agent, 0) + 1   # ? reprise / clear / compact : le contexte de CET agent a change
+            started.add(agent)
             model = (ev.get("session_meta") or {}).get("model")
-            if model:
+            if model and agent == "main":
+                view.model = model
+            elif model and not view.model:
                 view.model = model
         elif phase == S.PHASE_COMPACT_END:
-            epoch += 1
+            epochs[agent] = epochs.get(agent, 0) + 1
         elif phase == S.PHASE_TURN_START and not isinstance(tid, str):
             turn_index += 1
         elif phase == S.PHASE_INTERRUPT:
@@ -302,7 +309,7 @@ def build_session(events: list[dict[str, Any]], cfg: dict[str, Any]) -> SessionV
     view.calls = calls
     view.counts = counts
     view.turns = turn_index
-    view.epochs = epoch + 1
+    view.epochs = epochs.get("main", 0) + 1     # * epoques du fil principal (celles des sous-agents : par appel)
     view.agents = list(agents)
     view.agent_infos = _build_agents(view)
     from agentwatch.core.intent import attach_intents  # import tardif : intent depend de Call
@@ -454,7 +461,8 @@ def _apply_tool_event(ev: dict[str, Any], phase: str, ns: int, agent: str, epoch
             call.duration_ms, call.duration_source = ev["duration_ms"], ev.get("duration_source") or "client"
         for k in ("result_count", "numLines", "totalLines", "stdout_chars", "stderr_chars", "status_basis", "exit_code_source", "error_hint",
                   "spawned_agent_id", "spawned_agent_type", "spawned_agent_model", "spawned_agent_status",
-                  "spawned_agent_duration_ms", "spawned_agent_tool_calls", "spawned_agent_tool_stats"):
+                  "spawned_agent_duration_ms", "spawned_agent_tool_calls", "spawned_agent_tool_stats",
+                  "state_fp", "result_phase", "timed_out", "exec_call_id", "read_only_hint"):
             if k in (ev.get("evidence") or {}):
                 call.evidence[k] = ev["evidence"][k]
         if isinstance(ev.get("usage"), dict):

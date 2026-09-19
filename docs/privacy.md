@@ -36,7 +36,11 @@ rapports avant de les partager.
 - Cle de 32 octets tiree au premier evenement, stockee dans `<home>/keys/hmac.key`
   (droits 0600 sur POSIX ; sous Windows, protection par le dossier utilisateur).
 - Utilisee pour : empreintes d'entree et de resultat, contenus d'edition, valeurs de
-  parametres non autorises, marqueurs de secrets.
+  parametres non autorises, marqueurs de secrets, etat d'un resultat (`state_fp`, calcule apres avoir
+  neutralise horodatages et durees) et paragraphes des messages.
+- Faits derives d'un resultat sans en garder le texte : phase (`unavailable`, `in_progress`, `failed`,
+  `done`), lue dans des champs d'etat ou en tete de sortie. Les delais demandes a un outil (`timeout_ms`,
+  `yield_time_ms`...) sont des nombres gardes en clair.
 - Comparaison : deux empreintes egales signifient des contenus identiques au moment des
   appels (pas une equivalence semantique). Deux dossiers de donnees ont des cles
   differentes : leurs empreintes ne sont pas comparables entre elles.
@@ -62,7 +66,9 @@ les chemins conserves. Les chemins relatifs au projet sont stockes relatifs.
   et masque, empreintes). Ni prompt, ni reponse, ni raisonnement, ni code `exec`, ni sortie
   reussie ne sont conserves. Messages (utilisateur, developpeur, entre agents, consignes aux
   sous-agents) : role, longueur et empreintes HMAC courtes (16 caracteres) de chaque paragraphe
-  d'au moins 40 caracteres, pour reperer une consigne repetee sans la stocker. `AGENTS.md` et
+  d'au moins 40 caracteres, pour reperer une consigne repetee sans la stocker. Commentaires de l'agent :
+  en plus, des categories fixes de raison annoncee (`retry`, `wait`, `unavailable`...), reconnues par motifs
+  dans le texte, qui n'est pas conserve. `AGENTS.md` et
   skills injectes : longueur et empreinte. L'etat de lecture (`<home>/import/`) ne contient que
   des offsets, des identifiants et des compteurs.
 - Sante de la collecte : seules les dates de modification des transcripts Claude Code et

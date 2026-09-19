@@ -167,6 +167,17 @@ _REDIRECT_RE = re.compile(r"(?<![<>\d])>{1,2}(?!&\d)|\d>{1,2}(?!&)")
 _PATHLIKE_RE = re.compile(r"""(?<![\w@:])(?:~|\.{1,2})?[/\\]?(?:[\w.\-+@]+[/\\])+[\w.\-+@*?]*|[\w.\-+]+\.[A-Za-z0-9]{1,8}(?![\w/\\])""")
 _OPTION_RE = re.compile(r"^-{1,2}[\w\-]*(=.*)?$")
 _TOKEN_RE = re.compile(r'"[^"]*"|\'[^\']*\'|\S+')
+# * Parametre de delai (attente, intervalle, echeance) : un nombre, jamais un contenu. Garde en clair pour dire
+#   quel delai l'agent a demande ; exclu de la cle de comparaison (deux attentes aux delais differents attendent
+#   la meme chose).
+TIMING_PARAM_RE = re.compile(r"(?i)(?:^|_)(?:timeout|wait|delay|interval|yield|sleep|poll|backoff|retry_after)(?:_|$)"
+                             r"|(?:_ms|_s|_sec|_secs|_seconds)$")
+
+
+def is_timing_param(key: str, value: object) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and bool(TIMING_PARAM_RE.search(str(key)))
+
+
 _URL_HEAD_RE = re.compile(r"^[\"']?[A-Za-z][A-Za-z0-9+.\-]*://")
 
 

@@ -345,6 +345,23 @@ def scenario_results(home: Path) -> list[dict[str, Any]]:
     check("11: Codex - statut depuis exit_code, A et B fonctionnent",
           len(v.calls) == 5 and v.calls[0].status == "success" and v.calls[2].status == "error" and len(fa) == 1 and len(fb) == 1,
           f"calls={[c.status for c in v.calls]} A={len(fa)} B={len(fb)}")
+
+    # 12. G : sondage d'un job en cours signale avec une cadence ; verifications apres modification justifiees
+    s = Synth(home / "s12", session_id="s12")
+    s.session_start(); s.user_prompt()
+    s.response_gap_ms = 20_000
+    for i in range(10):
+        s.mcp("jobs", "job_status", {"job_id": 1}, json.dumps({"status": "RUNNING" if i < 9 else "COMPLETED"}))
+    s.response_gap_ms = 3000
+    for i in range(4):
+        s.bash("git status --short", f" M f{i}.py"); s.edit(f"f{i}.py", "a", "b")
+    fg = s.findings(["repeated_calls"])
+    from agentwatch.detectors import repeated_calls as G
+    groups = {g["tool"]: g for g in G.analyse(s.view(), s.cfg)["groups"]}
+    rec = ((groups.get("mcp__jobs__job_status") or {}).get("cadence") or {}).get("recommended") or {}
+    check("G: sondage signale avec cadence, verifications apres modification justifiees",
+          [f.kind for f in fg] == ["polling_cadence"] and bool(rec) and (groups.get("Bash") or {}).get("verdict") == "justifie",
+          f"G={[f.kind for f in fg]} cadence={rec.get('cooldown_s')} s -{rec.get('avoided')} Bash={(groups.get('Bash') or {}).get('verdict')}")
     return results
 
 

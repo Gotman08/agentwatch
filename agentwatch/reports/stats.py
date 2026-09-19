@@ -52,7 +52,7 @@ CAPABILITIES: dict[str, dict[str, tuple[str, str]]] = {
 }
 
 
-def compute_stats(view: SessionView) -> dict[str, Any]:
+def compute_stats(view: SessionView, cfg: dict[str, Any] | None = None) -> dict[str, Any]:
     calls = view.calls
     by_tool: dict[str, dict[str, Any]] = defaultdict(lambda: {
         "calls": 0, "errors": 0, "unknown_status": 0, "open": 0, "output_bytes": 0, "output_known": 0,
@@ -111,7 +111,15 @@ def compute_stats(view: SessionView) -> dict[str, Any]:
         "turns": view.turns, "context_epochs": view.epochs, "agents": view.agents,
         "usage": _usage_summary(view),
         "work_units": work_units(view),
+        "repetitions": _repetitions(view, cfg),
     }
+
+
+def _repetitions(view: SessionView, cfg: dict[str, Any] | None) -> dict[str, Any]:
+    """Appels repetes (pourquoi, a quel rythme, verdict) et rythme des outils : analyse du detecteur G."""
+    from agentwatch.config import DEFAULTS
+    from agentwatch.detectors import repeated_calls as G
+    return G.analyse(view, cfg if cfg is not None else DEFAULTS)
 
 
 def work_units(view: SessionView, limit: int = 25) -> list[dict[str, Any]]:

@@ -54,6 +54,11 @@ DEFAULTS: dict[str, Any] = {
         "tool_gap": {"enabled": True, "min_calls": 3, "strong_calls": 6},
         "repeated_guidance": {"enabled": True, "min_user_messages": 2, "min_instructions": 3, "min_chars": 80,
                               "max_findings": 10},
+        # * G : appels refaits a l'identique ; raison, rythme, verdict. Cadence simulee sur `cooldowns_s` ; retard de
+        #   detection tolere = max(min_tolerated_delay_s, tolerated_delay_ratio x attente typique).
+        "repeated_calls": {"enabled": True, "min_calls": 3, "episode_gap_s": 1200, "min_avoidable_calls": 3,
+                           "cooldowns_s": [10, 30, 60, 120, 300, 600], "min_tolerated_delay_s": 30,
+                           "tolerated_delay_ratio": 0.1, "rhythm_top": 15, "report_top": 15},
     },
     "report": {"max_top_findings": 3, "max_listed_per_rule": 15},
     # --- vue multi-sessions (`agentwatch trends`) ---

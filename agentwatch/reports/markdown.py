@@ -44,6 +44,80 @@ def _cost_line(cost: dict[str, Any]) -> str:
     return " ; ".join(parts)
 
 
+def _cell(value: Any, limit: int = 60) -> str:
+    s = str(value).replace("|", "\\|").replace("\n", " ")
+    return s if len(s) <= limit else s[:limit] + "..."
+
+
+def _counts(d: dict[str, int], labels: dict[str, str], limit: int = 4) -> str:
+    items = sorted(((k, v) for k, v in (d or {}).items() if v), key=lambda kv: -kv[1])
+    return ", ".join(f"{labels.get(k, k)} {v}" for k, v in items[:limit]) or "-"
+
+
+def _render_repetitions(rep: dict[str, Any], top: int) -> list[str]:
+    """Section G : chaque groupe d'appels repetes avec sa raison, son rythme, son apport et son verdict ; puis le
+    rythme de chaque outil. Les groupes justifies y figurent aussi : ce qu'on ne peut pas ameliorer se lit ici."""
+    from agentwatch.detectors import repeated_calls as G
+    groups = rep.get("groups") or []
+    rhythm = rep.get("rhythm") or []
+    if not groups and not rhythm:
+        return []
+    out = ["## Appels repetes : pourquoi, a quel rythme", ""]
+    t = rep.get("totals") or {}
+    if groups:
+        byv = t.get("round_trips_by_verdict") or {}
+        out.append(f"{t.get('groups')} groupe(s) d'appels refaits a l'identique (au moins {rep.get('min_calls')} fois) : "
+                   f"{t.get('calls')} appels, {t.get('round_trips')} reprise(s) avec aller-retour du modele. Reprises par verdict : "
+                   + (", ".join(f"{G.VERDICT_LABELS.get(k, k)} {v}" for k, v in sorted(byv.items(), key=lambda kv: -kv[1])) or "-")
+                   + ".")
+        out.append("")
+        out += ["| Agent | Outil | Cible | Appels (episodes) | Intervalle median (min) | Raisons observees | Raisons annoncees | "
+                "Apport | Verdict | Suggestion |", "|---|---|---|---|---|---|---|---|---|---|"]
+        for g in groups[:top]:
+            iv = g.get("interval_s") or {}
+            oc = g.get("outcomes") or {}
+            gain = (f"change {oc.get('changed', 0)} / identique {oc.get('same', 0)}"
+                    + (f" / inconnu {oc['unknown']}" if oc.get("unknown") else ""))
+            rec = ((g.get("cadence") or {}).get("recommended") or {})
+            sugg = g.get("suggestion") or ""
+            if rec and not sugg:
+                sugg = f"1 appel / {G.fmt_duration(rec['cooldown_s'])} : -{rec['avoided']} appels"
+            agent = "principal" if g["agent"] == "main" else f"`{str(g['agent'])[:8]}`"
+            out.append(f"| {agent} | {_cell(g['tool'], 40)} | {_cell(g.get('target') or '-', 50)} | {g['calls']} ({g['episodes']}) | "
+                       f"{G.fmt_duration(iv.get('median')) if iv else '-'} ({G.fmt_duration(iv.get('min')) if iv else '-'}) | "
+                       f"{_counts(g.get('reasons') or {}, G.REASON_LABELS)} | {_counts(g.get('declared') or {}, G.DECLARED_LABELS)} | "
+                       f"{gain} | **{g['verdict_label']}** | {_cell(sugg, 120) or '-'} |")
+        if len(groups) > top:
+            out.append(f"| ... | {len(groups) - top} autre(s) groupe(s) dans l'export JSON | | | | | | | | |")
+        out.append("")
+        out.append("Raisons observees : ce qui precede chaque reprise (resultat precedent, actions et messages entre les deux). "
+                   "Raisons annoncees : categories reconnues dans les commentaires de l'agent, sans texte conserve. "
+                   "Apport : etat du resultat (horodatages neutralises) change ou identique.")
+        out.append("")
+        for g in [g for g in groups if g.get("cadence") and (g["cadence"].get("recommended") or {})][:3]:
+            cad = g["cadence"]
+            out.append(f"Cadence simulee pour {g['tool']} ({g['calls']} appels, attente typique {G.fmt_duration(cad['typical_wait_s'])}, "
+                       f"{cad['basis']}) :")
+            out.append("")
+            out += ["| Delai minimal | Appels | Evites | Changements de phase | Retard max | Retard moyen |", "|---|---|---|---|---|---|"]
+            for s in cad["simulation"]:
+                mark = " (suggere)" if s["cooldown_s"] == cad["recommended"]["cooldown_s"] else ""
+                out.append(f"| {G.fmt_duration(s['cooldown_s'])}{mark} | {s['calls']} | {s['avoided']} | {s['changes']} | "
+                           f"{G.fmt_duration(s['max_delay_s'])} | {G.fmt_duration(s['mean_delay_s'])} |")
+            out.append("")
+    if rhythm:
+        out += ["Rythme des outils (intervalle entre deux appels successifs d'un meme agent, hors appels d'une meme reponse ; "
+                "pics tous agents confondus) :", "",
+                "| Outil | Appels | Agents | Intervalle median | 10 % des intervalles sous | Max / 1 min | Max / 10 min | "
+                "Identiques a un precedent | dont sans apport |", "|---|---|---|---|---|---|---|---|---|"]
+        for r in rhythm:
+            out.append(f"| {_cell(r['tool'], 50)} | {r['calls']} | {r['agents']} | {G.fmt_duration(r['interval_median_s'])} | "
+                       f"{G.fmt_duration(r['interval_p10_s'])} | {r['max_per_min']} | {r['max_per_10min']} | "
+                       f"{r['identical_repeats']} | {r['repeats_no_gain']} |")
+        out.append("")
+    return out
+
+
 def _render_finding(f: Finding, detailed: bool) -> list[str]:
     out = [f"### {f.title}", "",
            f"- Regle : `{f.rule_id}` v{f.rule_version} ({f.kind}) ; identifiant `{f.finding_id}`",
@@ -74,6 +148,12 @@ def _render_finding(f: Finding, detailed: bool) -> list[str]:
     if prop.get("grouped_tool"):
         gt = prop["grouped_tool"]
         out.append(f"Outil groupe : {gt.get('status')} - {gt.get('note')}" + (f" ({', '.join(gt['tools'])})" if gt.get("tools") else ""))
+    cad = prop.get("cadence") if isinstance(prop.get("cadence"), dict) else None
+    if cad and cad.get("recommended") and detailed:
+        from agentwatch.detectors.repeated_calls import fmt_duration
+        out.append("Cadence simulee (" + cad.get("basis", "") + ") : " + " ; ".join(
+            f"{fmt_duration(s['cooldown_s'])} -> {s['calls']} appels (retard max {fmt_duration(s['max_delay_s'])})"
+            for s in cad.get("simulation") or []))
     if prop.get("recipe") and detailed:
         r = prop["recipe"]
         out.append("")
@@ -177,6 +257,7 @@ def render_markdown(report: dict[str, Any]) -> str:
         lines.append("")
         lines.append("Un travail refait n'est pas forcement inutile : voir les signalements et leurs contre-indications.")
         lines.append("")
+    lines += _render_repetitions(st.get("repetitions") or {}, int(report.get("repetitions_top", 15)))
     if st["error_signatures"]:
         lines.append("Signatures d'erreur les plus frequentes :")
         lines += [f"- {e['count']}x `{e['signature']}`" for e in st["error_signatures"]]
