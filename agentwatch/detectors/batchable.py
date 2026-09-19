@@ -31,17 +31,33 @@ from agentwatch.core.correlate import Call, SessionView
 from agentwatch.detectors import base as B
 
 RULE_ID = "C.batchable"
-RULE_VERSION = "1.1"
+RULE_VERSION = "1.2"
 _GROUPABLE = {S.CAT_READ, S.CAT_LIST, S.CAT_SEARCH, S.CAT_MCP}
+_SHELL_OPS = ("read", "search", "list")
 _BATCH_HINTS = ("batch", "many", "multi", "all", "bulk", "list")
 
 
 def _eligible(c: Call) -> bool:
-    if c.category not in _GROUPABLE or c.target_key is None:
+    # * Commande shell traduite en lecture, recherche ou listage (core/intent.py) : Codex lit TOUT par le shell
+    #   (Get-Content, rg, Get-ChildItem) ; sans ce cas, la regle ne voyait jamais rien sur Codex.
+    if c.category == S.CAT_SHELL:
+        if c.op not in _SHELL_OPS or not c.op_target:
+            return False
+    elif c.category not in _GROUPABLE or c.target_key is None:
         return False
     if c.category == S.CAT_MCP and c.target_kind != "path":
         return False
     return c.status not in (S.STATUS_ERROR, S.STATUS_TIMEOUT, S.STATUS_DENIED, S.STATUS_INTERRUPTED)
+
+
+def _kind(c: Call) -> str:
+    """Outil compare : pour le shell, l'operation (une lecture et une recherche ne forment pas une serie)."""
+    return f"{c.tool_name}:{c.op}" if c.category == S.CAT_SHELL else str(c.tool_name)
+
+
+def _target(c: Call) -> str | None:
+    """Cible comparee : le fichier lu pour le shell (deux commandes differentes sur un meme fichier = meme cible)."""
+    return f"op:{c.op_target}" if c.category == S.CAT_SHELL else c.target_key
 
 
 def _overlaps(prev: Call, cur: Call) -> bool | None:
@@ -52,7 +68,7 @@ def _overlaps(prev: Call, cur: Call) -> bool | None:
 
 
 def _emitter(c: Call) -> str | None:
-    """Requete API qui a emis l'appel (import du transcript Claude Code), sinon None."""
+    """Requete API qui a emis l'appel (transcript Claude Code ou rollout Codex importe), sinon None."""
     rid = (c.usage or {}).get("emitter_request_id")
     return rid if isinstance(rid, str) and rid else None
 
@@ -75,6 +91,8 @@ def _same_response(prev: Call, cur: Call, gap_threshold_ms: int) -> tuple[bool, 
 
 
 def _path_of(c: Call) -> str:
+    if c.category == S.CAT_SHELL:
+        return str(c.op_target or "")
     return (c.target_key or "")[len("path:"):].split("::", 1)[-1]
 
 
@@ -105,8 +123,13 @@ def _grouped_tool(run: list[Call], view: SessionView, parallel_seen: bool) -> di
             return {"status": "candidate_observed", "tools": candidates,
                     "note": "outil(s) du meme serveur observe(s) dans la session ; compatibilite a verifier"}
         return {"status": "proposal", "note": f"proposer au serveur MCP {first.mcp_server!r} un outil acceptant plusieurs cibles"}
-    if first.category == S.CAT_SHELL:
+    if first.category == S.CAT_SHELL and view.client != "codex":
         return {"status": "proposal", "note": "une seule commande avec plusieurs chemins (ex. cat a b c, rg motif a b c) ; non verifiee"}
+    if first.category == S.CAT_SHELL and parallel_seen:
+        return {"status": "verified_in_session", "note": ("le modele a deja regroupe plusieurs actions dans un meme exec (ou une meme "
+                                                          "commande) dans cette session : lire ces fichiers en une fois est possible")}
+    if first.category == S.CAT_SHELL:
+        return {"status": "proposal", "note": "un seul exec lisant tous les fichiers (Promise.all ou boucle), ou une commande a plusieurs chemins"}
     if parallel_seen:
         return {"status": "verified_in_session", "note": ("des appels du meme outil emis ensemble (chevauchants, ou dans une meme "
                                                           "reponse du modele) ont ete observes dans cette session")}
@@ -123,7 +146,7 @@ def detect(view: SessionView, cfg: dict[str, Any]) -> list[B.Finding]:
     case_insensitive = bool(cfg.get("case_insensitive_paths", False))
     calls = view.calls
     parallel_seen = any(_overlaps(a, b) or _same_response(a, b, gap_threshold)[0]
-                        for a, b in zip(calls, calls[1:]) if a.tool_name == b.tool_name and a.agent_key == b.agent_key)
+                        for a, b in zip(calls, calls[1:]) if _kind(a) == _kind(b) and a.agent_key == b.agent_key)
     findings: list[B.Finding] = []
     run: list[Call] = []
     gap = 0
@@ -139,7 +162,7 @@ def detect(view: SessionView, cfg: dict[str, Any]) -> list[B.Finding]:
             flush()
             gap = 0
         if _eligible(c):
-            if run and c.tool_name == run[-1].tool_name and c.target_key not in {r.target_key for r in run}:
+            if run and _kind(c) == _kind(run[-1]) and _target(c) not in {_target(r) for r in run}:
                 if _overlaps(run[-1], c) or _same_response(run[-1], c, gap_threshold)[0]:
                     flush()          # ? deja emis ensemble (parallele, ou meme reponse executee en serie) : rien a regrouper
                     run = [c]
@@ -166,12 +189,13 @@ def _finding(run: list[Call], view: SessionView, calls: list[Call], case_insensi
     grouped = _grouped_tool(run, view, parallel_seen)
     exact = all(_same_response(a, b, gap_threshold)[1] == "transcript" for a, b in zip(run, run[1:]))
     if exact:
-        separation = "requetes emettrices distinctes (transcript)"
+        separation = "requetes emettrices distinctes (transcript ou rollout)"
     else:
         separation = f"ecarts d'au moins {gap_threshold} ms entre la fin d'un appel et le debut du suivant (heuristique)"
     return B.Finding(
         rule_id=RULE_ID, rule_version=RULE_VERSION, kind="sequential_similar_calls",
-        title=f"{len(run)} appels {first.tool_name} sequentiels sur des cibles differentes",
+        title=(f"{len(run)} appels {first.tool_name} ({first.op}) sequentiels sur des cibles differentes" if first.category == S.CAT_SHELL
+               else f"{len(run)} appels {first.tool_name} sequentiels sur des cibles differentes"),
         confidence=conf, confidence_rationale=f"independance : {indep_why} ; reponses distinctes : {separation}. " + B.LIMIT_HEURISTIC,
         calls=[c.key for c in run], call_refs=B.refs(run),
         evidence={"tool": first.tool_name, "targets": [c.target for c in run], "independence": indep,
@@ -188,7 +212,7 @@ def _finding(run: list[Call], view: SessionView, calls: list[Call], case_insensi
         ],
         missing_data=["contenu des resultats non conserve : la dependance entre lectures est inferee, pas observee"]
                      + ([] if exact else
-                        ["requete emettrice inconnue (transcript non importe) : separation des reponses deduite des ecarts"])
+                        ["requete emettrice inconnue (transcript ou rollout non importe) : separation des reponses deduite des ecarts"])
                      + (["durees inconnues"] if all(c.duration_ms is None for c in run) else []),
         observed_cost=B.observed_cost(run),
         proposal={

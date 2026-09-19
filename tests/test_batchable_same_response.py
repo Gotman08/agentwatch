@@ -45,7 +45,7 @@ class SameResponseTests(unittest.TestCase):
         self.assertEqual(ev["round_trips"], 3)
         self.assertIn("heuristique", ev["separation_basis"])
         self.assertTrue(all(g >= 2000 for g in ev["gaps_ms"]), ev["gaps_ms"])
-        self.assertTrue(any("transcript non importe" in m for m in f[0].missing_data))
+        self.assertTrue(any("requete emettrice inconnue" in m for m in f[0].missing_data))
         self.assertIn("3 reponses successives", f[0].explanation)
 
     def test_threshold_is_configurable(self) -> None:
@@ -69,8 +69,8 @@ class SameResponseTests(unittest.TestCase):
             c.usage = {"source": "claude-code:transcript", "emitter_request_id": f"req_{i}"}
         f = batchable.detect(view2, s2.cfg)
         self.assertEqual(len(f), 1)
-        self.assertEqual(f[0].evidence["separation_basis"], "requetes emettrices distinctes (transcript)")
-        self.assertFalse(any("transcript non importe" in m for m in f[0].missing_data))
+        self.assertEqual(f[0].evidence["separation_basis"], "requetes emettrices distinctes (transcript ou rollout)")
+        self.assertFalse(any("requete emettrice inconnue" in m for m in f[0].missing_data))
 
     def test_partial_batching_counts_round_trips(self) -> None:
         # * a et b dans une reponse, puis c et d chacun dans la sienne : 3 allers-retours (b, c, d).

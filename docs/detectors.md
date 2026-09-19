@@ -98,10 +98,11 @@ hypotheses tirees de la signature (`No such file`, `permission`, `timeout`, ...)
 Exemple positif : trois `python run.py` avec `ModuleNotFoundError`. Contre-exemple :
 echec, `Write cfg.json`, echec, succes -> la correction observee casse la chaine.
 
-## C. `C.batchable` (v1.1) — operations regroupables
+## C. `C.batchable` (v1.2) — operations regroupables
 
 Regle : au moins `min_group` (3) appels consecutifs du meme outil de lecture (`read`,
-`list`, `search`, MCP cible par chemin) sur des cibles differentes, emis dans des reponses
+`list`, `search`, MCP cible par chemin, commande shell traduite en lecture, recherche ou
+listage) sur des cibles differentes, emis dans des reponses
 successives du modele (un aller-retour par appel), sans erreur, avec au plus
 `max_gap_calls` (0) appels intercales.
 
@@ -120,7 +121,14 @@ allers-retours. Des appels emis ensemble ailleurs dans la session du meme outil 
 que le regroupement est possible (`verified_in_session`).
 
 Preuve : `round_trips`, `gaps_ms` (ecarts entre appels) et `separation_basis` (transcript
-ou heuristique) ; `missing_data` le rappelle quand le transcript n'est pas importe.
+ou rollout, sinon heuristique) ; `missing_data` le rappelle quand ni l'un ni l'autre n'est importe.
+
+Commandes shell (v1.2) : Codex lit tout par le shell (`Get-Content`, `rg`, `Get-ChildItem`) ;
+avant v1.2 la regle ne voyait donc jamais rien sur Codex. Une commande compte si `core/intent.py`
+la traduit en `read`, `search` ou `list` ; une serie ne melange pas les operations et compare les
+fichiers vises (deux commandes sur un meme fichier = meme cible). Sur Codex, les actions d'un meme
+`exec` partagent leur reponse emettrice (rollout) : elles sont emises ensemble et ne sont jamais
+signalees ; quatre `exec` successifs de lecture le sont, avec 3 allers-retours evitables.
 
 Independance (elle fixe la confiance) :
 
