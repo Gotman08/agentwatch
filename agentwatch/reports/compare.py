@@ -192,7 +192,8 @@ def compare(before: dict[str, Any], after: dict[str, Any], top_habits: int = 8) 
                       set(before["counts"]) | set(after["counts"]) if k.startswith("G.") and "|" in k})
     keys += [k for k, n in habits.most_common(top_habits) if n >= MIN_EVENTS // 2]
     for k in keys:
-        per_response = k.startswith("G.") and before["responses"] and after["responses"]
+        # * Unite de la reference (avant) : une periode vide ou sans releve par reponse n'en change pas.
+        per_response = k.startswith("G.") and bool(before["responses"])
         n1, n2 = (before["responses"], after["responses"]) if per_response else (before["calls"], after["calls"])
         k1, k2 = int(before["counts"].get(k, 0)), int(after["counts"].get(k, 0))
         c1 = int((before.get("clusters") or before["counts"]).get(k, 0))
@@ -378,9 +379,13 @@ def render_markdown(result: dict[str, Any]) -> str:
     lines = ["# AgentWatch - avant / apres", "",
              f"- Bascule : {result['at_label']} ; client `{result['client']}`",
              f"- Avant : {b['sessions']} session(s), {b['calls']} appels, {b['responses']} reponses du modele "
-             f"({b['first_time'] or '?'} a {b['last_time'] or '?'})",
+             f"({b['first_time'] or '?'} a {b['last_time'] or '?'}) ; tokens d'entree {_n(b.get('input_tokens'))} dont en cache "
+             f"{_n(b.get('cached_input_tokens'))}, hors cache {_n((b.get('input_tokens') or 0) - (b.get('cached_input_tokens') or 0))} ; "
+             f"sortie {_n(b.get('output_tokens'))}",
              f"- Apres : {a['sessions']} session(s), {a['calls']} appels, {a['responses']} reponses du modele "
-             f"({a['first_time'] or '?'} a {a['last_time'] or '?'})",
+             f"({a['first_time'] or '?'} a {a['last_time'] or '?'}) ; tokens d'entree {_n(a.get('input_tokens'))} dont en cache "
+             f"{_n(a.get('cached_input_tokens'))}, hors cache {_n((a.get('input_tokens') or 0) - (a.get('cached_input_tokens') or 0))} ; "
+             f"sortie {_n(a.get('output_tokens'))}",
              f"- Methode : {result['comparison']['method']}", "",
              "## Ecarts testes (constates seulement si l'intervalle exclut l'absence d'effet)", "",
              "| Mesure | Unite | Avant (nombre) | Apres (nombre) | Apres / avant ou ecart [IC 95 %] | Conclusion |",
