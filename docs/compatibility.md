@@ -52,7 +52,7 @@ test reel ci-dessous).
 | Commandes longues / polling | un appel = un debut + une fin ; aucun evenement intermediaire (documente) | idem |
 | Outils herberges (recherche web) | outils locaux `WebFetch`/`WebSearch` vus par les hooks (documente) | hors hooks (documente) |
 | Usage de tokens | absent des hooks ; **verifie reellement** dans le transcript (2.1.275 : `message.usage` par requete, `requestId` repete sur les lignes d'une meme reponse, blocs `tool_use` / `tool_result`, sous-agents `agent-<id>.jsonl` avec `agentId`) via `import-transcripts` ; import JSONL (`import-usage`) | absent des hooks ; `[otel]` exporte vers OTLP seulement ; rollouts non lus |
-| Confiance des hooks | non requise | **requise** : approbation via `/hooks` (empreinte de la definition) ; en `exec`, `--dangerously-bypass-hook-trust` |
+| Confiance des hooks | non requise | **requise** : approbation via `/hooks` (empreinte de la definition) ; en `exec`, `--dangerously-bypass-hook-trust` ; etat par hook **verifie reellement** (0.155.0-alpha.9.2) via `codex app-server`, methode `hooks/list` (`trustStatus` : `untrusted`, `trusted`, `modified`, `managed`), lu par `doctor` |
 
 ## Smoke tests reels
 
@@ -144,10 +144,12 @@ processus enfants vers `AppData\Local\Packages\<paquet>\LocalCache\...`. Consequ
 
 ## Ce qui n'a pas ete verifie en direct
 
-- Codex : le fichier `~/.codex/hooks.json` ecrit par `configure` n'a pas ete charge par
-  une session reelle (les smoke tests passent les memes definitions via `-c`, forme
-  documentee comme equivalente) ; la portee projet `.codex/hooks.json` exige en plus que
-  le projet soit marque de confiance.
+- Codex : le chargement de `~/.codex/hooks.json` est verifie (2026-09-19, codex-cli
+  0.155.0-alpha.9.2, `hooks/list` : les 11 hooks AgentWatch vus, variante `commandWindows`,
+  aucune erreur ; avertissement : delais de `SessionEnd` et `Interrupt` ramenes a 3 s), mais
+  les 11 etaient `untrusted`, donc ignores : un fichier complet ne prouve pas la collecte,
+  d'ou le controle de confiance de `doctor`. La portee projet `.codex/hooks.json` exige en
+  plus que le projet soit marque de confiance.
 - Codex : l'approbation d'un hook via `/hooks` (interface interactive) n'a pas ete
   exercee ; en `exec` elle a ete contournee par `--dangerously-bypass-hook-trust`.
 - Claude Code en sous-processus (`claude -p`) : impossible faute d'authentification ;

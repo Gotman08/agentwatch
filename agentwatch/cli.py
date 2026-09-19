@@ -431,6 +431,7 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         _out(f"- Incidents de collecte (pertes comptees, {len(diags)} plus recents) : {kinds}")
     else:
         _out("- Incidents de collecte : aucun")
+    trust_alerts: list[dict[str, Any]] = []
     for client in SUPPORTED_CLIENTS:
         version, exe = _client_version(client)
         _out(f"- {client} : " + (f"version {version or 'inconnue'} ({exe})" if exe else "executable introuvable"))
@@ -462,10 +463,28 @@ def cmd_doctor(args: argparse.Namespace) -> int:
                     continue
                 s = IX.status(obj)
                 if s["installed_events"] or p.is_file():
-                    _out(f"    {scope}: {p} : hooks AgentWatch {'complets' if s['complete'] else ('partiels ' + str(s['missing_events']) if s['installed_events'] else 'absents')}"
+                    _out(f"    {scope}: {p} : hooks AgentWatch {'complets dans le fichier' if s['complete'] else ('partiels ' + str(s['missing_events']) if s['installed_events'] else 'absents')}"
                          f" ; groupes etrangers preserves : {sum(s['foreign_groups'].values())}")
-            _out("    rappel : Codex n'execute un hook qu'apres que vous l'avez approuve via la commande /hooks (confiance par empreinte).")
-    health = _health(home, cfg, store)
+            # * Un fichier complet ne prouve rien : seul Codex sait si l'utilisateur a approuve chaque hook.
+            probe_off = isinstance(cfg.get("health"), dict) and cfg["health"].get("codex_trust_probe") is False
+            if exe and meta and not args.no_codex_trust and not probe_off:
+                from agentwatch.installer import codex_trust as XT
+                cwds = [os.getcwd()]
+                if meta.get("scope") == "project" and isinstance(meta.get("config_path"), str):
+                    proj = str(Path(meta["config_path"]).parent.parent)
+                    if proj not in cwds:
+                        cwds.append(proj)
+                result = XT.probe([exe], cwds, cwd=os.getcwd())
+                for line in XT.format_lines(result):
+                    _out(f"    {line}")
+                    if line.startswith("! Codex n'executera"):
+                        trust_alerts.append({"client": CLIENT_CODEX, "code": "hooks_untrusted", "level": "warn", "message": line[2:]})
+                if not result.get("ok"):
+                    _out("    rappel : Codex n'execute un hook qu'apres que vous l'avez approuve via la commande /hooks (confiance par empreinte).")
+            else:
+                _out("    rappel : Codex n'execute un hook qu'apres que vous l'avez approuve via la commande /hooks (confiance par empreinte) ; "
+                     "etat de confiance non verifie" + (" (--no-codex-trust)" if args.no_codex_trust else ""))
+    health = trust_alerts + _health(home, cfg, store)
     if health:
         _out("- Sante de la collecte (panne silencieuse) :")
         for h in health:
@@ -548,6 +567,8 @@ def build_parser() -> argparse.ArgumentParser:
     sub = p.add_subparsers(dest="command", required=True)
 
     s = sub.add_parser("doctor", help="diagnostic de l'installation et des clients")
+    s.add_argument("--no-codex-trust", action="store_true",
+                   help="ne pas interroger codex app-server (hooks/list) sur l'approbation des hooks")
     s.set_defaults(func=cmd_doctor)
 
     for name, func, help_ in (("configure", cmd_configure, "installer les hooks (dry-run par defaut)"),

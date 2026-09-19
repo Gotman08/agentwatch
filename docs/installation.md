@@ -125,7 +125,7 @@ du hook au moment de `configure`, donc les hooks ne dependent pas de l'environne
 
 | Commande | Role |
 |---|---|
-| `doctor` | diagnostic complet, dont la sante de la collecte (panne silencieuse : interpreteur des hooks disparu, depot deplace, entrees retirees, client actif sans evenement recu) |
+| `doctor` | diagnostic complet, dont la sante de la collecte (panne silencieuse : interpreteur des hooks disparu, depot deplace, entrees retirees, client actif sans evenement recu) et, pour Codex, l'approbation de chaque hook lue aupres de Codex (`codex app-server`, methode `hooks/list`, sans appel au modele ; `--no-codex-trust` pour s'en passer) |
 | `configure --client X [--apply]` | installer les hooks (dry-run par defaut) |
 | `uninstall --client X [--apply]` | retirer les hooks AgentWatch |
 | `sessions [--client X] [--json]` | lister les sessions enregistrees |
