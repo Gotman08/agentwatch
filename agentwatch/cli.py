@@ -125,8 +125,38 @@ def _auto_import_rollouts(home: Path, cfg: dict[str, Any], store: Any) -> None:
         _err(f"! import des rollouts Codex : {e}")
 
 
-def _client_version(client: str) -> tuple[str | None, str | None]:
-    """(version, chemin executable) ; (None, None) si indisponible. Jamais d'exception."""
+def _codex_version_from_rollouts(cfg: dict[str, Any] | None = None) -> str | None:
+    """Version de Codex ecrite par Codex lui-meme dans son dernier rollout (`cli_version`) : lecture d'un fichier,
+    aucun processus lance."""
+    from agentwatch.collector import rollouts as R
+    try:
+        paths = R.list_rollouts(cfg or {}, 30, whole_sessions=False)
+    except OSError:
+        return None
+    # * La version est celle du client au moment ou le fil a ete CREE (premiere ligne) : un fil repris plus tard garde
+    #   la sienne. On prend donc le fil cree le plus recemment (le nom du rollout commence par sa date de creation).
+    paths.sort(key=lambda p: os.path.basename(p))
+    for path in reversed(paths[-5:]):
+        try:
+            with open(path, "rb") as fh:
+                for i, line in enumerate(fh):
+                    if i >= 20:
+                        break
+                    if b'"session_meta"' in line and b'"cli_version"' in line:
+                        v = json.loads(line).get("payload", {}).get("cli_version")
+                        if isinstance(v, str) and v:
+                            return f"codex-cli {v} (version du fil Codex le plus recemment cree, lue dans son rollout, sans lancer Codex)"
+        except (OSError, ValueError, AttributeError):
+            continue
+    return None
+
+
+def _client_version(client: str, cfg: dict[str, Any] | None = None) -> tuple[str | None, str | None]:
+    """(version, chemin executable) ; (None, None) si indisponible. Jamais d'exception.
+
+    # ! Codex : jamais de `codex --version` (consigne du 2026-09-19 : AgentWatch ne lance pas Codex). La version vient
+    #   du dernier rollout ; l'executable n'est que localise.
+    """
     exe = shutil.which("claude" if client == CLIENT_CLAUDE_CODE else "codex")
     if exe is None and client == CLIENT_CODEX and os.name == "nt":
         base = Path(os.environ.get("LOCALAPPDATA", "")) / "OpenAI" / "Codex" / "bin"
@@ -134,6 +164,8 @@ def _client_version(client: str) -> tuple[str | None, str | None]:
             cands = sorted(base.glob("*/codex.exe"), key=lambda p: p.stat().st_mtime, reverse=True)
             if cands:
                 exe = str(cands[0])
+    if client == CLIENT_CODEX:
+        return _codex_version_from_rollouts(cfg), exe
     if exe is None:
         return None, None
     try:
@@ -223,7 +255,26 @@ def cmd_sessions(args: argparse.Namespace) -> int:
     return 0
 
 
-def _analyse(home: Path, cfg: dict[str, Any], client: str, skey: str) -> dict[str, Any]:
+def _slice_bounds(args: argparse.Namespace) -> tuple[int | None, int | None]:
+    """Tranche demandee (--day, --since, --until), en nanosecondes UTC ; (None, None) sinon."""
+    from agentwatch.core.timeslice import day_bounds, parse_when
+    since = until = None
+    try:
+        if getattr(args, "day", None):
+            since, until = day_bounds(args.day)
+        if getattr(args, "since", None):
+            since = parse_when(args.since)
+        if getattr(args, "until", None):
+            until = parse_when(args.until)
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from None
+    if since is not None and until is not None and until <= since:
+        raise SystemExit("--until doit suivre --since")
+    return since, until
+
+
+def _analyse(home: Path, cfg: dict[str, Any], client: str, skey: str,
+             since: int | None = None, until: int | None = None) -> dict[str, Any]:
     from agentwatch.collector.store import EventStore
     from agentwatch.core.session import load_session
     from agentwatch.detectors import run_detectors
@@ -234,6 +285,9 @@ def _analyse(home: Path, cfg: dict[str, Any], client: str, skey: str) -> dict[st
     if _auto_import_enabled(cfg):
         _import_transcripts(store, cfg, client, skey)   # * usage en tokens depuis le transcript, si demande dans config.json
     view = load_session(store, client, skey, cfg)
+    if since is not None or until is not None:
+        from agentwatch.core.timeslice import slice_view
+        view = slice_view(view, since, until)
     findings = run_detectors(view, cfg)
     report = build_report(view, compute_stats(view, cfg), coverage_matrix(view), findings, cfg, load_feedback(home),
                           _read_install_meta(home, client))
@@ -259,7 +313,7 @@ def cmd_report(args: argparse.Namespace) -> int:
         if not args.session:
             raise SystemExit("precisez --session <id> ou --latest")
         client, skey = _resolve_session(store, args.session, args.client)
-    report = _analyse(home, cfg, client, skey)
+    report = _analyse(home, cfg, client, skey, *_slice_bounds(args))
     fmt = args.format
     if fmt == "auto":
         # * Rich (optionnel) dans un terminal interactif, Markdown partout ailleurs (tubes, fichiers).
@@ -306,6 +360,133 @@ def cmd_trends(args: argparse.Namespace) -> int:
     if args.out:
         Path(args.out).write_text(text, encoding="utf-8")
         _out(f"rapport ecrit : {args.out}")
+    else:
+        _out(text)
+    return 0
+
+
+def cmd_compare(args: argparse.Namespace) -> int:
+    """Avant / apres une correction : memes mesures sur deux periodes, rapportees a l'activite, avec IC 95 %."""
+    import json as _json
+    from agentwatch.collector.store import EventStore
+    from agentwatch.core import schema as S
+    from agentwatch.core.session import list_sessions, load_session
+    from agentwatch.core.timeslice import parse_when, slice_view
+    from agentwatch.reports import compare as CMP
+    home = home_dir(args.home)
+    cfg = load_config(home)
+    store = EventStore(home, cfg)
+    if args.client in (None, CLIENT_CODEX):
+        _auto_import_rollouts(home, cfg, store)
+    views = [load_session(store, r["client"], r["session_key"], cfg) for r in list_sessions(store, cfg, client=args.client)]
+    if args.project:
+        views = [v for v in views if args.project.lower() in str(v.project_dir or "").lower()]
+    unreliable = [v for v in views if v.timing_unreliable_agents]
+    views = [v for v in views if not v.timing_unreliable_agents]     # * leur heure reelle est inconnue : aucune periode sure
+
+    def period_measure(since_ns: int | None, until_ns: int | None) -> dict[str, Any]:
+        parts = [CMP.measure(slice_view(v, since_ns, until_ns), cfg) for v in views if v.calls
+                 and not (since_ns and (v.last_ns or 0) < since_ns) and not (until_ns and (v.first_ns or 0) >= until_ns)]
+        return CMP.merge(parts)
+
+    def bounds() -> tuple[int | None, int | None]:
+        try:
+            return (parse_when(args.since) if args.since else None), (parse_when(args.until) if args.until else None)
+        except ValueError as exc:
+            raise SystemExit(str(exc)) from None
+
+    if args.save_reference:
+        since, until = bounds()
+        if since is None or until is None:
+            raise SystemExit("une reference exige une periode explicite : --since et --until")
+        m = period_measure(since, until)
+        in_period = [r for r in CMP.agents_md_versions(views)]
+        ref = {"kind": "agentwatch-reference", "compare_version": CMP.COMPARE_VERSION, "agentwatch_version": __version__,
+               "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+               "period": {"since": S.now_iso(since / 1e9), "until": S.now_iso(until / 1e9), "since_ns": since, "until_ns": until},
+               "filters": {"client": args.client or "tous", "project": args.project},
+               "excluded_unreliable_sessions": len(unreliable), "measure": m,
+               "agents_md_versions": [{k: r[k] for k in ("fingerprint", "chars", "first_time", "last_time")} for r in in_period
+                                      if r["first_time"] and r["first_time"] < S.now_iso(until / 1e9)
+                                      and r["last_time"] and r["last_time"] >= S.now_iso(since / 1e9)]}
+        Path(args.save_reference).write_text(_json.dumps(ref, ensure_ascii=False, indent=1), encoding="utf-8")
+        text = CMP.render_reference(ref)
+        if args.out:
+            Path(args.out).write_text(text, encoding="utf-8")
+            _out(f"reference ecrite : {args.save_reference} ; rapport : {args.out}")
+        else:
+            _out(text)
+            _out(f"reference ecrite : {args.save_reference}")
+        return 0
+    if args.reference:
+        try:
+            ref = _json.loads(Path(args.reference).read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            raise SystemExit(f"reference illisible : {exc}") from None
+        since, until = bounds()
+        if since is None:
+            raise SystemExit("--since est requis avec --reference : debut de la periode a comparer (ex. date de l'ajout a AGENTS.md)")
+        if since < int(ref["period"]["until_ns"]):
+            raise SystemExit("la periode comparee doit commencer apres la fin de la reference")
+        b, a = ref["measure"], period_measure(since, until)
+        result = {"client": args.client or "tous", "at_ns": since,
+                  "at_label": f"reference du {ref['period']['since']} au {ref['period']['until']} ; periode comparee a partir du "
+                              f"{S.now_iso(since / 1e9)}" + (f" jusqu'au {S.now_iso(until / 1e9)}" if until else ""),
+                  "before": b, "after": a, "excluded_unreliable_sessions": len(unreliable), "comparison": CMP.compare(b, a)}
+        text = _json.dumps(result, ensure_ascii=False, indent=2) if args.format == "json" else CMP.render_markdown(result)
+        if args.out:
+            Path(args.out).write_text(text, encoding="utf-8")
+            _out(f"comparaison ecrite : {args.out}")
+        else:
+            _out(text)
+        return 0
+    if args.list_agents_md:
+        versions = CMP.agents_md_versions(views)
+        if not versions:
+            _out("aucune version d'AGENTS.md observee (marqueurs world_state des rollouts Codex)")
+            return 0
+        _out("Versions d'AGENTS.md vues par Codex (empreinte du texte injecte, jamais le texte) :")
+        for r in versions:
+            _out(f"- agents-md:{r['fingerprint'][:8]} : {r['chars']} caracteres ; vue du {r['first_time']} au {r['last_time']} ; "
+                 f"{r['sessions']} session(s)")
+        _out("Comparer avant / apres une version : agentwatch compare --at agents-md:<empreinte>")
+        return 0
+    if not args.at:
+        raise SystemExit("precisez --at <instant> ou --at agents-md:<empreinte> (voir --list-agents-md)")
+    if args.at.startswith("agents-md:"):
+        pref = args.at.split(":", 1)[1]
+        match = [r for r in CMP.agents_md_versions(views) if r["fingerprint"].startswith(pref)]
+        if len(match) != 1:
+            raise SystemExit(f"empreinte AGENTS.md {pref!r} : {len(match)} version(s) correspondante(s) (voir --list-agents-md)")
+        at, at_label = int(match[0]["first_ns"]), f"premiere apparition d'AGENTS.md {pref} ({match[0]['first_time']})"
+    else:
+        try:
+            at = parse_when(args.at)
+        except ValueError as exc:
+            raise SystemExit(str(exc)) from None
+        at_label = S.now_iso(at / 1e9)
+    try:
+        since = parse_when(args.since) if args.since else None
+        until = parse_when(args.until) if args.until else None
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from None
+    before, after = [], []
+    for v in views:
+        if not v.calls or (since and (v.last_ns or 0) < since) or (until and (v.first_ns or 0) >= until):
+            continue
+        if (v.first_ns or 0) < at:
+            before.append(CMP.measure(slice_view(v, since, at), cfg))
+        if (v.last_ns or 0) >= at:
+            after.append(CMP.measure(slice_view(v, at, until), cfg))
+    b, a = CMP.merge(before), CMP.merge(after)
+    result = {"client": args.client or "tous", "at_ns": at, "at_label": at_label, "before": b, "after": a,
+              "excluded_unreliable_sessions": len(unreliable), "comparison": CMP.compare(b, a)}
+    text = _json.dumps(result, ensure_ascii=False, indent=2) if args.format == "json" else CMP.render_markdown(result)
+    if unreliable and args.format != "json":
+        text += f"\n{len(unreliable)} session(s) ecartee(s) : horodatages reecrits d'un bloc, periode reelle inconnue.\n"
+    if args.out:
+        Path(args.out).write_text(text, encoding="utf-8")
+        _out(f"comparaison ecrite : {args.out}")
     else:
         _out(text)
     return 0
@@ -530,7 +711,7 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         _out("- Incidents de collecte : aucun")
     trust_alerts: list[dict[str, Any]] = []
     for client in SUPPORTED_CLIENTS:
-        version, exe = _client_version(client)
+        version, exe = _client_version(client, cfg)
         _out(f"- {client} : " + (f"version {version or 'inconnue'} ({exe})" if exe else "executable introuvable"))
         meta = _read_install_meta(home, client)
         if meta:
@@ -551,6 +732,7 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         else:
             toml = IX.config_toml_status()
             _out(f"    config.toml : {'present' if toml['exists'] else 'absent'} ; features.hooks={toml['features_hooks']} (None = defaut actif) ; hooks inline : {toml['inline_hooks_events'] or 'aucun'}")
+            codex_hooks_present = False
             for scope in ("user", "project"):
                 p = IX.hooks_path(scope)
                 try:
@@ -559,12 +741,19 @@ def cmd_doctor(args: argparse.Namespace) -> int:
                     _out(f"    {scope}: {p} : JSON invalide ({exc})")
                     continue
                 s = IX.status(obj)
+                codex_hooks_present = codex_hooks_present or bool(s["installed_events"])
                 if s["installed_events"] or p.is_file():
                     _out(f"    {scope}: {p} : hooks AgentWatch {'complets dans le fichier' if s['complete'] else ('partiels ' + str(s['missing_events']) if s['installed_events'] else 'absents')}"
                          f" ; groupes etrangers preserves : {sum(s['foreign_groups'].values())}")
-            # * Un fichier complet ne prouve rien : seul Codex sait si l'utilisateur a approuve chaque hook.
-            probe_off = isinstance(cfg.get("health"), dict) and cfg["health"].get("codex_trust_probe") is False
-            if exe and meta and not args.no_codex_trust and not probe_off:
+            # * Un fichier complet ne prouve rien : seul Codex sait si l'utilisateur a approuve chaque hook. Mais la sonde
+            #   LANCE un processus Codex (`codex app-server`) : jamais par defaut, seulement sur demande explicite
+            #   (--codex-trust ou health.codex_trust_probe = true), et seulement si des hooks AgentWatch sont installes.
+            probe_on = bool(getattr(args, "codex_trust", False)) or (isinstance(cfg.get("health"), dict)
+                                                                   and cfg["health"].get("codex_trust_probe") is True)
+            if not codex_hooks_present:
+                _out("    aucun hook AgentWatch installe pour Codex : collecte par la lecture passive des rollouts ; "
+                     "Codex n'est jamais lance par AgentWatch")
+            elif exe and meta and probe_on and not args.no_codex_trust:
                 from agentwatch.installer import codex_trust as XT
                 cwds = [os.getcwd()]
                 if meta.get("scope") == "project" and isinstance(meta.get("config_path"), str):
@@ -583,7 +772,8 @@ def cmd_doctor(args: argparse.Namespace) -> int:
                     _out("    rappel : Codex n'execute un hook qu'apres que vous l'avez approuve via la commande /hooks (confiance par empreinte).")
             else:
                 _out("    rappel : Codex n'execute un hook qu'apres que vous l'avez approuve via la commande /hooks (confiance par empreinte) ; "
-                     "etat de confiance non verifie" + (" (--no-codex-trust)" if args.no_codex_trust else ""))
+                     "etat de confiance non verifie" + (" (--no-codex-trust)" if args.no_codex_trust else
+                                                         " (la sonde lance codex app-server : --codex-trust pour l'autoriser)"))
             # * Collecte sans hooks : lecture passive des rollouts (collector/rollouts.py).
             from agentwatch.collector import rollouts as R
             tracked = R.load_state(str(home)).get("files") or {}
@@ -647,7 +837,7 @@ def cmd_configure(args: argparse.Namespace) -> int:
         if meta_path.is_file():
             meta_path.unlink()
     else:
-        version, exe = _client_version(args.client)
+        version, exe = _client_version(args.client, load_config(home_dir(args.home)))
         meta_path.parent.mkdir(parents=True, exist_ok=True)
         meta_path.write_text(json.dumps({"client": args.client, "client_version": version, "client_executable": exe,
                                          "configured_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
@@ -673,8 +863,10 @@ def build_parser() -> argparse.ArgumentParser:
     sub = p.add_subparsers(dest="command", required=True)
 
     s = sub.add_parser("doctor", help="diagnostic de l'installation et des clients")
+    s.add_argument("--codex-trust", action="store_true",
+                   help="interroger codex app-server (hooks/list) sur l'approbation des hooks : LANCE un processus Codex")
     s.add_argument("--no-codex-trust", action="store_true",
-                   help="ne pas interroger codex app-server (hooks/list) sur l'approbation des hooks")
+                   help="ne jamais interroger codex app-server (comportement par defaut, garde pour compatibilite)")
     s.set_defaults(func=cmd_doctor)
 
     for name, func, help_ in (("configure", cmd_configure, "installer les hooks (dry-run par defaut)"),
@@ -704,7 +896,23 @@ def build_parser() -> argparse.ArgumentParser:
                    help="auto = rich dans un terminal si Rich est installe, sinon markdown ; html/svg = rendu Rich exporte")
     s.add_argument("--width", type=int, default=120, help="largeur du rendu Rich exporte (html/svg/rich vers fichier)")
     s.add_argument("--out", help="fichier de sortie (sinon stdout)")
+    s.add_argument("--day", help="seulement ce jour (AAAA-MM-JJ, jour local)")
+    s.add_argument("--since", help="seulement a partir de cet instant (AAAA-MM-JJ[THH:MM], heure locale sans fuseau)")
+    s.add_argument("--until", help="seulement avant cet instant (meme format)")
     s.set_defaults(func=cmd_report)
+
+    s = sub.add_parser("compare", help="avant / apres une correction : les pertes ont-elles reellement baisse ? (IC 95 %%)")
+    s.add_argument("--at", help="instant de la correction (AAAA-MM-JJ[THH:MM], heure locale) ou agents-md:<empreinte>")
+    s.add_argument("--since", help="debut de la periode 'avant' (defaut : tout l'historique)")
+    s.add_argument("--until", help="fin de la periode 'apres' (defaut : maintenant)")
+    s.add_argument("--client", choices=SUPPORTED_CLIENTS)
+    s.add_argument("--list-agents-md", action="store_true", help="lister les versions d'AGENTS.md vues par Codex")
+    s.add_argument("--project", help="seulement les sessions dont le dossier de projet contient ce texte")
+    s.add_argument("--save-reference", help="enregistrer la mesure de [--since, --until[ comme reference (fichier JSON)")
+    s.add_argument("--reference", help="comparer [--since, --until[ a une reference enregistree")
+    s.add_argument("--format", default="markdown", choices=("markdown", "json"))
+    s.add_argument("--out", help="fichier de sortie (sinon stdout)")
+    s.set_defaults(func=cmd_compare)
 
     s = sub.add_parser("trends", help="gaspillages recurrents sur plusieurs sessions : par motif, projet, client et session")
     s.add_argument("--days", type=int, help="fenetre en jours sur le dernier evenement de chaque session (defaut : trends.days = 7 ; 0 = toutes)")

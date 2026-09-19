@@ -134,7 +134,7 @@ class DoctorTrustTests(unittest.TestCase):
             self.calls.append(argv)
             return untrusted
 
-        def fake_version(client: str) -> tuple[str | None, str | None]:
+        def fake_version(client: str, cfg: Any = None) -> tuple[str | None, str | None]:
             return ("codex-cli 0.0.0", "codex.exe") if client == CLIENT_CODEX else (None, None)
 
         buf = io.StringIO()
@@ -143,8 +143,14 @@ class DoctorTrustTests(unittest.TestCase):
             self.assertEqual(cli.main(["--home", str(self.home), "doctor", *extra]), 0)
         return buf.getvalue()
 
-    def test_doctor_surfaces_untrusted_hooks_in_health(self) -> None:
+    def test_doctor_never_launches_codex_by_default(self) -> None:
+        # * La sonde lance `codex app-server` : jamais sans demande explicite (consigne du 2026-09-19).
         out = self._doctor()
+        self.assertEqual(self.calls, [])
+        self.assertIn("--codex-trust pour l'autoriser", out)
+
+    def test_doctor_surfaces_untrusted_hooks_in_health(self) -> None:
+        out = self._doctor("--codex-trust")
         self.assertEqual(self.calls, [["codex.exe"]])
         self.assertIn("complets dans le fichier", out)
         self.assertIn("1 untrusted (jamais approuves : Codex les ignore)", out)
