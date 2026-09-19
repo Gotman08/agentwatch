@@ -118,6 +118,7 @@ du hook au moment de `configure`, donc les hooks ne dependent pas de l'environne
   segments/<client>/<session>/segment-*.jsonl   apres `compact`
   diagnostics/*.json   incidents de collecte (compteur de pertes)
   install/<client>.json  version du client relevee lors de `configure`
+  import/codex-rollouts.json  etat de lecture des rollouts Codex (offsets, identifiants, compteurs)
   feedback.json        vos marques pertinent / faux positif
 ```
 
@@ -125,12 +126,13 @@ du hook au moment de `configure`, donc les hooks ne dependent pas de l'environne
 
 | Commande | Role |
 |---|---|
-| `doctor` | diagnostic complet, dont la sante de la collecte (panne silencieuse : interpreteur des hooks disparu, depot deplace, entrees retirees, client actif sans evenement recu) et, pour Codex, l'approbation de chaque hook lue aupres de Codex (`codex app-server`, methode `hooks/list`, sans appel au modele ; `--no-codex-trust` pour s'en passer) |
+| `doctor` | diagnostic complet, dont la sante de la collecte (panne silencieuse : interpreteur des hooks disparu, depot deplace, entrees retirees, client actif sans evenement recu) et, pour Codex, l'approbation de chaque hook lue aupres de Codex (`codex app-server`, methode `hooks/list`, sans appel au modele ; `--no-codex-trust` pour s'en passer) ainsi que l'etat de la lecture des rollouts (fichiers suivis, sessions importees) |
 | `configure --client X [--apply]` | installer les hooks (dry-run par defaut) |
 | `uninstall --client X [--apply]` | retirer les hooks AgentWatch |
 | `sessions [--client X] [--json]` | lister les sessions enregistrees |
 | `report --session ID` ou `report --latest` `[--format auto|markdown|json|rich|html|svg] [--out F]` | analyser une session (ou la derniere) ; `auto` = Rich dans un terminal si installe, sinon Markdown |
 | `trends [--days N] [--client X] [--project TXT] [--min-sessions N] [--import-transcripts] [--format markdown|json] [--out F]` | motifs recurrents sur plusieurs sessions : top global, puis par projet, par client et par session (`--days 0` = toutes les sessions) |
+| `import-rollouts [--days N] [--all] [--thread ID] [--follow] [--interval S]` | lire les rollouts Codex (lecture seule, incrementale, priorite d'arriere-plan) : appels, statuts, durees, tokens, sous-agents, messages en empreintes ; `--follow` resume en direct ce que fait Codex ; automatique avant `sessions`, `report`, `trends` (`rollouts.auto_import`) |
 | `import-transcripts --session ID` ou `--latest` ou `--all` | lire l'usage en tokens des transcripts Claude Code (nombres et identifiants seulement) et l'attacher aux appels ; idempotent |
 | `self-test [--runs N]` | scenarios synthetiques + hook reel en sous-processus |
 | `bench [--runs N]` | mesurer la surcharge du hook |

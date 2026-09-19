@@ -107,6 +107,11 @@ sans texte d'erreur = aucune correspondance ; `git diff --no-index`, `--exit-cod
 sans probleme signale = differences trouvees. Ni l'un ni l'autre n'est un echec (statut `success`,
 `evidence.exit_status_meaning`). Constate le 2026-09-19 : 73 des 211 "echecs" d'une session Codex.
 
+Reponse MCP "reussie" qui decrit une panne : une reponse JSON n'est un echec probable que si un champ
+d'erreur est non vide ou un statut vaut `failed`/`error` (le serveur romeo repond `"erreur": null` quand
+tout va bien : 188 attentes d'un job en file passaient pour des pannes) ; le texte libre garde la regle
+textuelle.
+
 Les interruptions (`interrupted`) ne sont jamais comptees. Les causes proposees sont des
 hypotheses tirees de la signature (`No such file`, `permission`, `timeout`, ...).
 

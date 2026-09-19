@@ -18,7 +18,10 @@
 Applique avant toute ecriture, y compris dans les diagnostics, en une seule passe (un
 remplacement n'est jamais re-analyse). Motifs : cles AWS, jetons GitHub, cles `sk-*`,
 jetons Slack, JWT, cles Google, blocs PEM, `user:motdepasse@` dans les URL, valeurs
-suivant `api_key`, `token`, `password`, `authorization`, `Bearer`, etc. Les URL de
+suivant `api_key`, `token`, `password`, `authorization`, `Bearer`, etc., et signatures
+d'URL presignees (`signature`, `credential`, `sig` : GCS `x-goog-*`, S3 `X-Amz-*`, CloudFront,
+Azure SAS). Constate le 2026-09-19 : des URL d'envoi GCS presignees avaient ete conservees en
+clair depuis un rollout Codex ; masquage corrige et donnees reimportees. Les URL de
 WebFetch perdent leur requete et leur fragment.
 
 Une valeur masquee devient `<secret:xxxxxxxxxx>` ou `xxxxxxxxxx` est le debut de son

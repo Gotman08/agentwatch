@@ -575,12 +575,21 @@ def cmd_doctor(args: argparse.Namespace) -> int:
                 for line in XT.format_lines(result):
                     _out(f"    {line}")
                     if line.startswith("! Codex n'executera"):
-                        trust_alerts.append({"client": CLIENT_CODEX, "code": "hooks_untrusted", "level": "warn", "message": line[2:]})
+                        msg = line[2:]
+                        if _rollouts_cfg(cfg).get("auto_import", True):
+                            msg += " ; sans hooks, la lecture des rollouts couvre deja Codex (voir la ligne rollouts)"
+                        trust_alerts.append({"client": CLIENT_CODEX, "code": "hooks_untrusted", "level": "warn", "message": msg})
                 if not result.get("ok"):
                     _out("    rappel : Codex n'execute un hook qu'apres que vous l'avez approuve via la commande /hooks (confiance par empreinte).")
             else:
                 _out("    rappel : Codex n'execute un hook qu'apres que vous l'avez approuve via la commande /hooks (confiance par empreinte) ; "
                      "etat de confiance non verifie" + (" (--no-codex-trust)" if args.no_codex_trust else ""))
+            # * Collecte sans hooks : lecture passive des rollouts (collector/rollouts.py).
+            from agentwatch.collector import rollouts as R
+            tracked = R.load_state(str(home)).get("files") or {}
+            roots = {((st or {}).get("meta") or {}).get("root_id") for st in tracked.values()} - {None}
+            _out(f"    rollouts : lecture passive {'automatique avant sessions, report et trends' if _rollouts_cfg(cfg).get('auto_import', True) else 'sur demande (import-rollouts)'}"
+                 f" (lecture seule, sans hooks, sans effet sur Codex) ; {len(tracked)} fichier(s) suivi(s), {len(roots)} session(s) Codex importee(s)")
     health = trust_alerts + _health(home, cfg, store)
     if health:
         _out("- Sante de la collecte (panne silencieuse) :")
