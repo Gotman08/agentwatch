@@ -65,8 +65,25 @@ def _newest(paths: Iterable[str]) -> float | None:
     return best
 
 
+def _newest_rollout_activity(paths: Iterable[str]) -> float | None:
+    """Activite la plus recente des rollouts : date de modification, ou heure de la derniere ligne ecrite. Sous Windows,
+    la date d'un rollout que Codex garde ouvert reste celle de sa creation (constate le 2026-09-19)."""
+    from agentwatch.collector.rollouts import last_line_ns
+    best: float | None = None
+    for p in paths:
+        try:
+            m = os.path.getmtime(p)
+        except OSError:
+            continue
+        ns = last_line_ns(p)
+        a = max(m, ns / 1e9) if ns else m
+        if best is None or a > best:
+            best = a
+    return best
+
+
 def client_activity_mtime(client: str, cfg: dict[str, Any]) -> float | None:
-    """Derniere modification des journaux natifs du client (transcripts Claude Code, rollouts Codex)."""
+    """Derniere activite des journaux natifs du client (transcripts Claude Code, rollouts Codex)."""
     if client == CLIENT_CLAUDE_CODE:
         from agentwatch.collector.transcripts import claude_projects_dir
         return _newest(glob.glob(os.path.join(str(claude_projects_dir(cfg)), "*", "*.jsonl")))
@@ -77,7 +94,7 @@ def client_activity_mtime(client: str, cfg: dict[str, Any]) -> float | None:
     span = int(_section(cfg, "health").get("codex_days", 30))
     cutoff = time.strftime("%Y%m%d", time.localtime(time.time() - span * 86400))
     days = [d for d in glob.glob(os.path.join(str(root), "*", "*", "*")) if _day_key(d) >= cutoff]
-    return _newest(f for d in days for f in glob.glob(os.path.join(d, "*.jsonl")))
+    return _newest_rollout_activity(f for d in days for f in glob.glob(os.path.join(d, "*.jsonl")))
 
 
 def _day_key(day_dir: str) -> str:

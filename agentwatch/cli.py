@@ -80,10 +80,12 @@ def _rollouts_cfg(cfg: dict[str, Any]) -> dict[str, Any]:
     return r if isinstance(r, dict) else {}
 
 
-def _rollout_paths(cfg: dict[str, Any], days: float | None, thread: str | None) -> list[str]:
-    """Rollouts de la fenetre ; avec `thread`, ce fil et ses sous-agents (lus dans leur session_meta)."""
+def _rollout_paths(cfg: dict[str, Any], days: float | None, thread: str | None,
+                   state: dict[str, Any] | None = None) -> list[str]:
+    """Rollouts de la fenetre ; avec `thread`, ce fil et ses sous-agents (lus dans leur session_meta).
+    `state` (etat de l'import) : un fichier deja lu qui a grandi reste dans la fenetre malgre une date figee."""
     from agentwatch.collector import rollouts as R
-    paths = R.list_rollouts(cfg, days)
+    paths = R.list_rollouts(cfg, days, state=state)
     if not thread:
         return paths
     keep = []
@@ -105,13 +107,67 @@ def _import_rollouts(home: Path, cfg: dict[str, Any], store: Any, days: float | 
     if days is None:
         days = float(rcfg.get("days", 7) or 0) or None
     try:
-        todo = R.pending_rollouts(str(home), _rollout_paths(cfg, days, thread))
+        todo = R.pending_rollouts(str(home), _rollout_paths(cfg, days, thread, R.load_state(str(home))))
         if not todo:
             return {"files": 0, "lines": 0, "events": 0, "bytes": 0, "sessions": {}, "errors": []}
         with R.background_priority(bool(rcfg.get("background_priority", True))):
             return R.import_rollouts(store, cfg, todo, sink=sink)
     except Exception as exc:  # noqa: BLE001 - un import rate ne doit pas empecher un rapport
         return {"files": 0, "lines": 0, "events": 0, "bytes": 0, "sessions": {}, "errors": [f"{type(exc).__name__}: {exc}"]}
+
+
+def _rollout_state_lines(cfg: dict[str, Any], rstate: dict[str, Any]) -> list[str]:
+    """Trois etats distincts des rollouts : importe (lu et traduit), en attente (pas encore lu, ou element a rapprocher),
+    lu mais non interprete (ligne comptee, aucun evenement). Plus les doublons reconnus, qui ne sont pas des pertes."""
+    from agentwatch.collector import rollouts as R
+    tracked = rstate.get("files") or {}
+    lines: list[str] = []
+    read_lines = sum(int((st or {}).get("line_no") or 0) for st in tracked.values())
+    counted = [st for st in tracked.values() if isinstance((st or {}).get("uninterpreted"), dict)]
+    lines.append(f"importees : {len(tracked)} rollout(s) suivi(s), lus jusqu'a leur derniere ligne complete"
+                 + (f" ({read_lines} ligne(s) numerotee(s) pour la source des evenements)" if read_lines else ""))
+    try:
+        pending = R.pending_with_sizes(rstate, R.list_rollouts(cfg, float(_rollouts_cfg(cfg).get("days", 7) or 7), state=rstate))
+    except OSError:
+        pending = []
+    lag_s = 0.0
+    waiting_bytes = 0
+    for p, size in pending:
+        st = tracked.get(os.path.normcase(os.path.abspath(p))) or {}
+        waiting_bytes += max(0, size - int(st.get("offset", 0) or 0))
+        last_written = R.last_line_ns(p)
+        if last_written and st.get("last_ns"):
+            lag_s = max(lag_s, (last_written - int(st["last_ns"])) / 1e9)
+        elif last_written:
+            lag_s = max(lag_s, time.time() - last_written / 1e9)
+    lines.append(f"en attente de lecture : {len(pending)} rollout(s), {waiting_bytes} octet(s) pas encore lus"
+                 + (f", retard {lag_s:.0f} s (heure de la derniere ligne ecrite par Codex moins celle de la derniere ligne lue)"
+                    if pending else "") + " ; reprise a l'octet pres apres une interruption")
+    items = sum(len((st or {}).get("pending_items") or []) for st in tracked.values())
+    if items:
+        lines.append(f"en attente de rapprochement : {items} element(s) de message (importes s'ils n'ont pas de ligne "
+                     "de meme texte dans les 10 lignes suivantes, ou apres 10 min sans ecriture)")
+
+    def total(key: str) -> dict[str, int]:
+        out: dict[str, int] = {}
+        for st in tracked.values():
+            for k, n in ((st or {}).get(key) or {}).items():
+                out[k] = out.get(k, 0) + int(n or 0)
+        return out
+
+    unint, dups = total("uninterpreted"), total("duplicates")
+    scope = (f"sur {len(counted)} rollout(s) lus par cette version"
+             + (f" ; {len(tracked) - len(counted)} lus avant, non comptes (import-rollouts --all pour les recompter)"
+                if len(counted) < len(tracked) else ""))
+    lines.append("lues mais non interpretees (" + scope + ") : "
+                 + (", ".join(f"{k} x{n}" for k, n in sorted(unint.items(), key=lambda kv: -kv[1])) if unint else "aucune"))
+    if dups:
+        lines.append("reconnues sans nouvel evenement (meme fait deja importe, ou vide) : "
+                     + ", ".join(f"{k} x{n}" for k, n in sorted(dups.items(), key=lambda kv: -kv[1])[:8]))
+    mixed = sum(1 for st in tracked.values() if (st or {}).get("usage_format") == "mixte")
+    if mixed:
+        lines.append(f"! {mixed} fil(s) aux releves de tokens de format mixte (token_count avant token_usage_record) : totaux a verifier")
+    return lines
 
 
 def _auto_import_rollouts(home: Path, cfg: dict[str, Any], store: Any) -> None:
@@ -808,15 +864,13 @@ def cmd_doctor(args: argparse.Namespace) -> int:
                  f" (lecture seule, sans hooks, sans effet sur Codex) ; {len(tracked)} fichier(s) suivi(s), {len(roots)} session(s) Codex importee(s)")
             lr, li = rstate.get("last_run") or {}, rstate.get("last_import") or {}
             if lr:
-                _out(f"    dernier passage du collecteur : {lr.get('time')} ; {lr.get('files_checked')} rollout(s) examine(s), "
+                # * Trace ecrite par un passage qui a trouve des lignes nouvelles : sans ecriture de Codex, les passages
+                #   (toutes les 30 s en suivi) ne reecrivent pas l'etat. Le retard de lecture ci-dessous dit si rien n'attend.
+                _out(f"    derniere lecture du collecteur : {lr.get('time')} ; {lr.get('files_checked')} rollout(s) examine(s), "
                      f"{lr.get('files_read')} lu(s), {lr.get('events')} evenement(s), {lr.get('errors')} erreur(s)"
                      + (f" ; dernier import d'evenements : {li.get('time')} ({li.get('events')} evenement(s))" if li else ""))
-            try:
-                pending = R.pending_rollouts(str(home), R.list_rollouts(cfg, float(_rollouts_cfg(cfg).get("days", 7) or 7)))
-            except OSError:
-                pending = []
-            _out(f"    en attente de lecture : {len(pending)} rollout(s) avec des lignes nouvelles (lues au prochain passage ; "
-                 "reprise a l'octet pres apres une interruption)")
+            for line in _rollout_state_lines(cfg, rstate):
+                _out(f"    {line}")
             for e in (rstate.get("errors") or [])[:3]:
                 _out(f"    ! erreur de collecte du {e.get('time')} : {e.get('error')}")
     health = trust_alerts + _health(home, cfg, store)

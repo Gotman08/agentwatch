@@ -172,7 +172,19 @@ class Exporter:
     def thread_file(self, path: str, meta: dict[str, Any]) -> dict[str, Any]:
         first, last, n = _ts_bounds(path)
         bulk = bool(first and last and last - first < _BULK_SPAN_NS and n >= _BULK_MIN_LINES)
+        comp_ids: set[str] = set()
+        try:
+            with open(path, "rb") as fh:
+                for raw in fh:
+                    if b'"compaction_response_id"' in raw and raw.endswith(b"\n"):
+                        cid = (json.loads(raw).get("payload") or {}).get("compaction_response_id")
+                        if isinstance(cid, str) and cid:
+                            comp_ids.add(cid)
+        except (OSError, ValueError):
+            pass
         self.thread = {"thread_id": meta.get("thread_id"), "path": path, "bulk": bulk, "open": {}, "responses": 0,
+                       "compaction_ids": comp_ids, "compactions": 0, "compaction_measured": Counter(), "record_lines": {},
+                       "compacted_lines": 0, "tc_last_total": None,
                        "measured": Counter(), "token_count": Counter(), "computed": Counter(), "calls": 0,
                        "recent": [], "pending_emit": [], "consumed": [], "model": None, "has_usage_record": False}
         who = ("fil principal" if not meta.get("parent_id") else
@@ -213,13 +225,18 @@ class Exporter:
         m = t["measured"] if t["has_usage_record"] else t["token_count"]
         src_label = "token_usage_record" if t["has_usage_record"] else "token_count (ancien format)"
         self.w("")
-        self.w(f"Totaux du fil : {t['calls']} appel(s) ; {t['responses']} reponse(s) du modele.")
+        self.w(f"Totaux du fil : {t['calls']} appel(s) ; {t['responses']} reponse(s) du modele ; {t['compactions']} demande(s) "
+               f"de compaction ; {t['compacted_lines']} ligne(s) compacted (historique remplace par Codex).")
         if m:
             self.w(f"- Tokens MESURES par Codex ({src_label}, une fois par reponse) : entree {m['input_tokens']} dont cache "
                    f"{m['cached_input_tokens']} (hors cache {m['input_tokens'] - m['cached_input_tokens']}), sortie "
                    f"{m['output_tokens']} dont raisonnement {m['reasoning_output_tokens']}.")
         else:
             self.w("- [absent] aucun releve de tokens dans ce fil.")
+        cm = t["compaction_measured"]
+        if cm:
+            self.w(f"- Dont demandes de compaction (MESURE par Codex, comptees a part) : entree {cm['input_tokens']} dont cache "
+                   f"{cm['cached_input_tokens']}, sortie {cm['output_tokens']}.")
         c = t["computed"]
         if c:
             self.w(f"- Repartition CALCULEE par AgentWatch (somme des parts attribuees aux appels) : entree hors cache "
@@ -552,11 +569,25 @@ class Exporter:
         u = R._usage_numbers(p.get("usage"))
         t = self.thread
         t["has_usage_record"] = True
-        t["responses"] += 1
         for k, v in u.items():
             t["measured"][k] += v
+        rid = p.get("response_id")
+        t["record_lines"][rid] = src["line"]
+        if rid in t["compaction_ids"]:
+            # * Demande de compaction : requete au modele pour resumer l'historique ; des tokens reels, pas une reponse.
+            #   Reliee a sa ligne compacted par l'identifiant que Codex y ecrit ; c'est cette ligne, pas la demande, qui
+            #   etablit que l'historique a ete remplace.
+            t["compactions"] += 1
+            for k, v in u.items():
+                t["compaction_measured"][k] += v
+            self.head(src, f"Demande de compaction `{rid}` (requete au modele pour resumer l'historique ; designee par la ligne "
+                           f"compacted) : tokens MESURES par Codex : entree {u['input_tokens']} dont cache {u['cached_input_tokens']}, "
+                           f"sortie {u['output_tokens']}")
+            self.record(src, "demande_compaction", {"response_id": rid, **u}, [])
+            return
+        t["responses"] += 1
         emitted, consumed = t["pending_emit"], t["consumed"]
-        self.head(src, f"Reponse {t['responses']} `{p.get('response_id')}` : tokens MESURES par Codex : entree {u['input_tokens']} "
+        self.head(src, f"Reponse {t['responses']} `{rid}` : tokens MESURES par Codex : entree {u['input_tokens']} "
                        f"dont cache {u['cached_input_tokens']} (hors cache {u['input_tokens'] - u['cached_input_tokens']}), sortie "
                        f"{u['output_tokens']} dont raisonnement {u['reasoning_output_tokens']}")
         if consumed or emitted:
@@ -574,6 +605,13 @@ class Exporter:
             self.head(src, "Releve token_count sans usage (limites de debit seulement)")
             self.record(src, "token_count_vide", {}, [])
             return
+        key = [total[k] for k in ("input_tokens", "cached_input_tokens", "output_tokens")]
+        if key == t["tc_last_total"]:
+            # * Cumul inchange : releve des limites de debit, pas une nouvelle reponse (822 fois dans les anciens rollouts).
+            self.head(src, "Releve token_count repete (cumul du fil inchange : limites de debit, pas une nouvelle reponse)")
+            self.record(src, "token_count_repete", {"total": total}, [])
+            return
+        t["tc_last_total"] = key
         for k, v in last.items():
             t["token_count"][k] += v
         if not t["has_usage_record"]:
@@ -587,9 +625,14 @@ class Exporter:
     def _compacted(self, p: dict[str, Any], src: dict[str, Any]) -> None:
         hist = p.get("replacement_history")
         flags = [f"[omis] historique remplace ({len(hist)} element(s))"] if isinstance(hist, list) else []
-        self.head(src, f"Compaction : fenetre {p.get('window_number')}", flags)
+        cid = p.get("compaction_response_id")
+        where = self.thread["record_lines"].get(cid)
+        self.thread["compacted_lines"] += 1
+        self.head(src, f"Ligne compacted : Codex a remplace l'historique (fenetre {p.get('window_number')})"
+                       + (f" ; demande de compaction `{cid}`" + (f", tokens au releve L{where}" if where else "") if cid
+                          else " ; [absent] identifiant de la demande de compaction"), flags)
         flags += self.block("resume ecrit par Codex", p.get("message"))
-        self.record(src, "compaction", {"window": p.get("window_number")}, flags)
+        self.record(src, "compaction_ligne", {"window": p.get("window_number"), "demande": cid}, flags)
 
     def _inter_agent_meta(self, p: dict[str, Any], src: dict[str, Any]) -> None:
         self.head(src, f"Metadonnee du message entre agents : declenche un tour = {p.get('trigger_turn')}")

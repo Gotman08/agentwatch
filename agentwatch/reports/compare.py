@@ -83,8 +83,13 @@ def measure(view: SessionView, cfg: dict[str, Any]) -> dict[str, Any]:
             counts[key] += len(f.calls)
         if key:
             clusters[key] += 1
-    responses = [m.meta["usage"] for m in view.markers if m.phase == S.PHASE_USAGE and isinstance(m.meta.get("usage"), dict)
-                 and m.meta["usage"].get("scope") == "response"]
+    from agentwatch.reports.stats import compaction_request_ids
+    comp_ids = compaction_request_ids(view)
+    requests = [m.meta["usage"] for m in view.markers if m.phase == S.PHASE_USAGE and isinstance(m.meta.get("usage"), dict)
+                and m.meta["usage"].get("scope") == "response"]
+    # * Une demande de compaction consomme des tokens reels mais ne repond pas a la conversation : comptee a part.
+    responses = [u for u in requests if u.get("response_id") not in comp_ids]
+    compactions = [u for u in requests if u.get("response_id") in comp_ids]
     counts["erreurs"] = sum(1 for c in view.calls if c.status in _FAILED)
     # * Occasions d'attendre : sans attente, une habitude d'attente disparait faute d'occasion, pas grace a une correction.
     counts["attentes"] = sum(1 for c in view.calls if c.agent_key not in view.timing_unreliable_agents
@@ -108,6 +113,8 @@ def measure(view: SessionView, cfg: dict[str, Any]) -> dict[str, Any]:
             "cached_input_tokens": sum(int(u.get("cached_input_tokens") or 0) for u in responses),
             "output_tokens": sum(int(u.get("output_tokens") or 0) for u in responses),
             "reasoning_output_tokens": sum(int(u.get("reasoning_output_tokens") or 0) for u in responses),
+            "compaction": {"requests": len(compactions), **{k: sum(int(u.get(k) or 0) for u in compactions)
+                                                            for k in ("input_tokens", "cached_input_tokens", "output_tokens")}},
             "counts": dict(counts), "clusters": dict(clusters), "ctx": dict(ctx), "sessions": 1 if view.calls else 0, "tasks": tasks,
             "nogain_cost": {k: dict(v) for k, v in nogain_cost.items()},
             "session_ids": [view.session_id] if view.calls else [],
@@ -121,6 +128,7 @@ def merge(measures: list[dict[str, Any]]) -> dict[str, Any]:
     out: dict[str, Any] = {**{k: 0 for k in _SUMS}, "counts": Counter(), "clusters": Counter(), "ctx": Counter(),
                            "first_time": None, "last_time": None,
                            "nogain_cost": {"G.sans_apport": Counter(), "G.sans_apport_attente": Counter()},
+                           "compaction": Counter(),
                            "session_ids": [], "tasks": {"main_done": 0, "main_aborted": 0, "sub_done": 0, "sub_aborted": 0,
                                                         "main_durations_ms": [], "sub_durations_ms": []}}
     for m in measures:
@@ -132,6 +140,7 @@ def merge(measures: list[dict[str, Any]]) -> dict[str, Any]:
         out["session_ids"] += m.get("session_ids", [])
         for k, v in (m.get("nogain_cost") or {}).items():
             out["nogain_cost"].setdefault(k, Counter()).update(v)
+        out["compaction"].update(m.get("compaction") or {})
         for k, v in (m.get("tasks") or {}).items():
             out["tasks"][k] = out["tasks"][k] + v
         if m["first_time"] and (out["first_time"] is None or m["first_time"] < out["first_time"]):
@@ -140,6 +149,7 @@ def merge(measures: list[dict[str, Any]]) -> dict[str, Any]:
             out["last_time"] = m["last_time"]
     out["counts"], out["clusters"], out["ctx"] = dict(out["counts"]), dict(out["clusters"]), dict(out["ctx"])
     out["nogain_cost"] = {k: dict(v) for k, v in out["nogain_cost"].items()}
+    out["compaction"] = dict(out["compaction"])
     return out
 
 
@@ -327,12 +337,15 @@ def render_reference(ref: dict[str, Any]) -> str:
              f"- Enregistre le {ref['created_at']} par AgentWatch {ref['agentwatch_version']} (comparaison v{ref['compare_version']})", "",
              "## 1. Mesures (constatees sur la periode)", "",
              "| Mesure | Valeur |", "|---|---|",
-             f"| Reponses du modele | {_n(m['responses'])} |",
+             f"| Reponses du modele (hors demandes de compaction) | {_n(m['responses'])} |",
+             f"| Demandes de compaction (requete au modele pour resumer l'historique) | {_n((m.get('compaction') or {}).get('requests', 0))} : entree "
+             f"{_n((m.get('compaction') or {}).get('input_tokens', 0))} (dont cache {_n((m.get('compaction') or {}).get('cached_input_tokens', 0))}), "
+             f"sortie {_n((m.get('compaction') or {}).get('output_tokens', 0))} |",
              f"| Appels d'outils | {_n(m['calls'])} |",
-             f"| Tokens d'entree | {_n(m['input_tokens'])}, dont en cache {_n(m['cached_input_tokens'])} "
+             f"| Tokens d'entree des reponses | {_n(m['input_tokens'])}, dont en cache {_n(m['cached_input_tokens'])} "
              f"({_fmt(100 * m['cached_input_tokens'] / m['input_tokens'] if m['input_tokens'] else None)} %), hors cache "
              f"{_n(m['input_tokens'] - m['cached_input_tokens'])} |",
-             f"| Tokens de sortie | {_n(m['output_tokens'])}, dont raisonnement {_n(m['reasoning_output_tokens'])} |",
+             f"| Tokens de sortie des reponses | {_n(m['output_tokens'])}, dont raisonnement {_n(m['reasoning_output_tokens'])} |",
              f"| Reprises du modele sans apport (resultat inchange) | {_n(m['counts'].get('G.sans_apport', 0))}, soit "
              f"{_fmt(per_r('G.sans_apport'))} pour 1 000 reponses |",
              f"| dont pendant une attente | {_n(m['counts'].get('G.sans_apport_attente', 0))}, soit "
@@ -379,10 +392,12 @@ def render_markdown(result: dict[str, Any]) -> str:
     lines = ["# AgentWatch - avant / apres", "",
              f"- Bascule : {result['at_label']} ; client `{result['client']}`",
              f"- Avant : {b['sessions']} session(s), {b['calls']} appels, {b['responses']} reponses du modele "
+             f"(+ {((b.get('compaction') or {}).get('requests', 0))} demande(s) de compaction) "
              f"({b['first_time'] or '?'} a {b['last_time'] or '?'}) ; tokens d'entree {_n(b.get('input_tokens'))} dont en cache "
              f"{_n(b.get('cached_input_tokens'))}, hors cache {_n((b.get('input_tokens') or 0) - (b.get('cached_input_tokens') or 0))} ; "
              f"sortie {_n(b.get('output_tokens'))}",
              f"- Apres : {a['sessions']} session(s), {a['calls']} appels, {a['responses']} reponses du modele "
+             f"(+ {((a.get('compaction') or {}).get('requests', 0))} demande(s) de compaction) "
              f"({a['first_time'] or '?'} a {a['last_time'] or '?'}) ; tokens d'entree {_n(a.get('input_tokens'))} dont en cache "
              f"{_n(a.get('cached_input_tokens'))}, hors cache {_n((a.get('input_tokens') or 0) - (a.get('cached_input_tokens') or 0))} ; "
              f"sortie {_n(a.get('output_tokens'))}",

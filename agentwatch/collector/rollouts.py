@@ -37,7 +37,7 @@ from agentwatch.core import schema as S
 SOURCE = "codex:rollout"
 STATE_DIRNAME = "import"
 STATE_FILENAME = "codex-rollouts.json"
-TOOL_ITEMS = ("CommandExecution", "McpToolCall", "FileChange", "ImageView", "Extension")
+TOOL_ITEMS = ("CommandExecution", "McpToolCall", "FileChange", "ImageView", "Extension", "WebSearch", "FunctionCallOutput")
 MESSAGE_ARGS = ("message", "task", "prompt", "instructions")
 _PARAGRAPH_MIN_CHARS = 40
 _MAX_PARAGRAPHS = 200
@@ -192,6 +192,13 @@ def _content_text(content: Any) -> str:
     return ""
 
 
+_WS_RE = re.compile(r"\s+")
+
+
+def _norm_ws(text: str) -> str:
+    return _WS_RE.sub(" ", text).strip()
+
+
 _INJECTED_PREFIXES = ("<", "# agents.md instructions", "# agents.md")
 
 
@@ -239,13 +246,42 @@ def sessions_dir(cfg: dict[str, Any]) -> str:
     return str(codex_sessions_dir(cfg))
 
 
-def list_rollouts(cfg: dict[str, Any], days: float | None = None, whole_sessions: bool = True) -> list[str]:
-    """Rollouts modifies dans les `days` derniers jours (tous si None), du plus ancien au plus recent.
+def last_line_ns(path: str) -> int | None:
+    """Horodatage de la derniere ligne complete ecrite dans un rollout (lecture de la fin du fichier seulement)."""
+    try:
+        size = os.path.getsize(path)
+        with open(path, "rb") as fh:
+            for span in (65_536, 1_048_576, 8_388_608):
+                fh.seek(max(0, size - span))
+                lines = fh.read(min(size, span)).split(b"\n")[:-1]    # * sans la ligne en cours d'ecriture
+                if span < size:
+                    lines = lines[1:]                                   # * ni la ligne coupee par le debut du bloc
+                for raw in reversed(lines):
+                    try:
+                        ns = iso_to_ns(json.loads(raw).get("timestamp"))
+                    except (ValueError, AttributeError):
+                        continue
+                    if ns:
+                        return ns
+                if span >= size:
+                    break
+    except OSError:
+        return None
+    return None
+
+
+def list_rollouts(cfg: dict[str, Any], days: float | None = None, whole_sessions: bool = True,
+                  state: dict[str, Any] | None = None) -> list[str]:
+    """Rollouts actifs dans les `days` derniers jours (tous si None), du plus ancien au plus recent.
 
     # * Une session longue garde ses premiers sous-agents, termines, dans des fichiers plus anciens que la
     #   fenetre : constate le 2026-09-19, session commencee le 10, 41 fils sur 71 hors d'une fenetre de 7 jours.
     #   Une session touchee dans la fenetre est donc lue en entier (`whole_sessions`) ; on lit pour cela
     #   l'en-tete de chaque fichier (0,1 s pour 561 rollouts).
+    # ! Sous Windows, la date de modification d'un rollout que Codex garde ouvert reste celle de sa creation
+    #   (constate le 2026-09-19 : 16:36:20 alors que Codex ecrivait a 17:18:49, meme lue par un descripteur ouvert).
+    #   Un fichier ancien compte donc comme actif s'il a grandi depuis la derniere lecture (`state`), si sa derniere
+    #   ligne lue est recente, ou, jamais lu, si sa derniere ligne ecrite est recente (fin du fichier seulement).
     """
     paths = glob.glob(os.path.join(sessions_dir(cfg), "*", "*", "*", "rollout-*.jsonl"))
     cutoff = time.time() - days * 86400 if days else None
@@ -257,10 +293,29 @@ def list_rollouts(cfg: dict[str, Any], days: float | None = None, whole_sessions
             continue
     if cutoff is None:
         return [p for _, p in sorted(rows)]
-    recent = [(m, p) for m, p in rows if m >= cutoff]
+    cutoff_ns = int(cutoff * 1e9)
+    tracked = (state or {}).get("files") or {}
+    recent = []
+    for m, p in rows:
+        if m >= cutoff:
+            recent.append((m, p))
+            continue
+        st = tracked.get(os.path.normcase(os.path.abspath(p)))
+        try:
+            size = os.path.getsize(p)
+        except OSError:
+            continue
+        if st is not None:
+            if size > int(st.get("offset", 0) or 0) or int(st.get("last_ns") or 0) >= cutoff_ns:
+                recent.append((m, p))      # * a grandi depuis la derniere lecture, ou derniere ligne lue recente
+        else:
+            ts = last_line_ns(p)
+            if ts is not None and ts >= cutoff_ns:
+                recent.append((m, p))      # * jamais lu, date figee : le contenu dit quand il a ete ecrit
     if whole_sessions and recent:
         roots = {_root_of(p) for _, p in recent} - {None}
-        recent += [(m, p) for m, p in rows if m < cutoff and _root_of(p) in roots]
+        chosen = {p for _, p in recent}      # * un fichier ancien deja retenu (date figee) n'est pas ajoute deux fois
+        recent += [(m, p) for m, p in rows if p not in chosen and _root_of(p) in roots]
     return [p for _, p in sorted(recent)]
 
 
@@ -346,7 +401,14 @@ class RolloutReader:
         st.setdefault("totals", _usage_numbers(None))
         st.setdefault("messages", 0)
         st.setdefault("execs_without_actions", 0)
+        st.setdefault("uninterpreted", {})    # type de ligne ou d'element -> lignes lues mais pas traduites en evenements
+        st.setdefault("duplicates", {})       # doublons reconnus (meme fait deja importe sous une autre forme) -> nombre
+        st.setdefault("recent_msg_fps", [])   # empreintes des derniers textes de messages lus dans des lignes response_item
+        st.setdefault("pending_items", [])    # elements AgentMessage/UserMessage en attente de rapprochement (10 lignes)
         self.st = st
+        self._src: dict[str, Any] | None = None
+        self._recent_texts: list[str] = []      # * textes des derniers messages : en memoire seulement, jamais dans l'etat
+        self._pending_texts: dict[str, str] = {}
         self.events: list[dict[str, Any]] = []
         self.adapter = get_adapter(CLIENT_CODEX)
         self._ctx_cls = AdapterContext
@@ -392,6 +454,8 @@ class RolloutReader:
             ev["received_time_ns"] = ns
             ev["received_time"] = S.now_iso(ns / 1e9)
         ev["evidence"]["import_source"] = SOURCE
+        if self._src is not None:
+            ev["evidence"]["source"] = dict(self._src)
         if self.agent_id and not ev.get("agent_id"):
             ev["agent_id"], ev["agent_type"] = self.agent_id, self.agent_type
         ev = sanitize_event(ev, self.key, self.cfg)
@@ -443,14 +507,32 @@ class RolloutReader:
         return end_ev
 
     # ------------------------------------------------------------------ lecture
+    def _skip(self, key: str) -> None:
+        """Ligne lue mais pas (encore) traduite en evenement : comptee, jamais perdue en silence."""
+        self.st["uninterpreted"][key] = self.st["uninterpreted"].get(key, 0) + 1
+
+    def _dup(self, key: str) -> None:
+        self.st["duplicates"][key] = self.st["duplicates"].get(key, 0) + 1
+
+    def _activity(self, ns: int | None, eid_parts: tuple[Any, ...], kind: str, meta: dict[str, Any]) -> None:
+        self._marker(S.PHASE_ACTIVITY, ns, eid_parts, {"kind": kind, **{k: v for k, v in meta.items() if v is not None}},
+                     f"rollout:{kind}")
+
     def feed(self, raw: bytes, offset: int) -> None:
         """Traite une ligne complete (octets) situee a `offset` dans le fichier."""
+        self.st["line_no"] = int(self.st.get("line_no", 0)) + 1
+        if self.st["pending_items"]:
+            self.flush_items()
+        # * Source de chaque evenement : fichier, ligne et octet dans le rollout (`inspect` montre les memes lignes).
+        self._src = {"file": os.path.basename(self.path), "line": self.st["line_no"], "offset": offset}
         try:
             o = json.loads(raw)
         except ValueError:
             self.st["invalid_lines"] = self.st.get("invalid_lines", 0) + 1
+            self._skip("<ligne JSON invalide>")
             return
         if not isinstance(o, dict):
+            self._skip("<ligne JSON non objet>")
             return
         t = o.get("type")
         raw_p = o.get("payload")
@@ -471,13 +553,28 @@ class RolloutReader:
             self.st["window"] = int(p.get("window_number") or self.st.get("window", 0) + 1)
             self._marker(S.PHASE_COMPACT_END, ns, ("compacted", offset),
                          {"compact_type": "codex", "window": self.st["window"], "response_index": self.st["responses"],
-                          "input_tokens_before": self.st.get("last_input")})
+                          "input_tokens_before": self.st.get("last_input"),
+                          "replacement_items": len(p["replacement_history"]) if isinstance(p.get("replacement_history"), list) else None,
+                          "compaction_response_id": p.get("compaction_response_id") if isinstance(p.get("compaction_response_id"), str) else None})
         elif t == "world_state":
             self._on_world_state(p, ns, offset)
         elif t == "event_msg":
             self._on_event_msg(p, pt, ns, offset)
         elif t == "response_item":
             self._on_response_item(p, pt, ns, offset)
+        elif t == "inter_agent_communication_metadata":
+            self.st["trigger_turn"] = p.get("trigger_turn") if isinstance(p.get("trigger_turn"), bool) else None
+        elif t == "realtime_item":
+            text = p.get("text") if isinstance(p.get("text"), str) else None
+            # * Mode vocal : segments de transcription, element promu dans la conversation, ouverture et fermeture.
+            self._activity(ns, ("realtime", p.get("id") or offset), "realtime",
+                           {"type": str(p.get("type") or "")[:60] or None, "item_id": str(p.get("id") or "")[:80] or None,
+                            "realtime_session_id": str(p.get("realtime_session_id") or "")[:80] or None,
+                            "role": str(p.get("role") or "")[:20] or None, "outcome": str(p.get("outcome") or "")[:40] or None,
+                            "promoted_item_id": str(p.get("item_id") or "")[:80] or None,
+                            "text_chars": len(text) if text is not None else None})
+        else:
+            self._skip(f"ligne {t}")
 
     def _on_session_meta(self, p: dict[str, Any], ns: int | None) -> None:
         tid = _thread_id_from_path(self.path)
@@ -515,20 +612,56 @@ class RolloutReader:
             self._marker(S.PHASE_TURN_START, ns, ("turn", p.get("turn_id")),
                          {"model_context_window": p.get("model_context_window"), "mode": p.get("collaboration_mode_kind")})
         elif pt == "task_complete":
+            self._reasoning_rest(ns, offset)
             self._marker(S.PHASE_TURN_END, ns, ("turn_end", p.get("turn_id"), offset),
                          {"duration_ms": p.get("duration_ms"), "time_to_first_token_ms": p.get("time_to_first_token_ms")})
         elif pt == "turn_aborted":
+            self._reasoning_rest(ns, offset)
             self._marker(S.PHASE_INTERRUPT, ns, ("abort", p.get("turn_id"), offset),
                          {"reason": p.get("reason") if isinstance(p.get("reason"), str) else None, "duration_ms": p.get("duration_ms")})
+        elif pt == "thread_settings_applied":
+            s = p.get("thread_settings") if isinstance(p.get("thread_settings"), dict) else {}
+            if isinstance(s.get("model"), str) and s["model"]:
+                self.st["model"] = s["model"]
+            cm = s.get("collaboration_mode") if isinstance(s.get("collaboration_mode"), dict) else {}
+            self._activity(ns, ("settings", offset), "settings",
+                           {**{k: s.get(k) for k in ("model", "model_provider_id", "service_tier", "reasoning_effort",
+                                                     "reasoning_summary", "approval_policy", "approvals_reviewer", "personality")
+                               if isinstance(s.get(k), (str, int, float, bool))},
+                            "collaboration_mode": cm.get("mode") if isinstance(cm.get("mode"), str) else
+                            (cm.get("kind") if isinstance(cm.get("kind"), str) else None)})
+        elif pt == "token_count":
+            self._on_token_count(p, ns)
         elif pt == "item_completed":
             item = p.get("item") if isinstance(p.get("item"), dict) else {}
-            if item.get("type") in TOOL_ITEMS:
+            ty = item.get("type")
+            if ty == "CollabAgentToolCall":
+                self._on_collab_item(item, p, ns)
+            elif ty in TOOL_ITEMS:
                 self._on_tool_item(item, p, ns)
-            elif item.get("type") == "SubAgentActivity" and item.get("kind") in ("completed", "interrupted"):
+            elif ty == "SubAgentActivity" and item.get("kind") in ("completed", "interrupted"):
                 child = item.get("agent_thread_id")
                 self._marker(S.PHASE_SUBAGENT_STOP, ns, ("subagent", child, item.get("id")),
                              {"agent_id": child, "kind": item.get("kind"), "agent_path": str(item.get("agent_path") or "")[:120] or None},
                              "rollout:subagent_activity")
+            elif ty == "SubAgentActivity":
+                # * "started", "interacted" : le fil parent lance un sous-agent ou echange avec lui (vue du parent).
+                self._activity(ns, ("subagent_activity", item.get("id") or offset), "subagent_activity",
+                               {"child": item.get("agent_thread_id"), "activity": str(item.get("kind") or "")[:40] or None,
+                                "agent_path": str(item.get("agent_path") or "")[:120] or None})
+            elif ty == "Reasoning":
+                summary = sum(len(str(x.get("text") if isinstance(x, dict) else x)) for x in item.get("summary_text") or [])
+                raw = sum(len(str(x.get("text") if isinstance(x, dict) else x)) for x in item.get("raw_content") or [])
+                self._acc_reasoning("item", summary, raw)
+            elif ty in ("AgentMessage", "UserMessage"):
+                self._on_message_item(item, ty, ns)
+            elif ty == "ContextCompaction":
+                self._activity(ns, ("compaction_item", item.get("id") or offset), "compaction_item",
+                               {"item_id": str(item.get("id") or "")[:80] or None})
+            else:
+                self._skip(f"element {ty}")
+        else:
+            self._skip(f"event_msg {pt}")
 
     def _on_response_item(self, p: dict[str, Any], pt: Any, ns: int | None, offset: int) -> None:
         if pt == "custom_tool_call":
@@ -562,10 +695,55 @@ class RolloutReader:
             else:
                 text = _content_text(p.get("content"))
             self._message(role, text, ns, ("message", p.get("id") or offset), extra)
+            self._note_line_text(_content_text(p.get("content")), text)
         elif pt == "agent_message":
             text = _content_text(p.get("content"))
+            trigger = self.st.pop("trigger_turn", None)
             self._message("agent", text, ns, ("agent_message", p.get("id") or offset),
-                          {"message_id": p.get("id"), "author": str(p.get("author") or "")[:120] or None, "recipient": str(p.get("recipient") or "")[:120] or None})
+                          {"message_id": p.get("id"), "author": str(p.get("author") or "")[:120] or None,
+                           "recipient": str(p.get("recipient") or "")[:120] or None, "trigger_turn": trigger})
+            self._note_line_text(text)
+        elif pt == "reasoning":
+            # * Un bloc par reponse du modele (50 058 fois sur 50 080 suivi de son releve de tokens) : rattache au releve
+            #   de la reponse plutot qu'un evenement par bloc (100 000 blocs, +110 Mo pour des tailles seulement).
+            summary = sum(len(str(x.get("text") if isinstance(x, dict) else x)) for x in p.get("summary") or [])
+            enc = p.get("encrypted_content")
+            self._acc_reasoning("line", summary, len(enc) if isinstance(enc, str) else 0)
+        elif pt == "tool_search_call":
+            args = p.get("arguments") if isinstance(p.get("arguments"), dict) else {}
+            self._on_function_call({"call_id": p.get("call_id"), "name": "tool_search", "arguments": json.dumps(args)}, ns)
+        elif pt == "tool_search_output":
+            # * Groupes d'outils (espace de noms, description, outils) ajoutes au contexte : leur taille entiere compte.
+            tools = p.get("tools") if isinstance(p.get("tools"), list) else []
+            nested = sum(len(t.get("tools") or []) for t in tools if isinstance(t, dict) and isinstance(t.get("tools"), list))
+            self._on_function_output({"call_id": p.get("call_id"), "output": json.dumps({"tools": tools}, ensure_ascii=False)}, ns,
+                                     extra={"result_count": len(tools), "result_tools": nested})
+        elif pt in ("web_search_call", "image_generation_call"):
+            # * Outils heberges par le fournisseur du modele : pas de ligne de sortie, resultat consomme dans la meme
+            #   reponse ; statut dans l'element ("generating" pour une image rendue : pas un echec).
+            pid = p.get("id") if isinstance(p.get("id"), str) else f"{pt}-{offset}"
+            if pid in self.st.setdefault("item_call_ids", []):
+                # * Meme appel que l'element (WebSearch, Extension image_gen) de meme identifiant, ecrit juste avant
+                #   (32 fois sur 32 au 2026-09-19) : pas un second appel.
+                self._dup(f"response_item {pt} (meme appel que l'element de meme identifiant)")
+                return
+            self._note_ids("hosted_ids", pid)
+            code = 1 if p.get("status") in ("failed", "incomplete", "cancelled") else 0
+            if pt == "web_search_call":
+                action = p.get("action") if isinstance(p.get("action"), dict) else {}
+                self._tool_events(pid, "web_search", {k: action.get(k) for k in ("query", "queries", "url", "pattern")
+                                                      if action.get(k) is not None},
+                                  {"output": "", "exit_code": code}, ns, ns, None,
+                                  {"rollout_item": pt, "item_status": p.get("status"),
+                                   "web_action": action.get("type") if isinstance(action.get("type"), str) else None})
+            else:
+                res = p.get("result")
+                self._tool_events(pid, "image_generation", {"revised_prompt": p.get("revised_prompt")},
+                                  {"output": "", "exit_code": code}, ns, ns, None,
+                                  {"rollout_item": pt, "item_status": p.get("status"),
+                                   "image_chars": len(res) if isinstance(res, str) else None})
+        elif pt not in ("custom_tool_call", "custom_tool_call_output", "function_call", "function_call_output", "message"):
+            self._skip(f"response_item {pt}")
 
     def _image_fingerprints(self, ex: dict[str, Any], output: Any, ns: int | None) -> None:
         """Empreinte du contenu de chaque image vue, si l'exec rend exactement une image par vue (dans l'ordre)."""
@@ -582,25 +760,127 @@ class RolloutReader:
                        "content_fingerprint": {"method": "hmac-sha256-image", "value": self.fp(url), "chars": len(url)}})
             self._finish(ev, ns, self._event_id("image", iid))
 
-    def _message(self, role: str, text: str, ns: int | None, eid: tuple[Any, ...], extra: dict[str, Any]) -> None:
+    def _message_meta(self, role: str, text: str, extra: dict[str, Any]) -> dict[str, Any]:
         sigs: list[str | None] = []
         with_sig = role in ("user", "agent_instruction", "agent")
         if with_sig and self._sig is None:
             self._sig = signature_params(self.key)
         paras, chars, sizes = paragraph_fingerprints(text, self.fp, self._sig if with_sig else None, sigs)
-        self.st["messages"] += 1
         meta = {"role": role, "chars": chars, "paragraphs": paras, "paragraph_chars": sizes, "turn_id": self.st.get("turn_id"),
                 **{k: v for k, v in extra.items() if v is not None}}
         if with_sig and any(sigs):
             meta["paragraph_sigs"] = sigs
         if role == "assistant" and text:
             meta["declared"] = declared_intents(text)
-        self._marker(S.PHASE_MESSAGE, ns, eid, meta, "rollout:message")
+        return meta
+
+    def _message(self, role: str, text: str, ns: int | None, eid: tuple[Any, ...], extra: dict[str, Any]) -> None:
+        self.st["messages"] += 1
+        self._marker(S.PHASE_MESSAGE, ns, eid, self._message_meta(role, text, extra), "rollout:message")
+
+    def _note_line_text(self, *texts: str) -> None:
+        """Texte d'un message lu dans une ligne response_item. Un element AgentMessage/UserMessage de meme texte (ou dont
+        le texte y est inclus) est le meme message, pas un second."""
+        fps = self.st["recent_msg_fps"]
+        for t in {_norm_ws(x) for x in texts if x}:
+            if not t:
+                continue
+            fp = self.fp(t)[:16]
+            fps.append(fp)
+            self._recent_texts.append(t)
+            for e in list(self.st["pending_items"]):
+                if e["fp"] == fp:
+                    how = "meme texte qu'une ligne response_item"
+                elif self._pending_texts.get(e["fp"], "\x00") in t:
+                    how = "texte inclus dans un message deja importe"
+                else:
+                    continue
+                self.st["pending_items"].remove(e)
+                self._pending_texts.pop(e["fp"], None)
+                self._dup(f"element {e['type']} ({how})")
+        del fps[:-20]
+        del self._recent_texts[:-20]
+
+    def _on_message_item(self, item: dict[str, Any], ty: str, ns: int | None) -> None:
+        """Element AgentMessage/UserMessage : le plus souvent le meme message qu'une ligne response_item voisine
+        (27 991 fois sur 29 705 au 2026-09-19, 3 lignes d'ecart au plus, avant ou apres). Sinon, seule trace du message
+        (1 279 messages d'agent, dont 1 221 de sous-agents) : importe apres 10 lignes sans ligne de meme texte."""
+        text = _content_text(item.get("content"))
+        t = _norm_ws(text)
+        if not t:
+            self._dup(f"element {ty} vide")
+            return
+        fp = self.fp(t)[:16]
+        if fp in self.st["recent_msg_fps"]:
+            self._dup(f"element {ty} (meme texte qu'une ligne response_item)")
+            return
+        if any(t in r for r in self._recent_texts):
+            self._dup(f"element {ty} (texte inclus dans un message deja importe)")
+            return
+        role = "assistant" if ty == "AgentMessage" else "user"
+        extra: dict[str, Any] = {"message_id": item.get("id"), "phase": item.get("phase"), "origin": f"element {ty}"}
+        body = text
+        if role == "user":
+            human, injected = split_injected(item.get("content"))
+            body = "\n\n".join(human)
+            extra.update({"injected_chars": sum(len(b) for b in injected), "injected_blocks": len(injected)})
+        self.st["pending_items"].append({"fp": fp, "type": ty, "line": self.st.get("line_no", 0), "ns": ns, "id": item.get("id"),
+                                         "src": dict(self._src or {}), "meta": self._message_meta(role, body, extra)})
+        self._pending_texts[fp] = t
+
+    def flush_items(self, force: bool = False) -> None:
+        """Elements sans ligne de meme texte dans les 10 lignes qui suivent (ou fil inactif) : importes comme messages,
+        rattaches a leur propre ligne source."""
+        keep = []
+        for e in self.st["pending_items"]:
+            if not force and self.st.get("line_no", 0) - int(e.get("line") or 0) <= ITEM_MATCH_LINES:
+                keep.append(e)
+                continue
+            saved, self._src = self._src, (e.get("src") or None)
+            self.st["messages"] += 1
+            ev = S.empty_event()
+            ev.update({"client": CLIENT_CODEX, "phase": S.PHASE_MESSAGE, "session_id": self.session_id,
+                       "turn_id": e["meta"].get("turn_id"), "model": self.st.get("model"), "cwd": self.st.get("cwd"),
+                       "project_dir": self._project(), "hook_event_name": "rollout:message_item", "session_meta": e["meta"]})
+            self._finish(ev, e.get("ns"), self._event_id(S.PHASE_MESSAGE, "item_message", e.get("id") or e["fp"]))
+            self._src = saved
+            self._pending_texts.pop(e["fp"], None)
+        self.st["pending_items"] = keep
+
+    def _acc_reasoning(self, kind: str, summary: int, other: int) -> None:
+        """Raisonnement (tailles seulement) rattache au releve de tokens de la reponse qui suit : lignes response_item
+        (resume, contenu chiffre) et elements Reasoning (resume, texte brut), comptes separement."""
+        acc = self.st.get("reasoning_acc") or {}
+        if kind == "line":
+            acc["blocks"] = acc.get("blocks", 0) + 1
+            acc["summary_chars"] = acc.get("summary_chars", 0) + summary
+            acc["encrypted_chars"] = acc.get("encrypted_chars", 0) + other
+        else:
+            acc["item_blocks"] = acc.get("item_blocks", 0) + 1
+            acc["item_summary_chars"] = acc.get("item_summary_chars", 0) + summary
+            acc["item_raw_chars"] = acc.get("item_raw_chars", 0) + other
+        lines = acc.setdefault("lines", [])
+        if len(lines) < 20:
+            lines.append(self.st.get("line_no"))
+        else:
+            acc["lines_more"] = acc.get("lines_more", 0) + 1
+        self.st["reasoning_acc"] = acc
+
+    def _reasoning_rest(self, ns: int | None, offset: int) -> None:
+        """Fin de tour : raisonnement sans releve de tokens apres lui (tour interrompu, element ecrit apres le releve)."""
+        acc = self.st.pop("reasoning_acc", None)
+        if acc:
+            self._activity(ns, ("reasoning_rest", offset), "reasoning", {**acc, "note": "sans releve de tokens apres lui dans le tour"})
 
     # ------------------------------------------------------------------ appels
     def _parent_exec(self) -> str | None:
         opened = list(self.st["open_execs"])
         return opened[-1] if opened else None
+
+    def _note_ids(self, key: str, iid: str) -> None:
+        ids = self.st.setdefault(key, [])
+        ids.append(iid)
+        del ids[:-50]
 
     def _on_tool_item(self, item: dict[str, Any], p: dict[str, Any], ns: int | None) -> None:
         iid = item.get("id")
@@ -609,6 +889,21 @@ class RolloutReader:
         start_ns = _ms_to_ns(p.get("started_at_ms")) or ns
         end_ns = _ms_to_ns(p.get("completed_at_ms")) or ns
         ty = item.get("type")
+        if iid in self.st.setdefault("hosted_ids", []):
+            self._dup(f"element {ty} (meme appel que la ligne response_item de meme identifiant)")
+            return
+        if ty == "WebSearch" and (iid in self.st["open_calls"] or iid in self.st.setdefault("fn_closed", [])):
+            # * Fonction `web.run` (210 fois sur 210, element avant ou apres sa sortie) : la fonction donne le debut, la
+            #   fin et le statut ; l'element la complete (action, nombre de resultats) sans rien changer d'autre.
+            action = item.get("action") if isinstance(item.get("action"), dict) else {}
+            ev = S.empty_event()
+            ev.update({"client": CLIENT_CODEX, "phase": S.PHASE_OBSERVATION, "session_id": self.session_id, "call_id": iid,
+                       "hook_event_name": "rollout_web", "tool_name": "web_search"})
+            ev["evidence"].update({"web_action": action.get("type") if isinstance(action.get("type"), str) else None,
+                                   "web_results": len(item["results"]) if isinstance(item.get("results"), list) else None})
+            self._finish(ev, end_ns, self._event_id("web", iid))
+            return
+        self._note_ids("item_call_ids", iid)
         # * Un appel de fonction MCP (ex. mcp__cua_repl.js) produit AUSSI un item McpToolCall de meme identifiant :
         #   un seul appel. Son debut vient de function_call ; sa fin vient de l'item (statut et duree), la sortie
         #   de la fonction ne sert plus qu'a la consommation des tokens.
@@ -682,6 +977,31 @@ class RolloutReader:
                               with_start=fn is None, synthetic=True)
             if parent is not None and parent in self.st["open_execs"]:
                 self.st["open_execs"][parent].setdefault("images", []).append(iid)
+        elif ty == "WebSearch":
+            # * Recherche web (element) : requete, action (search, open_page, find_in_page, other) et resultats quand
+            #   Codex les ecrit (436 fois sur 515).
+            action = item.get("action") if isinstance(item.get("action"), dict) else {}
+            results = item.get("results")
+            resp = {"output": json.dumps(results, ensure_ascii=False) if results is not None else "", "exit_code": 0}
+            evidence["web_action"] = action.get("type") if isinstance(action.get("type"), str) else None
+            size = len(resp["output"])
+            self._tool_events(iid, "web_search", {"query": item.get("query"), **{k: action.get(k) for k in ("queries", "url", "pattern")
+                                                                                if action.get(k) is not None}},
+                              resp, start_ns, end_ns, cwd, evidence, with_start=fn is None)
+        elif ty == "FunctionCallOutput":
+            # * Fonction de l'application Codex (codex_app : send_message_to_thread, automation_update, create_thread)
+            #   sans ligne function_call : l'element ne porte que sa sortie, pas ses arguments.
+            ns_name, name = item.get("namespace"), str(item.get("name") or "?")
+            tool = ((f"{ns_name}__{name}" if str(ns_name).startswith("mcp__") else f"{ns_name}.{name}") if ns_name else name)
+            out = item.get("output")
+            text = out if isinstance(out, str) else json.dumps(out, ensure_ascii=False)
+            err, _j = _function_error(text, tool)
+            resp_f: dict[str, Any] = {"output": text, "success": err is None}
+            if err is not None:
+                resp_f["error"] = err
+            evidence["status_basis"] = "function output (no exit status): error text or none"
+            size = len(text)
+            self._tool_events(iid, tool, None, resp_f, start_ns, end_ns, cwd, evidence, with_start=fn is None)
         elif ty == "Extension":
             kind = str(item.get("kind") or "extension")
             action = item.get("action") if isinstance(item.get("action"), dict) else {}
@@ -698,6 +1018,40 @@ class RolloutReader:
         elif parent is None:
             # * Action sans exec ouvert (fin differee d'un processus, appel direct) : consommee avec la reponse suivante.
             self.st["to_consume"].append([iid, size, "item"])
+
+    def _on_collab_item(self, item: dict[str, Any], p: dict[str, Any], ns: int | None) -> None:
+        """Element CollabAgentToolCall : 818 fois sur 831, meme identifiant qu'un appel de fonction de collaboration deja
+        importe ; il le complete (destinataires, statut). Sinon, appel de collaboration fait depuis un script."""
+        iid = item.get("id")
+        if not isinstance(iid, str):
+            self._skip("element CollabAgentToolCall sans identifiant")
+            return
+        receivers = [str(x) for x in (item.get("receiver_thread_ids") or [])][:20]
+        known = iid in self.st["open_calls"] or iid in self.st.setdefault("fn_closed", [])
+        if known:
+            ev = S.empty_event()
+            ev.update({"client": CLIENT_CODEX, "phase": S.PHASE_OBSERVATION, "session_id": self.session_id, "call_id": iid,
+                       "hook_event_name": "rollout_collab", "tool_name": f"collaboration.{item.get('tool')}"})
+            ev["evidence"].update({"collab_receivers": receivers, "collab_status": str(item.get("status") or "")[:40] or None,
+                                   "collab_sender": item.get("sender_thread_id")})
+            self._finish(ev, ns, self._event_id("collab", iid))
+            return
+        parent = self._parent_exec()
+        tool = f"collaboration.{item.get('tool')}"
+        resp = {"output": json.dumps({"status": item.get("status"), "receivers": receivers}),
+                "success": item.get("status") in (None, "completed")}
+        tin = {"receiver_thread_ids": receivers, **{k: item.get(k) for k in ("model", "reasoning_effort", "prompt")
+                                                    if isinstance(item.get(k), str)}}
+        self._tool_events(iid, tool, tin, resp, ns, ns, None,
+                          {"rollout_item": "CollabAgentToolCall", "exec_call_id": parent, "collab_receivers": receivers,
+                           "collab_sender": item.get("sender_thread_id"), "collab_status": str(item.get("status") or "")[:40] or None})
+        if isinstance(item.get("prompt"), str) and item["prompt"].strip():
+            self._message("agent_instruction", item["prompt"], ns, ("instruction", iid, "prompt"),
+                          {"message_id": iid, "tool": tool, "target": ",".join(receivers)[:120] or None})
+        if parent is not None and parent in self.st["open_execs"]:
+            self.st["open_execs"][parent]["actions"].append([iid, len(resp["output"])])
+        elif parent is None:
+            self.st["to_consume"].append([iid, len(resp["output"]), "item"])
 
     def _on_function_call(self, p: dict[str, Any], ns: int | None) -> None:
         cid = p.get("call_id")
@@ -721,7 +1075,7 @@ class RolloutReader:
                                   {"message_id": cid, "tool": tool, "target": str(args.get("target") or args.get("task_name") or "")[:120] or None})
                     break
 
-    def _on_function_output(self, p: dict[str, Any], ns: int | None) -> None:
+    def _on_function_output(self, p: dict[str, Any], ns: int | None, extra: dict[str, Any] | None = None) -> None:
         cid = p.get("call_id")
         if not isinstance(cid, str):
             return
@@ -736,27 +1090,44 @@ class RolloutReader:
             return     # * fin deja donnee par l'item MCP de meme identifiant (statut, duree)
         # * Fonctions de collaboration et d'attente : sortie vide ou JSON, aucun code de sortie. Sans indice
         #   d'erreur, l'appel a abouti ; un texte d'erreur court (agent inconnu, cible invalide) en est un.
-        try:
-            j = json.loads(text) if text.lstrip().startswith("{") else None
-        except ValueError:
-            j = None
-        err = None
-        if isinstance(j, dict) and isinstance(j.get("error"), str):
-            err = j["error"]
-        elif j is None and info["tool"] != "wait" and _FN_ERROR_RE.search(text[:300]):
-            # * `wait` rend la sortie d'une cellule exec encore en cours : un mot d'erreur y vient de la commande
-            #   attendue, pas de l'attente ; son statut reste celui de l'attente (aboutie).
-            err = text
+        err, j = _function_error(text, info["tool"])
         resp: dict[str, Any] = {"output": text, "success": err is None}
         if err is not None:
             resp["error"] = err
         evidence: dict[str, Any] = {"rollout_item": "function_call", "status_basis": "function output (no exit status): error text or none"}
         if isinstance(j, dict) and j.get("timed_out") is True:
             evidence["timed_out"] = True   # * attente arrivee a echeance : normal, pas un echec
+        evidence.update(extra or {})
         self._tool_events(cid, info["tool"], self._args_cache.pop(cid, None), resp, None, ns, None, evidence, with_start=False)
 
     # ------------------------------------------------------------------ tokens
-    def _on_usage(self, p: dict[str, Any], ns: int | None) -> None:
+    def _on_token_count(self, p: dict[str, Any], ns: int | None) -> None:
+        """Releve `token_count` : seule mesure des tokens dans les anciens rollouts (juin a aout). Quand le fil a des
+        `token_usage_record` (qui viennent toujours en premier : 189 fichiers sur 189), c'est la meme mesure : doublon.
+        Un releve dont le cumul n'a pas bouge (limites de debit seulement) n'est pas une reponse nouvelle."""
+        info = p.get("info") if isinstance(p.get("info"), dict) else {}
+        if not isinstance(info.get("last_token_usage"), dict):
+            self._dup("token_count sans usage (limites de debit seulement, non importees)")
+            return
+        if self.st.get("record_seen"):
+            self._dup("token_count (meme mesure que token_usage_record ; limites de debit non importees)")
+            return
+        total = _usage_numbers(info.get("total_token_usage"))
+        key = [total[k] for k in ("input_tokens", "cached_input_tokens", "output_tokens")]
+        if key == self.st.get("tc_last_total"):
+            self._dup("token_count repete (cumul inchange)")
+            return
+        self.st["tc_last_total"] = key
+        self.st["usage_format"] = "token_count"
+        self._on_usage({"usage": info.get("last_token_usage"), "response_id": f"tc-{self.st['responses']}"}, ns, fmt="token_count")
+
+    def _on_usage(self, p: dict[str, Any], ns: int | None, fmt: str = "token_usage_record") -> None:
+        if fmt == "token_usage_record":
+            self.st["record_seen"] = True
+            if self.st.get("usage_format") == "token_count":
+                # ! Releves token_count comptes avant le premier token_usage_record : jamais vu (189 fichiers sur 189
+                #   commencent par un token_usage_record) ; le total du fil est marque "mixte" pour verification.
+                self.st["usage_format"] = "mixte"
         u = _usage_numbers(p.get("usage"))
         rid = p.get("response_id") if isinstance(p.get("response_id"), str) else f"resp-{self.st['responses']}"
         idx = self.st["responses"]
@@ -768,9 +1139,12 @@ class RolloutReader:
         rev.update({"client": CLIENT_CODEX, "phase": S.PHASE_USAGE, "session_id": self.session_id, "turn_id": self.st.get("turn_id"),
                     "hook_event_name": "rollout_response_usage", "model": self.st.get("model"),
                     "usage": {"scope": "response", "source": SOURCE, "thread_id": self.meta.get("thread_id"), "agent_id": self.agent_id,
-                              "index": idx, "response_id": rid, "window": self.st.get("window", 0),
+                              "format": fmt, "index": idx, "response_id": rid, "window": self.st.get("window", 0),
                               "consumed_outputs": len(self.st["to_consume"]), "emitted_calls": len(self.st["pending_emit"]),
                               **{k: u[k] for k in ("input_tokens", "cached_input_tokens", "output_tokens", "reasoning_output_tokens")}}})
+        reasoning = self.st.pop("reasoning_acc", None)
+        if reasoning:
+            rev["usage"]["reasoning"] = reasoning
         self._finish(rev, ns, self._event_id("response-usage", idx, rid))
         for k, v in u.items():
             self.st["totals"][k] = self.st["totals"].get(k, 0) + v
@@ -825,6 +1199,7 @@ class RolloutReader:
         self._finish(ev, ns, self._event_id("usage", call_id, consumer))
 
     def session_usage_event(self) -> None:
+        self._src = None     # * total du fil : aucune ligne source unique
         t = dict(self.st["totals"])
         if not self.st["responses"]:
             return
@@ -832,6 +1207,7 @@ class RolloutReader:
         ev.update({"client": CLIENT_CODEX, "phase": S.PHASE_USAGE, "session_id": self.session_id, "hook_event_name": "rollout_usage",
                    "model": self.st.get("model"),
                    "usage": {"scope": "thread", "source": SOURCE, "thread_id": self.meta.get("thread_id"), "agent_id": self.agent_id,
+                             "format": self.st.get("usage_format") or "token_usage_record",
                              "requests": self.st["responses"], "windows": self.st.get("window", 0) + 1,
                              "messages": self.st.get("messages", 0), "execs_without_actions": self.st.get("execs_without_actions", 0),
                              **t}})
@@ -844,6 +1220,23 @@ class RolloutReader:
 
 _NO_END = object()
 _FN_ERROR_RE = re.compile(r"(?i)\b(?:error|erreur|failed|echec|unknown agent|no such agent|not found|invalid|refused|denied)\b")
+ITEM_MATCH_LINES = 10          # * element et ligne de meme texte : 3 lignes d'ecart au plus (27 991 paires, 2026-09-19)
+ITEM_IDLE_NS = 600_000_000_000  # * fil sans ligne nouvelle depuis 10 min : un element encore en attente n'aura pas de double
+
+
+def _function_error(text: str, tool: str) -> tuple[str | None, Any]:
+    """(erreur, objet JSON) d'une sortie de fonction sans code de sortie : champ `error` d'un objet JSON, sinon texte
+    d'erreur court. `wait` rend la sortie d'une cellule exec encore en cours : un mot d'erreur y vient de la commande
+    attendue, pas de l'attente ; son statut reste celui de l'attente (aboutie)."""
+    try:
+        j = json.loads(text) if text.lstrip().startswith("{") else None
+    except ValueError:
+        j = None
+    if isinstance(j, dict) and isinstance(j.get("error"), str):
+        return j["error"], j
+    if j is None and tool != "wait" and _FN_ERROR_RE.search(text[:300]):
+        return text, j
+    return None, j
 
 
 # --------------------------------------------------------------------------- import
@@ -884,6 +1277,8 @@ def import_rollout(store: EventStore, cfg: dict[str, Any], key: bytes, path: str
         if meta:
             reader.st["meta"] = meta
     start = int(reader.st.get("offset", 0))
+    if start and "line_no" not in reader.st:
+        reader.st["line_no"] = _count_lines(path, start)    # * etat anterieur a la source par ligne : compte une fois
     limit = size if not max_bytes else min(size, start + max_bytes)
     pos = start
     with open(path, "rb") as fh:
@@ -897,12 +1292,29 @@ def import_rollout(store: EventStore, cfg: dict[str, Any], key: bytes, path: str
             summary["lines"] += 1
     reader.st["offset"] = pos
     summary["bytes"] = pos - start
+    if reader.st.get("pending_items"):
+        # * Fichier lu jusqu'au bout et sans ligne nouvelle depuis 10 min : l'element n'aura pas de double.
+        idle = pos >= size and time.time_ns() - int(reader.st.get("last_ns") or 0) > ITEM_IDLE_NS
+        reader.flush_items(force=idle)
     if summary["lines"]:
         reader.session_usage_event()
     summary["events"] = len(reader.events)
     summary["session_id"] = reader.session_id
     summary["agent_id"] = reader.agent_id
     return reader.st, reader.events, summary
+
+
+def _count_lines(path: str, limit: int) -> int:
+    n = 0
+    with open(path, "rb") as fh:
+        remaining = limit
+        while remaining > 0:
+            chunk = fh.read(min(remaining, 8_388_608))
+            if not chunk:
+                break
+            n += chunk.count(b"\n")
+            remaining -= len(chunk)
+    return n
 
 
 def write_events(store: EventStore, session_id: str | None, events: list[dict[str, Any]]) -> str | None:
@@ -917,9 +1329,9 @@ def write_events(store: EventStore, session_id: str | None, events: list[dict[st
     return path
 
 
-def pending_rollouts(home: str, paths: list[str]) -> list[str]:
-    """Rollouts dont la taille depasse ce qui a deja ete lu (ou jamais lus)."""
-    files = load_state(home).get("files", {})
+def pending_with_sizes(state: dict[str, Any], paths: list[str]) -> list[tuple[str, int]]:
+    """(rollout, taille) des fichiers dont la taille differe de ce qui a deja ete lu (ou jamais lus)."""
+    files = state.get("files", {}) or {}
     out = []
     for p in paths:
         try:
@@ -928,8 +1340,13 @@ def pending_rollouts(home: str, paths: list[str]) -> list[str]:
             continue
         prev = files.get(os.path.normcase(os.path.abspath(p))) or {}
         if size != int(prev.get("offset", -1)):
-            out.append(p)
+            out.append((p, size))
     return out
+
+
+def pending_rollouts(home: str, paths: list[str]) -> list[str]:
+    """Rollouts dont la taille depasse ce qui a deja ete lu (ou jamais lus)."""
+    return [p for p, _ in pending_with_sizes(load_state(home), paths)]
 
 
 def merge_segments(store: EventStore, session_id: str | None, max_segments: int = 30) -> int:
@@ -1076,7 +1493,8 @@ class LiveDigest:
         if self.calls:
             parts.append(", ".join(f"{who} +{k}" for who, k in sorted(self.calls.items(), key=lambda kv: -kv[1])))
         for count, label in ((self.user_messages, "message(s) de l'utilisateur"), (self.turns_ended, "tour(s) termine(s)"),
-                             (self.interrupts, "interruption(s)"), (self.compactions, "compaction(s)")):
+                             (self.interrupts, "interruption(s)"),
+                             (self.compactions, "ligne(s) compacted (historique remplace)")):
             if count:
                 parts.append(f"{count} {label}")
         if self.spawned:

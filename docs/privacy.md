@@ -73,8 +73,16 @@ les chemins conserves. Les chemins relatifs au projet sont stockes relatifs.
   verifier une hypothese de contenu, comme pour les empreintes. Commentaires de l'agent :
   en plus, des categories fixes de raison annoncee (`retry`, `wait`, `unavailable`...), reconnues par motifs
   dans le texte, qui n'est pas conserve. `AGENTS.md` et
-  skills injectes : longueur et empreinte. L'etat de lecture (`<home>/import/`) ne contient que
-  des offsets, des identifiants et des compteurs.
+  skills injectes : longueur et empreinte. Reglages du fil (modele, effort et resume du raisonnement, politique
+  d'approbation, niveau de service, personnalite, mode de collaboration) : valeurs courtes en clair. Raisonnement :
+  tailles seulement (resume, contenu chiffre, texte brut), jamais le texte. Recherches web et recherches d'outils :
+  ni requete ni adresse en clair (empreinte de l'entree seulement), type d'action et nombres de resultats. Image
+  generee : taille seulement. Mode vocal : type, role, identifiants, longueur du texte transcrit. Source de chaque
+  evenement : nom du rollout, numero de ligne, octet. L'etat de lecture (`<home>/import/`) ne contient que
+  des offsets, des identifiants, des compteurs et, pour reconnaitre un meme message ecrit deux fois par Codex,
+  les empreintes HMAC courtes (16 caracteres) des 20 derniers textes de messages de chaque fil et les
+  marqueurs deja calcules (longueurs, empreintes) des elements de message en attente de rapprochement ;
+  jamais un texte.
 - Export detaille (`agentwatch inspect`) : sur demande explicite seulement, relit les rollouts d'une session et
   ecrit un fichier LOCAL lisible (consignes, messages, arguments, scripts, sorties, erreurs), secrets masques par
   les memes motifs que la collecte, textes bornes. Ce detail n'entre jamais dans le stockage d'AgentWatch, n'est

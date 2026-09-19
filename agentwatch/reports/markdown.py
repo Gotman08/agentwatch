@@ -229,7 +229,7 @@ def render_markdown(report: dict[str, Any]) -> str:
               f"- Usage de tokens : {st['usage']['status']} ({st['usage']['note']})", ""]
     threads = st["usage"].get("threads") or []
     if threads:
-        lines += ["| Fil | Agent | Reponses | Tokens | Entree (dont en cache) | Sortie (dont raisonnement) | Fenetres de contexte |",
+        lines += ["| Fil | Agent | Requetes du modele (demandes de compaction comprises) | Tokens | Entree (dont en cache) | Sortie (dont raisonnement) | Fenetres de contexte (lignes compacted + 1) |",
                   "|---|---|---|---|---|---|---|"]
         for t in threads:
             who = "principal" if not t.get("agent_id") else f"{t.get('agent_nickname') or '?'} ({t.get('agent_type') or 'sous-agent'})"

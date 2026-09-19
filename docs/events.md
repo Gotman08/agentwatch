@@ -14,7 +14,7 @@ champ ajoute en 1.1, `content_fingerprint`, vaut alors `null`).
 | `model` | str/null | tel que fourni par le client (Codex : sur chaque evenement ; Claude Code : `SessionStart` seulement) |
 | `session_id`, `turn_id`, `agent_id`, `agent_type` | str/null | identifiants du client |
 | `call_id` | str/null | `tool_use_id` |
-| `phase` | str | `start`, `end`, `failure`, `interrupt`, `observation`, `usage` (usage de session importe : un marqueur, jamais un appel), `session_start`, `session_end`, `turn_start`, `turn_end`, `compact_start`, `compact_end`, `subagent_start`, `subagent_stop`, `message` (import de rollout : role, longueurs, empreintes ; jamais le texte), `unknown` |
+| `phase` | str | `start`, `end`, `failure`, `interrupt`, `observation`, `usage` (usage de session importe : un marqueur, jamais un appel), `session_start`, `session_end`, `turn_start`, `turn_end`, `compact_start`, `compact_end`, `subagent_start`, `subagent_stop`, `message` (import de rollout : role, longueurs, empreintes ; jamais le texte), `activity` (import de rollout : fait de session sans appel ni message, `session_meta.kind` = `settings`, `subagent_activity`, `reasoning`, `compaction_item`, `realtime` ; types, identifiants, tailles), `unknown` |
 | `hook_event_name` | str | nom d'origine (`PreToolUse`, ...) |
 | `event_time` | str/null | horodatage fourni par le client (aucun des deux clients n'en fournit en V1) |
 | `received_time`, `received_time_ns` | str, int | horodatage de reception par le hook (base d'ordre) |
@@ -137,10 +137,13 @@ Sans effet sur Codex : lecture seule de `~/.codex/sessions/AAAA/MM/JJ/rollout-*.
 octets deja lus et contexte en cours ; seules les lignes completes nouvelles sont lues), en priorite
 d'arriere-plan (processeur et disque sous Windows). Faite automatiquement avant `sessions`, `report` et
 `trends` (`rollouts.auto_import`, fenetre `rollouts.days` = 7 jours) ; `--follow` suit en direct.
-Un fil repris ecrit dans le rollout de son jour de creation : la fenetre porte sur la date de
-modification, pas sur le dossier. Une session touchee dans la fenetre est lue en entier : ses premiers
-sous-agents, termines, sont souvent dans des fichiers plus anciens (constate le 2026-09-19 : 41 fils sur 71
-d'une session commencee 9 jours plus tot).
+Un fil repris ecrit dans le rollout de son jour de creation : la fenetre porte sur l'activite du fichier,
+pas sur le dossier. Sous Windows, la date de modification d'un rollout que Codex garde ouvert reste celle de
+sa creation (constate le 2026-09-19 : 16:36:20 alors que Codex ecrivait a 17:18:49) : un fichier plus ancien
+que la fenetre y entre quand meme s'il a grandi depuis la derniere lecture, si sa derniere ligne lue est
+recente ou, jamais lu, si l'heure de sa derniere ligne ecrite l'est (fin du fichier seulement). Une session
+touchee dans la fenetre est lue en entier : ses premiers sous-agents, termines, sont souvent dans des
+fichiers plus anciens (constate le 2026-09-19 : 41 fils sur 71 d'une session commencee 9 jours plus tot).
 
 Format observe (codex-cli 0.153.4 a 0.155.0-alpha.9.2, rollouts du 2026-09-14 au 2026-09-19) : une
 ligne JSON `{timestamp, ordinal, type, payload}`.
@@ -150,13 +153,38 @@ ligne JSON `{timestamp, ordinal, type, payload}`.
 | `session_meta` du fil (le premier ; un sous-agent recopie ensuite celui de son parent) | `session_start` (fil principal) ou `subagent_start` (parent, role, surnom, `agent_path`, profondeur) |
 | `turn_context` | modele, dossier et `turn_id` courants |
 | `event_msg/task_started`, `task_complete`, `turn_aborted` | `turn_start`, `turn_end` (duree, delai du premier token), `interrupt` (raison) |
-| `compacted` | `compact_end` (numero de fenetre, rang de la reponse ou elle tombe `response_index`, entree de la derniere reponse avant elle `input_tokens_before`) : nouvelle epoque de contexte de CET agent (les epoques sont propres a chaque agent : la compaction d'un sous-agent ne vide pas le contexte du fil principal) |
-| `event_msg/item_completed` : `CommandExecution`, `McpToolCall`, `FileChange`, `ImageView`, `Extension` | un appel (debut a `started_at_ms`, fin a `completed_at_ms`) : `Bash`, `mcp__<serveur>__<outil>`, `apply_patch`, `view_image`, `web_search` |
+| `compacted` | `compact_end` (numero de fenetre, rang de la reponse ou elle tombe `response_index`, entree de la derniere reponse avant elle `input_tokens_before`, `compaction_response_id`, taille de l'historique de remplacement `replacement_items`) : Codex a remplace l'historique ; nouvelle epoque de contexte de CET agent (les epoques sont propres a chaque agent : la compaction d'un sous-agent ne vide pas le contexte du fil principal). Seule cette ligne etablit le remplacement de l'historique |
+| `event_msg/item_completed` : `CommandExecution`, `McpToolCall`, `FileChange`, `ImageView`, `Extension`, `WebSearch` | un appel (debut a `started_at_ms`, fin a `completed_at_ms`) : `Bash`, `mcp__<serveur>__<outil>`, `apply_patch`, `view_image`, `web_search` (requete jamais conservee ; `evidence.web_action` : `search`, `open_page`, `find_in_page`, `other` ; resultats : taille et empreinte). Un element `WebSearch` de meme identifiant qu'un appel de fonction `web.run` (210 fois sur 210, avant ou apres sa sortie) ne fait pas un second appel : il le complete (`web_action`, nombre de resultats `web_results`) sans changer son debut, sa fin ni son statut, qui viennent de la fonction |
+| `event_msg/item_completed:FunctionCallOutput` | un appel `codex_app.<nom>` (`send_message_to_thread`, `automation_update`, `create_thread` : fonctions de l'application Codex sans ligne `function_call`) : sortie seulement (taille, empreinte, statut par texte d'erreur), pas d'arguments |
+| `event_msg/item_completed:CollabAgentToolCall` | meme identifiant qu'un appel de fonction deja lu (818 fois sur 831 au 2026-09-19) : le complete (`evidence.collab_receivers`, `collab_status`, `collab_sender`), pas de second appel ; sinon (appel fait depuis un script `exec`) : un appel `collaboration.<outil>` et, s'il porte une consigne (`prompt`), un marqueur `message` de role `agent_instruction` |
 | `response_item/function_call` et `function_call_output` | un appel : `collaboration.send_message`, `collaboration.spawn_agent`, `wait`, ... ; un appel de fonction MCP et son item `McpToolCall` de meme identifiant forment un seul appel |
-| `token_usage_record` | usage de la reponse (voir ci-dessous) ; plus un releve `usage` de portee `response` par reponse : rang, identifiant, fenetre de contexte, entree (dont cache), sortie (dont raisonnement), sorties consommees et appels emis. Ce releve n'entre pas dans les totaux (ceux des fils font foi) : il sert au cout de residence en contexte |
+| `response_item/tool_search_call` et `tool_search_output` | un appel `tool_search` (requete jamais conservee ; `evidence.result_count` : groupes d'outils rendus, `result_tools` : outils qu'ils contiennent ; la taille entiere des definitions rendues compte pour la consommation) |
+| `response_item/web_search_call`, `image_generation_call` | meme identifiant que l'element `WebSearch` ou `Extension` (`image_gen.generation`) ecrit juste avant (32 fois sur 32 au 2026-09-19) : doublon reconnu, pas un second appel ; sinon un appel `web_search` (`web_action`, adresse et requete en empreinte seulement) ou `image_generation` (taille de l'image `image_chars`) ; outils heberges par le fournisseur du modele : resultat consomme dans la meme reponse, sans part de tokens ; statut `generating` d'une image rendue : pas un echec |
+| `token_usage_record` | usage de la reponse (voir ci-dessous) ; plus un releve `usage` de portee `response` par reponse : rang, identifiant, fenetre de contexte, entree (dont cache), sortie (dont raisonnement), sorties consommees et appels emis, `format`, et `reasoning` (voir plus bas). Ce releve n'entre pas dans les totaux (ceux des fils font foi) : il sert au cout de residence en contexte. Le releve designe par `compaction_response_id` d'une ligne `compacted` est une DEMANDE de compaction (requete au modele pour resumer l'historique : des tokens reels, pas une reponse a la conversation), comptee a part par les rapports ; la ligne `compacted`, et elle seule, etablit que l'historique a ete remplace |
+| `event_msg/token_count` | fil sans aucun `token_usage_record` (rollouts de juin a aout) : seule mesure, releve `usage` de portee `response` au `format` `token_count` (`last_token_usage`) ; un releve dont le cumul du fil n'a pas bouge (limites de debit seulement : 822 fois) n'est pas une reponse. Fil avec des `token_usage_record` (qui viennent toujours en premier : 189 fichiers sur 189) : meme mesure, doublon reconnu. Les limites de debit ne sont pas importees. Les demandes de compaction ne sont pas mesurees dans ce format |
+| `response_item/reasoning` et `event_msg/item_completed:Reasoning` | pas d'evenement par bloc (100 000 blocs) : tailles rattachees au releve `usage` de la reponse qui suit, `usage.reasoning` = `blocks`, `summary_chars`, `encrypted_chars` (lignes response_item), `item_blocks`, `item_summary_chars`, `item_raw_chars` (elements), `lines` (lignes sources, 20 au plus, puis `lines_more`). Un raisonnement sans releve apres lui dans le tour : marqueur `activity` de sorte `reasoning` a la fin du tour. Jamais le texte |
+| `event_msg/thread_settings_applied` | marqueur `activity` de sorte `settings` : modele, fournisseur, niveau de service, effort et resume du raisonnement, politique d'approbation, relecteur, personnalite, mode de collaboration (valeurs courtes, en clair) ; le modele devient le modele courant |
+| `inter_agent_communication_metadata` | `trigger_turn` (le message suivant entre agents declenche-t-il un tour) sur le marqueur `message` de role `agent` qui suit |
+| `realtime_item` | marqueur `activity` de sorte `realtime` (mode vocal) : type (`transcript_segment`, `bem_item_promoted`, ouverture, fermeture), role, issue, identifiants, longueur du texte transcrit (jamais le texte) |
 | `response_item/message`, `agent_message`, arguments `message` des fonctions de collaboration | marqueur `message` : role, identifiant du message, tour, longueur, empreintes et longueurs des paragraphes ; pour un message `user`, blocs injectes par Codex (`AGENTS.md`, balises) exclus et comptes (`injected_chars`, `injected_blocks`) ; pour un message `user`, `agent` ou une consigne a un sous-agent, `paragraph_sigs` : une signature de similarite par paragraphe (MinHash, 32 valeurs de 16 bits, sur les mots sans accents tronques a 6 lettres, hachage cle), pour reconnaitre une consigne reformulee ; pour un message `assistant`, `declared` : categories de raison annoncees (`retry`, `wait`, `unavailable`, `in_progress`, `verify`, `after_change`, `fix`, `explore`), reconnues par motifs |
 | `world_state` | marqueur `message` de role `context` : longueur, empreinte et taille d'`AGENTS.md` et des skills injectes |
+| `event_msg/item_completed:AgentMessage`, `UserMessage` | le plus souvent le meme message qu'une ligne `response_item` voisine (27 991 fois sur 29 705 au 2026-09-19, 3 lignes d'ecart au plus, avant ou apres ; texte identique ou inclus) : doublon reconnu. Sinon, seule trace du message (1 279 messages d'agent, dont 1 221 de sous-agents) : marqueur `message` (`origin` = `element AgentMessage`) rattache a la ligne de l'element, apres 10 lignes sans ligne de meme texte ou quand le fichier, lu jusqu'au bout, n'a plus ete ecrit depuis 10 min ; en attendant, l'element est "en attente de rapprochement" (empreinte et longueurs seulement dans l'etat) |
 | `event_msg/item_completed:SubAgentActivity` (`completed`, `interrupted`) | `subagent_stop` |
+| `event_msg/item_completed:SubAgentActivity` (`started`, `interacted`) | marqueur `activity` de sorte `subagent_activity` (fil enfant, activite, `agent_path`) : vue du parent ; pas un `subagent_start` (celui-ci vient du `session_meta` du fil enfant) |
+| `event_msg/item_completed:ContextCompaction` | marqueur `activity` de sorte `compaction_item` (identifiant seulement ; sans statut, il n'etablit rien a lui seul) |
+| tout autre type de ligne, d'evenement ou d'element | aucun evenement ; compte par type dans l'etat (`uninterpreted`) et affiche par `doctor` : jamais perdu en silence |
+
+Source de chaque evenement : `evidence.source` = `{file, line, offset}` (nom du rollout, numero de ligne a partir
+de 1, octet de debut), les memes numeros `L<n>` que l'export `inspect`. Un marqueur la porte dans `meta.source` ;
+un appel dans `evidence.source_start` (ligne qui l'ouvre), `source_end` (ligne qui le ferme : resultat, statut,
+duree) et `source_observations` (releve de tokens de la reponse qui a consomme sa sortie, element complementaire ;
+5 au plus). Seul le total d'un fil (`usage` de portee `thread`) n'a pas de ligne unique. Un etat de lecture
+anterieur aux numeros de ligne est complete une fois (comptage des lignes deja lues).
+
+Trois etats distincts, affiches par `doctor` : importe (lu et traduit en evenements), en attente (octets pas
+encore lus, avec le retard entre la derniere ligne ecrite par Codex et la derniere lue ; elements de message en
+attente de rapprochement) et lu mais non interprete (compte par type). Les doublons reconnus (`duplicates` :
+meme fait deja importe sous une autre forme, ou element vide) ne sont pas des pertes.
 
 - Le modele appelle `exec` (du code) ou une fonction ; les actions imbriquees d'un `exec` portent un
   identifiant `exec-<uuid>`, le meme que `tool_use_id` dans les hooks Codex. `exec` lui-meme n'est pas

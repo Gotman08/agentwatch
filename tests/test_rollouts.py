@@ -216,8 +216,11 @@ class RolloutImportTests(unittest.TestCase):
         import os
         import time as _t
         root = self._write(self._main())
-        child = self._write(RolloutBuilder(CHILD, parent=ROOT, nickname="Sagan").meta().turn("turn-c"))
-        other = self._write(RolloutBuilder("01a0bbbb-0000-7000-8000-000000000009").meta().turn("turn-o"))
+        old_child, old_other = RolloutBuilder(CHILD, parent=ROOT, nickname="Sagan"), RolloutBuilder("01a0bbbb-0000-7000-8000-000000000009")
+        for b in (old_child, old_other):
+            b.t -= timedelta(days=20)        # * fils anciens : date du fichier ET heure des lignes
+        child = self._write(old_child.meta().turn("turn-c"))
+        other = self._write(old_other.meta().turn("turn-o"))
         old = _t.time() - 20 * 86400
         for p in (child, other):
             os.utime(p, (old, old))
@@ -225,6 +228,55 @@ class RolloutImportTests(unittest.TestCase):
         self.assertEqual(got, {root.name, child.name})               # * le fil ancien de la session, pas l'autre session
         self.assertEqual({Path(p).name for p in R.list_rollouts(self.cfg, 7, whole_sessions=False)}, {root.name})
         self.assertEqual(len(R.list_rollouts(self.cfg, None)), 3)
+
+    def test_window_keeps_old_files_still_written(self) -> None:
+        # ! Sous Windows, la date de modification d'un rollout que Codex garde ouvert reste celle de sa creation
+        #   (constate le 2026-09-19 : 16:36:20 alors que Codex ecrivait a 17:18:49). Le contenu et la croissance du
+        #   fichier font foi, pas cette date.
+        import os
+        import time as _t
+        now = datetime.now(timezone.utc)
+        live, stale = RolloutBuilder("01a0cccc-0000-7000-8000-000000000003"), RolloutBuilder("01a0dddd-0000-7000-8000-000000000004")
+        live.t, stale.t = now - timedelta(minutes=5), now - timedelta(days=20)
+        live_p = self._write(live.meta().turn("turn-l", "Toujours en cours."))
+        stale_p = self._write(stale.meta().turn("turn-s", "Termine depuis longtemps."))
+        old = _t.time() - 20 * 86400
+        for p in (live_p, stale_p):
+            os.utime(p, (old, old))
+        # * jamais lu : la derniere ligne ecrite fait foi
+        self.assertEqual({Path(p).name for p in R.list_rollouts(self.cfg, 7, whole_sessions=False)}, {live_p.name})
+        # * deja lu jusqu'au bout, date figee, derniere ligne ancienne : hors fenetre
+        R.import_rollouts(self.store, self.cfg, [str(stale_p)])
+        state = R.load_state(str(self.home))
+        self.assertNotIn(stale_p.name, {Path(p).name for p in R.list_rollouts(self.cfg, 7, whole_sessions=False, state=state)})
+        # * Codex y ecrit de nouveau, la date du fichier reste figee : il a grandi depuis la lecture, il est repris
+        stale.lines = []
+        stale.add("event_msg", {"type": "task_started", "turn_id": "turn-s2", "model_context_window": 400000})
+        with open(stale_p, "a", encoding="utf-8", newline="\n") as fh:
+            fh.write(stale.text())
+        os.utime(stale_p, (old, old))
+        self.assertIn(stale_p.name, {Path(p).name for p in R.list_rollouts(self.cfg, 7, whole_sessions=False, state=state)})
+        out = cli._import_rollouts(self.home, self.cfg, self.store, days=7)
+        self.assertEqual((out["errors"], out["lines"] >= 1), ([], True))
+        self.assertEqual(R.pending_rollouts(str(self.home), [str(stale_p)]), [])
+
+    def test_activity_of_codex_comes_from_the_last_written_line(self) -> None:
+        # * Sante de la collecte : l'activite de Codex vient de la derniere ligne ecrite, pas de la date figee.
+        import os
+        import time as _t
+        from agentwatch.collector import health as H
+        now = datetime.now(timezone.utc)
+        day = self.sessions / now.astimezone().strftime("%Y") / now.astimezone().strftime("%m") / now.astimezone().strftime("%d")
+        day.mkdir(parents=True, exist_ok=True)
+        b = RolloutBuilder("01a0eeee-0000-7000-8000-000000000005")
+        b.t = now - timedelta(minutes=3)
+        p = day / f"rollout-x-{b.thread_id}.jsonl"
+        p.write_text(b.meta().turn("turn-a", "En cours.").text(), encoding="utf-8", newline="\n")
+        old = _t.time() - 3 * 86400
+        os.utime(p, (old, old))
+        activity = H.client_activity_mtime("codex", self.cfg)
+        self.assertIsNotNone(activity)
+        self.assertGreater(activity or 0, _t.time() - 600)
 
     def test_per_response_usage_compaction_index_and_signatures(self) -> None:
         # * Matiere premiere du cout de residence en contexte et des consignes reformulees (2026-09-19).
@@ -419,7 +471,7 @@ class RolloutImportTests(unittest.TestCase):
         R.import_rollouts(self.store, self.cfg, [str(p)], sink=digest.feed)
         self.assertTrue(digest.active())
         line = digest.line()
-        for part in ("+1 appel(s)", "principal +1", "1 tour(s) termine(s)", "1 compaction(s)"):
+        for part in ("+1 appel(s)", "principal +1", "1 tour(s) termine(s)", "1 ligne(s) compacted (historique remplace)"):
             self.assertIn(part, line)
         self.assertNotIn("+0 tokens", line)
 
@@ -438,7 +490,7 @@ class RolloutImportTests(unittest.TestCase):
         buf = io.StringIO()
         with redirect_stdout(buf), redirect_stderr(io.StringIO()):
             self.assertEqual(cli.main(["--home", str(self.home), "report", "--session", ROOT[:12], "--format", "markdown"]), 0)
-        self.assertIn("| Fil | Agent | Reponses |", buf.getvalue())
+        self.assertIn("| Fil | Agent | Requetes du modele (demandes de compaction comprises) |", buf.getvalue())
 
     def test_segments_are_merged_beyond_the_limit(self) -> None:
         b = self._main()

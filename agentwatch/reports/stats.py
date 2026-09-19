@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import bisect
 from collections import Counter, defaultdict
 from statistics import median
 from typing import Any
@@ -155,6 +156,47 @@ _ROLLOUT_SOURCE = "codex:rollout"
 _ROLLOUT_KEYS = ("requests", "input_tokens", "cached_input_tokens", "output_tokens", "reasoning_output_tokens", "total_tokens")
 
 
+def compaction_request_ids(view: SessionView) -> set[str]:
+    """Identifiants des demandes de compaction (voir `compaction_requests`)."""
+    return set(compaction_requests(view))
+
+
+def compaction_requests(view: SessionView) -> dict[str, str]:
+    """Demandes de compaction -> base du lien avec la ligne `compacted`. Une demande de compaction est la requete au
+    modele par laquelle Codex resume l'historique ; son releve de tokens precede la ligne `compacted`. Elle consomme des
+    tokens reels mais ne repond pas a la conversation. Seule la ligne `compacted` etablit que l'historique a ete
+    remplace : une demande n'est jamais presentee comme une compaction reussie sans elle.
+
+    Base : "identifiant" (compaction_response_id ecrit par Codex dans la ligne `compacted`) ou "position" (imports
+    anterieurs sans cet identifiant : releve du meme fil qui precede la ligne `compacted` de 5 s au plus).
+
+    # * Constate le 2026-09-19 : 180 demandes sur 180 designees par leur identifiant sont le releve juste avant la ligne.
+    """
+    per_agent: dict[str, tuple[list[int], list[str]]] = {}
+    for m in view.markers:
+        u = m.meta.get("usage") if m.phase == S.PHASE_USAGE else None
+        if isinstance(u, dict) and u.get("scope") == "response" and u.get("response_id"):
+            ns_list, ids = per_agent.setdefault(m.agent_id or "main", ([], []))
+            ns_list.append(m.ns)
+            ids.append(str(u["response_id"]))
+    for ns_list, ids in per_agent.values():
+        order = sorted(range(len(ns_list)), key=lambda i: ns_list[i])
+        ns_list[:], ids[:] = [ns_list[i] for i in order], [ids[i] for i in order]
+    out: dict[str, str] = {}
+    for m in view.markers:
+        if m.phase != S.PHASE_COMPACT_END:
+            continue
+        rid = m.meta.get("compaction_response_id")
+        if isinstance(rid, str) and rid:
+            out[rid] = "identifiant"
+            continue
+        ns_list, ids = per_agent.get(m.agent_id or "main", ([], []))
+        i = bisect.bisect_right(ns_list, m.ns) - 1
+        if i >= 0 and m.ns - ns_list[i] <= 5_000_000_000:
+            out.setdefault(ids[i], "position")
+    return out
+
+
 def session_tokens(view: SessionView) -> dict[str, Any] | None:
     """Usage mesure de la session, None si aucun import.
 
@@ -199,8 +241,12 @@ def _usage_summary(view: SessionView) -> dict[str, Any]:
     transcript_calls = sum(1 for c in view.calls if isinstance(c.usage, dict) and c.usage.get("source") in (_TRANSCRIPT_SOURCE, _ROLLOUT_SOURCE))
     session = session_tokens(view)
     if session and session.get("source") == _ROLLOUT_SOURCE:
+        comp = compaction_requests(view)
+        by_id = sum(1 for b in comp.values() if b == "identifiant")
         return {
-            "status": (f"mesure depuis les rollouts Codex : {session['requests']} reponses du modele, {session['total_tokens']} tokens "
+            "status": (f"mesure depuis les rollouts Codex : {session['requests']} requetes du modele, dont "
+                       f"{len(comp)} demande(s) de compaction ({by_id} reliee(s) a leur ligne compacted par l'identifiant "
+                       f"ecrit par Codex, {len(comp) - by_id} par position), {session['total_tokens']} tokens "
                        f"(entree {session['input_tokens']} dont {session['cached_input_tokens']} en cache, soit "
                        f"{session['uncached_input_tokens']} non mis en cache ; sortie {session['output_tokens']} dont "
                        f"{session['reasoning_output_tokens']} de raisonnement) ; {len(session['threads'])} fil(s) ; "

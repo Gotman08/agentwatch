@@ -118,7 +118,8 @@ du hook au moment de `configure`, donc les hooks ne dependent pas de l'environne
   segments/<client>/<session>/segment-*.jsonl   apres `compact`
   diagnostics/*.json   incidents de collecte (compteur de pertes)
   install/<client>.json  version du client relevee lors de `configure`
-  import/codex-rollouts.json  etat de lecture des rollouts Codex (offsets, identifiants, compteurs)
+  import/codex-rollouts.json  etat de lecture des rollouts Codex (offsets, numeros de ligne, identifiants, compteurs
+                       des lignes non interpretees et des doublons reconnus, empreintes courtes des derniers messages)
   feedback.json        vos marques pertinent / faux positif
 ```
 
@@ -126,7 +127,7 @@ du hook au moment de `configure`, donc les hooks ne dependent pas de l'environne
 
 | Commande | Role |
 |---|---|
-| `doctor` | diagnostic complet, dont la sante de la collecte (panne silencieuse : interpreteur des hooks disparu, depot deplace, entrees retirees, client actif sans evenement recu) et, pour Codex, l'approbation de chaque hook lue aupres de Codex (`codex app-server`, methode `hooks/list`, sans appel au modele), seulement avec `--codex-trust` : la sonde lance un processus Codex, jamais par defaut, et jamais si aucun hook AgentWatch n'est installe ainsi que l'etat de la lecture des rollouts (fichiers suivis, sessions importees) |
+| `doctor` | diagnostic complet, dont la sante de la collecte (panne silencieuse : interpreteur des hooks disparu, depot deplace, entrees retirees, client actif sans evenement recu) et, pour Codex, l'approbation de chaque hook lue aupres de Codex (`codex app-server`, methode `hooks/list`, sans appel au modele), seulement avec `--codex-trust` : la sonde lance un processus Codex, jamais par defaut, et jamais si aucun hook AgentWatch n'est installe ainsi que l'etat de la lecture des rollouts : derniere lecture du collecteur (passage qui a trouve des lignes nouvelles ; sans ecriture de Codex, un passage ne laisse pas de trace) et ses erreurs, donnees importees (fichiers suivis, sessions), en attente (rollouts et octets pas encore lus, retard entre la derniere ligne ecrite par Codex et la derniere lue, elements de message a rapprocher) et lues mais non interpretees (par type), plus les doublons reconnus |
 | `configure --client X [--apply]` | installer les hooks (dry-run par defaut) |
 | `uninstall --client X [--apply]` | retirer les hooks AgentWatch |
 | `sessions [--client X] [--json]` | lister les sessions enregistrees |
