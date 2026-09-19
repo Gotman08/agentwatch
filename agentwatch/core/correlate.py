@@ -171,6 +171,9 @@ class SessionView:
     schema_versions: list[str] = field(default_factory=list)
     # * Analyses partagees entre detecteurs et rapport (ex. repetitions du detecteur G), calculees une fois.
     cache: dict[str, Any] = field(default_factory=dict)
+    # * Agents dont les horodatages ne sont pas ceux des actions (rollout reecrit d'un bloc) : durees, intervalles
+    #   et cadences n'ont pas de sens pour eux.
+    timing_unreliable_agents: list[str] = field(default_factory=list)
 
 
 def _sort_key(ev: dict[str, Any]) -> tuple[int, int]:
@@ -311,10 +314,38 @@ def build_session(events: list[dict[str, Any]], cfg: dict[str, Any]) -> SessionV
     view.turns = turn_index
     view.epochs = epochs.get("main", 0) + 1     # * epoques du fil principal (celles des sous-agents : par appel)
     view.agents = list(agents)
+    view.timing_unreliable_agents = _timing_unreliable(calls, view.markers)
+    if view.timing_unreliable_agents:
+        view.warnings.append(f"horodatages non fiables pour {len(view.timing_unreliable_agents)} agent(s) : tout leur fil "
+                             "tient en moins de 2 s (rollout reecrit d'un bloc) ; durees, intervalles et cadences ignores pour eux")
     view.agent_infos = _build_agents(view)
     from agentwatch.core.intent import attach_intents  # import tardif : intent depend de Call
     attach_intents(calls)
     return view
+
+
+UNRELIABLE_MIN_CALLS = 3
+UNRELIABLE_SPAN_NS = 2_000_000_000
+
+
+def _timing_unreliable(calls: list[Call], markers: list[Marker]) -> list[str]:
+    """Agents dont tout le fil (appels ET marqueurs : debut, tours, messages) tient en moins de 2 s avec au moins
+    3 appels : aucun modele ne repond si vite, les horodatages ne sont pas ceux des actions.
+
+    # * Constate le 2026-09-19 : 190 rollouts Codex de juin a aout ont toutes leurs lignes a la meme milliseconde
+    #   (reecrits d'un bloc par Codex, sans releve de tokens) : 117 fils de 8 sessions, 3 509 appels.
+    """
+    span: dict[str, list[int]] = {}
+    count: dict[str, int] = {}
+    for agent, ns, is_call in ([(c.agent_key, c.order_ns, True) for c in calls]
+                               + [(m.agent_id or "main", m.ns, False) for m in markers]):
+        if not ns:
+            continue
+        s = span.setdefault(agent, [ns, ns])
+        s[0], s[1] = min(s[0], ns), max(s[1], ns)
+        if is_call:
+            count[agent] = count.get(agent, 0) + 1
+    return sorted(a for a, (lo, hi) in span.items() if count.get(a, 0) >= UNRELIABLE_MIN_CALLS and hi - lo < UNRELIABLE_SPAN_NS)
 
 
 def _build_agents(view: SessionView) -> list[AgentInfo]:

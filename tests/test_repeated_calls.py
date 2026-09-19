@@ -254,6 +254,7 @@ class RepeatedCallsTests(unittest.TestCase):
 
     def test_repeats_inside_one_response_cost_no_round_trip(self) -> None:
         s = self._synth("script-loop")
+        s.tick(5_000)        # * le modele a mis le temps de repondre : un fil reel ne tient pas en 2 s
         s.response_gap_ms = 50
         for _ in range(5):
             s.bash("squeue -u me", "JOBID 1 R")
@@ -302,6 +303,20 @@ class RepeatedCallsTests(unittest.TestCase):
         self.assertTrue(all(r["reason_basis"] == "annoncee par l'agent" for r in g["repeats"]))
 
     # ------------------------------------------------------------------ rythme, epoques, rapport
+    def test_thread_rewritten_in_one_block_is_left_out(self) -> None:
+        # * Constate le 2026-09-19 : 190 rollouts de juin a aout ont toutes leurs lignes a la meme milliseconde. Leurs
+        #   intervalles seraient nuls : tout passerait pour des repetitions "dans une meme reponse".
+        s = self._synth("bulk")
+        s.response_gap_ms = 0
+        for _ in range(4):
+            s.mcp("romeo", "job_status", {"job_id": 1}, json.dumps({"status": "RUNNING"}), duration_ms=0)
+        view = s.view()
+        self.assertEqual(view.timing_unreliable_agents, ["main"])
+        self.assertTrue(any("horodatages non fiables" in w for w in view.warnings))
+        res = G.analyse(view, view_cfg(self))
+        self.assertEqual(res["groups"], [])
+        self.assertEqual(res["totals"]["excluded_unreliable_calls"], 4)
+
     def test_rhythm_table_covers_every_tool(self) -> None:
         s = self._synth("rhythm")
         s.response_gap_ms = 5_000

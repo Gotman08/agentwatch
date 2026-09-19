@@ -432,8 +432,10 @@ def analyse(view: SessionView, cfg: dict[str, Any]) -> dict[str, Any]:
     episode_gap = float(d.get("episode_gap_s", 1200))
     ctx = _Context(view, cfg)
     by_group: dict[str, list[Call]] = defaultdict(list)
+    # * Horodatages reecrits d'un bloc : ni intervalle, ni reponse distincte, ni cadence ne sont lisibles.
+    unreliable = set(view.timing_unreliable_agents)
     for c in view.calls:
-        if c.tool_name:
+        if c.tool_name and c.agent_key not in unreliable:
             by_group[group_key(c)].append(c)
     # * Outils d'attente vus par serveur MCP : une alternative au sondage deja a portee de l'agent.
     wait_tools: dict[str, Counter[str]] = defaultdict(Counter)
@@ -460,8 +462,9 @@ def analyse(view: SessionView, cfg: dict[str, Any]) -> dict[str, Any]:
             continue
         groups.append(_summarise(gk, calls, reps, d, episode_gap, wait_tools, same_request_agents, honored))
     groups.sort(key=lambda g: (g["verdict"] in IMPROVABLE, g["round_trips"], g["calls"]), reverse=True)
-    result = {"groups": groups, "rhythm": _rhythm(view, repeat_of, gap_ms, int(d.get("rhythm_top", 15))),
-              "totals": _totals(groups), "min_calls": min_calls}
+    result = {"groups": groups, "rhythm": _rhythm(view, repeat_of, gap_ms, int(d.get("rhythm_top", 15)), unreliable),
+              "totals": _totals(groups) | {"excluded_unreliable_calls": sum(1 for c in view.calls if c.agent_key in unreliable)},
+              "min_calls": min_calls}
     view.cache[CACHE_KEY] = result
     return result
 
@@ -616,12 +619,14 @@ def _summarise(gk: str, calls: list[Call], reps: list[dict[str, Any]], d: dict[s
     }
 
 
-def _rhythm(view: SessionView, repeat_of: dict[str, dict[str, Any]], gap_ms: int, top: int) -> list[dict[str, Any]]:
+def _rhythm(view: SessionView, repeat_of: dict[str, dict[str, Any]], gap_ms: int, top: int,
+            unreliable: set[str] | None = None) -> list[dict[str, Any]]:
     """Rythme de chaque outil : volume, intervalles entre appels successifs d'un meme agent, pics par minute et
     par 10 minutes (tous agents : la charge que voit l'outil), part des appels identiques a un precedent."""
     by_tool: dict[str, list[Call]] = defaultdict(list)
     for c in view.calls:
-        by_tool[c.tool_name or "?"].append(c)
+        if c.agent_key not in (unreliable or set()):
+            by_tool[c.tool_name or "?"].append(c)
     rows: list[dict[str, Any]] = []
     for tool, cs in by_tool.items():
         ns = sorted(c.order_ns for c in cs if c.order_ns)

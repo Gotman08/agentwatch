@@ -165,6 +165,11 @@ ligne JSON `{timestamp, ordinal, type, payload}`.
   `status: failed` d'un appel MCP ; fonctions de collaboration : succes sans texte d'erreur, erreur
   sinon (`wait` rend la sortie d'une commande en cours : son texte ne decide pas du statut).
 - Duree : `duration` de l'item (source `client`).
+- Horodatages non fiables : constate le 2026-09-19, 190 rollouts de juin a aout ont toutes leurs lignes a la
+  meme milliseconde (reecrits d'un bloc par Codex, sans releve de tokens). Un fil dont tous les appels et
+  marqueurs tiennent en moins de 2 s, avec au moins 3 appels, est signale (`timing_unreliable_agents`,
+  avertissement de lecture) : ses durees, intervalles et cadences sont ignores (detecteur G). 117 fils de 8
+  sessions sont concernes ; leurs appels, statuts et empreintes restent valables.
 - Faits de resultat (detecteur G), pour tout appel sauf les editions : `evidence.result_phase`
   (`unavailable`, `in_progress`, `failed`, `done`, `unknown`) et `evidence.state_fp` (empreinte HMAC de
   l'etat : JSON canonique ou texte, horodatages, durees et compteurs de temps ecoule neutralises ; `empty`

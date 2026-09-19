@@ -110,7 +110,11 @@ class DoctorTrustTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.home = Path(self.tmp.name) / "home"
         self.home.mkdir()
-        hooks_json = Path(self.tmp.name) / "hooks.json"
+        # * Dossier utilisateur factice : doctor lit ~/.codex/hooks.json ; le test ne doit jamais dependre de la
+        #   configuration reelle de la machine (constate le 2026-09-19 : il echouait apres le retrait des hooks).
+        self.user_home = Path(self.tmp.name) / "userhome"
+        (self.user_home / ".codex").mkdir(parents=True)
+        hooks_json = self.user_home / ".codex" / "hooks.json"
         obj, _ = IX.plan_install({}, "py", C.hook_entry_path(), self.home)
         hooks_json.write_text(json.dumps(obj), encoding="utf-8")
         p = install_meta_path(self.home, CLIENT_CODEX)
@@ -135,7 +139,7 @@ class DoctorTrustTests(unittest.TestCase):
 
         buf = io.StringIO()
         with mock.patch.object(XT, "probe", fake_probe), mock.patch.object(cli, "_client_version", fake_version), \
-                redirect_stdout(buf):
+                mock.patch("pathlib.Path.home", return_value=self.user_home), redirect_stdout(buf):
             self.assertEqual(cli.main(["--home", str(self.home), "doctor", *extra]), 0)
         return buf.getvalue()
 
