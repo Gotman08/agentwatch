@@ -303,6 +303,19 @@ class RolloutImportTests(unittest.TestCase):
             found = redundant_reads.detect(v, cfg)
             self.assertEqual(len(found), 0 if name == "changee" else 1, name)
 
+    def test_live_digest_summarises_what_codex_just_did(self) -> None:
+        lines = self._main().text().splitlines(keepends=True)
+        p = self._write(RolloutBuilder(ROOT), text="".join(lines[:-6]))
+        R.import_rollouts(self.store, self.cfg, [str(p)])
+        digest = R.LiveDigest(str(self.home))
+        p.write_text("".join(lines), encoding="utf-8", newline="\n")       # * Codex ecrit la suite
+        R.import_rollouts(self.store, self.cfg, [str(p)], sink=digest.feed)
+        self.assertTrue(digest.active())
+        line = digest.line()
+        for part in ("+1 appel(s)", "principal +1", "1 tour(s) termine(s)", "1 compaction(s)"):
+            self.assertIn(part, line)
+        self.assertNotIn("+0 tokens", line)
+
     def test_cli_import_follow_free_and_report(self) -> None:
         self._write(self._main())
         buf, err = io.StringIO(), io.StringIO()

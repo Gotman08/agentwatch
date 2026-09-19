@@ -844,8 +844,90 @@ class background_priority:
                 pass
 
 
-def import_rollouts(store: EventStore, cfg: dict[str, Any], paths: list[str]) -> dict[str, Any]:
-    """Import incremental d'une liste de rollouts ; l'etat est sauvegarde apres chaque fichier."""
+class LiveDigest:
+    """Resume de ce que Codex vient de faire, a partir des evenements d'une lecture (suivi en direct)."""
+
+    def __init__(self, home: str) -> None:
+        self.names: dict[str, str] = {}
+        for st in (load_state(home).get("files") or {}).values():
+            m = (st or {}).get("meta") or {}
+            if m.get("thread_id"):
+                self.names[m["thread_id"]] = (m.get("agent_nickname") or "principal") if m.get("parent_id") else "principal"
+        # * Base des tokens : totaux deja lus de chaque fil (seul l'accroissement est ensuite affiche).
+        self.tokens: dict[str, int] = {}
+        for st in (load_state(home).get("files") or {}).values():
+            m = (st or {}).get("meta") or {}
+            if m.get("thread_id"):
+                self.tokens[m["thread_id"]] = int(((st or {}).get("totals") or {}).get("total_tokens") or 0)
+        self.reset()
+
+    def reset(self) -> None:
+        self.calls: dict[str, int] = {}
+        self.failures = 0
+        self.token_delta = 0
+        self.turns_ended = 0
+        self.interrupts = 0
+        self.compactions = 0
+        self.spawned: list[str] = []
+        self.user_messages = 0
+
+    def _who(self, ev: dict[str, Any]) -> str:
+        aid = ev.get("agent_id")
+        if not aid:
+            return "principal"
+        return self.names.get(aid) or str(aid)[:8]
+
+    def feed(self, summ: dict[str, Any], events: list[dict[str, Any]]) -> None:
+        for ev in events:
+            ph = ev.get("phase")
+            if ph == S.PHASE_END:
+                who = self._who(ev)
+                self.calls[who] = self.calls.get(who, 0) + 1
+                if ev.get("status") == S.STATUS_ERROR:
+                    self.failures += 1
+            elif ph == S.PHASE_TURN_END:
+                self.turns_ended += 1
+            elif ph == S.PHASE_INTERRUPT:
+                self.interrupts += 1
+            elif ph == S.PHASE_COMPACT_END:
+                self.compactions += 1
+            elif ph == S.PHASE_SUBAGENT_START:
+                meta = ev.get("session_meta") or {}
+                if meta.get("agent_id"):
+                    self.names[meta["agent_id"]] = meta.get("agent_nickname") or str(meta["agent_id"])[:8]
+                self.spawned.append(str(meta.get("agent_nickname") or meta.get("agent_id") or "?"))
+            elif ph == S.PHASE_MESSAGE and (ev.get("session_meta") or {}).get("role") == "user":
+                self.user_messages += 1
+            elif ph == S.PHASE_USAGE:
+                u = ev.get("usage") or {}
+                tid = str(u.get("thread_id") or "?")
+                total = int(u.get("total_tokens") or 0)
+                if tid in self.tokens:
+                    self.token_delta += max(0, total - self.tokens[tid])
+                self.tokens[tid] = max(total, self.tokens.get(tid, 0))
+
+    def active(self) -> bool:
+        return bool(self.calls or self.turns_ended or self.interrupts or self.compactions or self.spawned or self.user_messages)
+
+    def line(self) -> str:
+        n = sum(self.calls.values())
+        parts = [f"+{n} appel(s)" + (f" dont {self.failures} en echec brut" if self.failures else ""),
+                 f"+{self.token_delta} tokens"]
+        if self.calls:
+            parts.append(", ".join(f"{who} +{k}" for who, k in sorted(self.calls.items(), key=lambda kv: -kv[1])))
+        for count, label in ((self.user_messages, "message(s) de l'utilisateur"), (self.turns_ended, "tour(s) termine(s)"),
+                             (self.interrupts, "interruption(s)"), (self.compactions, "compaction(s)")):
+            if count:
+                parts.append(f"{count} {label}")
+        if self.spawned:
+            parts.append("sous-agent(s) lance(s) : " + ", ".join(self.spawned))
+        return "Codex : " + " ; ".join(parts)
+
+
+def import_rollouts(store: EventStore, cfg: dict[str, Any], paths: list[str], sink: Any = None) -> dict[str, Any]:
+    """Import incremental d'une liste de rollouts ; l'etat est sauvegarde apres chaque fichier.
+
+    `sink(resume, evenements)` recoit chaque lot ecrit (suivi en direct)."""
     home = store.home_s
     key = P.ensure_key(home)
     state = load_state(home)
@@ -869,6 +951,8 @@ def import_rollouts(store: EventStore, cfg: dict[str, Any], paths: list[str]) ->
             merge_segments(store, summ.get("session_id"), int(rcfg.get("max_segments", 30) or 30))
         files[norm] = new_state
         save_state(home, state)
+        if sink is not None and events:
+            sink(summ, events)
         if summ["lines"]:
             out["files"] += 1
             out["lines"] += summ["lines"]

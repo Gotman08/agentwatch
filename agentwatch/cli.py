@@ -97,7 +97,8 @@ def _rollout_paths(cfg: dict[str, Any], days: float | None, thread: str | None) 
     return keep
 
 
-def _import_rollouts(home: Path, cfg: dict[str, Any], store: Any, days: float | None = None, thread: str | None = None) -> dict[str, Any]:
+def _import_rollouts(home: Path, cfg: dict[str, Any], store: Any, days: float | None = None, thread: str | None = None,
+                     sink: Any = None) -> dict[str, Any]:
     """Import incremental des rollouts Codex (lecture seule, priorite d'arriere-plan). Jamais d'exception."""
     from agentwatch.collector import rollouts as R
     rcfg = _rollouts_cfg(cfg)
@@ -108,7 +109,7 @@ def _import_rollouts(home: Path, cfg: dict[str, Any], store: Any, days: float | 
         if not todo:
             return {"files": 0, "lines": 0, "events": 0, "bytes": 0, "sessions": {}, "errors": []}
         with R.background_priority(bool(rcfg.get("background_priority", True))):
-            return R.import_rollouts(store, cfg, todo)
+            return R.import_rollouts(store, cfg, todo, sink=sink)
     except Exception as exc:  # noqa: BLE001 - un import rate ne doit pas empecher un rapport
         return {"files": 0, "lines": 0, "events": 0, "bytes": 0, "sessions": {}, "errors": [f"{type(exc).__name__}: {exc}"]}
 
@@ -429,8 +430,11 @@ def cmd_import_rollouts(args: argparse.Namespace) -> int:
     store = EventStore(home, cfg)
     days = None if args.all else (args.days if args.days is not None else float(_rollouts_cfg(cfg).get("days", 7) or 0) or None)
 
+    from agentwatch.collector.rollouts import LiveDigest
+    digest = LiveDigest(str(home))
+
     def once() -> dict[str, Any]:
-        return _import_rollouts(home, cfg, store, days=days if days is not None else 0, thread=args.thread)
+        return _import_rollouts(home, cfg, store, days=days if days is not None else 0, thread=args.thread, sink=digest.feed)
 
     def show(out: dict[str, Any], stamp: bool) -> None:
         prefix = time.strftime("%H:%M:%S ") if stamp else ""
@@ -442,6 +446,7 @@ def cmd_import_rollouts(args: argparse.Namespace) -> int:
 
     out = once()
     show(out, args.follow)
+    digest.reset()
     if not args.follow:
         _out("rien d'autre que des nombres, des identifiants et des empreintes n'a ete extrait ; les rollouts ne sont jamais modifies")
         return 0 if not out["errors"] else 1
@@ -449,8 +454,11 @@ def cmd_import_rollouts(args: argparse.Namespace) -> int:
         while True:
             time.sleep(max(2.0, float(args.interval)))
             out = once()
-            if out["files"] or out["errors"]:
-                show(out, True)
+            if digest.active():
+                _out(time.strftime("%H:%M:%S ") + digest.line())
+            for e in out["errors"]:
+                _err(f"  ! {e}")
+            digest.reset()
     except KeyboardInterrupt:
         return 0
 
