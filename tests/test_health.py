@@ -100,6 +100,27 @@ class HealthTests(unittest.TestCase):
         self.assertEqual([i["code"] for i in items], ["never_received"])
         self.assertIn("/hooks", items[0]["message"])
 
+    def test_resumed_codex_thread_in_an_older_day_folder_counts_as_activity(self) -> None:
+        # * Fil cree il y a 6 jours, repris maintenant, alors que trois jours plus recents ont leur dossier.
+        from agentwatch.collector.health import client_activity_mtime
+        now = time.time()
+
+        def day(offset: int) -> Path:
+            d = self.codex_sessions.joinpath(*time.strftime("%Y %m %d", time.localtime(now - offset * 86400)).split())
+            d.mkdir(parents=True, exist_ok=True)
+            return d
+
+        for offset in (1, 2, 3):
+            f = day(offset) / f"rollout-{offset}.jsonl"
+            f.write_text("{}\n", encoding="utf-8")
+            os.utime(f, (now - offset * 86400, now - offset * 86400))
+        resumed = day(6) / "rollout-repris.jsonl"
+        resumed.write_text("{}\n", encoding="utf-8")
+        os.utime(resumed, (now - 60, now - 60))
+        old = day(45) / "rollout-ancien.jsonl"      # * hors fenetre : ignore meme s'il vient d'etre ecrit
+        old.write_text("{}\n", encoding="utf-8")
+        self.assertAlmostEqual(client_activity_mtime(CLIENT_CODEX, self.cfg) or 0, now - 60, delta=2)
+
     def test_doctor_and_report_surface_health(self) -> None:
         self._meta(python=str(self.home / "nope.exe"))
         s = Synth(self.home, session_id="r1")

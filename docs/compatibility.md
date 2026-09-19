@@ -103,7 +103,8 @@ en segment JSONL au-dela de `auto_compact_threshold` fichiers : 802 evenements r
 Robustesse du hook verifiee en sous-processus (code 0, stdout vide, evenement ou
 incident enregistre) : JSON imbrique sur 3 000 niveaux, UTF-8 invalide, types inattendus
 (identifiants non textuels), chemins accentues avec espaces, sortie de 2 Mo, stdin vide,
-stdin tronque par `max_stdin_bytes`.
+stdin tronque par `max_stdin_bytes`, depot casse (erreur d'import : incident `hook_crash`,
+aucun contenu du payload).
 
 ## Observations de cycle de vie (Claude Code 2.1.270, session de bureau)
 
@@ -179,5 +180,6 @@ processus enfants vers `AppData\Local\Packages\<paquet>\LocalCache\...`. Consequ
   2.1.275). Les rollouts Codex ne sont pas lus ; seule leur date de modification sert a la
   sante de la collecte.
 - Sante de la collecte : le silence d'un client est deduit des dates de modification de ses
-  journaux ; un client qui ecrirait ailleurs (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`) exige de
+  journaux (Codex : tous les rollouts des `health.codex_days` = 30 derniers jours, car un fil
+  repris ecrit dans le dossier de son jour de creation) ; un client qui ecrirait ailleurs (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`) exige de
   renseigner `transcripts.claude_projects_dir` / `health.codex_sessions_dir`.

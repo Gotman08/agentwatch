@@ -71,9 +71,20 @@ def client_activity_mtime(client: str, cfg: dict[str, Any]) -> float | None:
         from agentwatch.collector.transcripts import claude_projects_dir
         return _newest(glob.glob(os.path.join(str(claude_projects_dir(cfg)), "*", "*.jsonl")))
     root = codex_sessions_dir(cfg)
-    # * Rollouts ranges par <annee>/<mois>/<jour> : seuls les trois derniers jours sont regardes.
-    days = sorted(glob.glob(os.path.join(str(root), "*", "*", "*")))[-3:]
+    # * Rollouts ranges par <annee>/<mois>/<jour> de CREATION du fil. Un fil repris continue d'ecrire
+    #   dans son rollout d'origine (constate le 2026-09-19 : fil du 15 repris le 19) : les trois derniers
+    #   dossiers ne suffisent pas, on regarde tous les rollouts des `health.codex_days` (30) derniers jours.
+    span = int(_section(cfg, "health").get("codex_days", 30))
+    cutoff = time.strftime("%Y%m%d", time.localtime(time.time() - span * 86400))
+    days = [d for d in glob.glob(os.path.join(str(root), "*", "*", "*")) if _day_key(d) >= cutoff]
     return _newest(f for d in days for f in glob.glob(os.path.join(d, "*.jsonl")))
+
+
+def _day_key(day_dir: str) -> str:
+    """'AAAAMMJJ' d'un dossier <annee>/<mois>/<jour> ; '99999999' si le nom ne suit pas ce format (garde)."""
+    parts = os.path.normpath(day_dir).split(os.sep)[-3:]
+    key = "".join(parts)
+    return key if len(key) == 8 and key.isdigit() else "99999999"
 
 
 def last_event_mtime(store: EventStore, client: str) -> float | None:
