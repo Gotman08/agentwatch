@@ -263,6 +263,8 @@ class RolloutReader:
         from agentwatch.collector.ingest import sanitize_event
         ev["source"] = S.SOURCE_IMPORT
         ev["event_id"] = eid
+        # * Toujours l'heure du rollout (jamais celle de l'import) : a defaut, celle de la derniere ligne lue.
+        ns = ns if ns is not None else self.st.get("last_ns")
         if ns is not None:
             ev["received_time_ns"] = ns
             ev["received_time"] = S.now_iso(ns / 1e9)
@@ -321,6 +323,8 @@ class RolloutReader:
         p: dict[str, Any] = raw_p if isinstance(raw_p, dict) else {}
         pt = p.get("type")
         ns = iso_to_ns(o.get("timestamp"))
+        if ns is not None:
+            self.st["last_ns"] = ns
         if t == "session_meta":
             self._on_session_meta(p, ns)
         elif t == "turn_context":

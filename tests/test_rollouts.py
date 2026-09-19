@@ -177,6 +177,9 @@ class RolloutImportTests(unittest.TestCase):
         self.assertEqual(out["errors"], [])
         v = self._view()
         self.assertEqual(v.session_id, ROOT)
+        # * debut et fin de session = heures du rollout, jamais l'heure de l'import (sinon `trends` exclut la session)
+        self.assertTrue(v.first_time.startswith("2026-09-19T10:00:0"), v.first_time)
+        self.assertTrue(v.last_time.startswith("2026-09-19T10:00:0"), v.last_time)
         calls = {c.call_id: c for c in v.calls}
         self.assertEqual(set(calls), {"exec-a", "exec-b", "exec-c", "call_3", "call_4", "call_5"})
         self.assertEqual(v.counts["duplicate_events"], 0)

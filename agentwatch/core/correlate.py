@@ -240,8 +240,9 @@ def build_session(events: list[dict[str, Any]], cfg: dict[str, Any]) -> SessionV
         ns: int = raw_ns if isinstance(raw_ns, int) else 0
         if view.session_id is None and ev.get("session_id"):
             view.session_id = ev["session_id"]
-        if ev.get("source") != S.SOURCE_IMPORT:
-            # * Un import (usage, transcript) date du moment de l'import : il ne deplace ni le debut ni la fin de la session.
+        # * Un import (usage, transcript) date du moment de l'import : il ne deplace ni le debut ni la fin de la session.
+        #   Exception : les evenements lus dans un rollout Codex portent l'heure reelle de l'action ou de la ligne.
+        if ev.get("source") != S.SOURCE_IMPORT or (ev.get("evidence") or {}).get("import_source") == "codex:rollout":
             first_ns, last_ns = view.first_ns, view.last_ns
             if first_ns is None or ns < first_ns:
                 view.first_ns, view.first_time = ns, ev.get("received_time")
