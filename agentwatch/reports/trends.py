@@ -57,6 +57,9 @@ def pattern_key(f: Finding) -> tuple[str, str]:
         op, target = ev.get("operation") or "?", ev.get("target")
         if f.kind == "repeated_run":
             return f"A|repeated_run|{op}|{target}", f"{op} relance sans changement : {target!r}"
+        if f.kind == "repeated_read_batch":
+            tool = ev.get("tool") or "?"
+            return f"A|repeated_read_batch|{op}|{tool}", f"lot de lectures {op} refait via {tool}"
         return f"A|repeated_read|{op}|{target}", f"{op} de {target!r} refait"
     if letter == "B":
         kind = f.kind.removesuffix("_probable")

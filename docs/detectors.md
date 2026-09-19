@@ -69,7 +69,14 @@ contenu), `low` sinon ; un echec suivi d'un succes n'est pas signale (progres).
 Exclusions : ecriture observee sur la cible (pour une commande shell : toute ecriture),
 premier appel en echec (domaine de B), resultats differents (relecture justifiee),
 parametres differents (pagination, autre plage), autre agent, autre epoque (compaction,
-reprise). Une recherche a zero resultat n'est pas jugee inutile pour autant.
+reprise). Une recherche a zero resultat n'est pas jugee inutile pour autant. Un resultat precedent « en
+cours » ou « indisponible » ecarte aussi la paire : c'est un sondage ou un reessai, juge par G. L'epoque est
+propre a chaque agent : la compaction d'un sous-agent ne separe pas deux lectures du fil principal.
+
+Lots (`repeated_read_batch`, a partir de `batch_min` = 3 elements) : des relectures emises dans une meme
+reponse du modele, de lectures emises ensemble dans une autre, forment un seul signalement qui garde chaque
+cible. Preuve exacte exigee (requetes emettrices du rollout ou du transcript). Constate le 2026-09-19 : un
+sous-agent Codex a relu d'un bloc 26 tickets Linear 27 s apres les avoir lus ; 26 signalements devenus un.
 
 Limite toujours rappelee : la presence du resultat precedent dans le contexte du modele
 n'est pas observable ; une modification externe non plus.

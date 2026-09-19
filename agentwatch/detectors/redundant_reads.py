@@ -14,6 +14,11 @@ Deux familles de signalement :
 Exclusions : ecriture observee sur la cible, autre agent, compaction/reprise, parametres
 differents (plage, filtre, pagination), premier appel en echec, contenu obtenu different.
 Degradations : appel a effet inconnu intercale, statut ou empreinte inconnus.
+
+# * Ajout du 2026-09-19 (version inchangee : les identifiants des autres signalements, et donc les retours deja
+#   enregistres, restent valables) : un sous-agent Codex a relu d'un bloc 26 tickets Linear 24 s apres les avoir
+#   lus (un exec, puis un autre) ; A en faisait 26 signalements pour un seul geste. Des relectures faites dans une
+#   meme reponse du modele, de lectures faites ensemble dans une autre, forment un lot (`repeated_read_batch`).
 """
 
 from __future__ import annotations
@@ -114,9 +119,75 @@ def detect(view: SessionView, cfg: dict[str, Any]) -> list[B.Finding]:
     case_insensitive = bool(cfg.get("case_insensitive_paths", False))
     calls = view.calls
     findings: list[B.Finding] = []
-    findings += _detect_reads(calls, window_calls, window_seconds, case_insensitive)
+    findings += _merge_batches(_detect_reads(calls, window_calls, window_seconds, case_insensitive),
+                               {c.key: c for c in calls}, int(d.get("batch_min", 3)))
     findings += _detect_runs(calls, window_calls, window_seconds)
     return findings
+
+
+# ---------------------------------------------------------------------------- lots
+def _merge_batches(findings: list[B.Finding], by_key: dict[str, Call], batch_min: int) -> list[B.Finding]:
+    """Lectures faites ensemble (une reponse du modele) puis refaites ensemble (une autre) : un seul signalement.
+
+    # * Preuve exacte seulement : requetes emettrices connues (rollout ou transcript), les deux distinctes. Sans elles,
+    #   les paires restent separees plutot que regroupees sur une supposition.
+    """
+    from collections import defaultdict
+    groups: dict[tuple[Any, ...], list[B.Finding]] = defaultdict(list)
+    out: list[B.Finding] = []
+    for f in findings:
+        a, b = (by_key.get(f.calls[0]), by_key.get(f.calls[-1])) if len(f.calls) == 2 else (None, None)
+        ea, eb = (B.emitter(a), B.emitter(b)) if a and b else (None, None)
+        if f.kind != "repeated_read" or not (ea and eb) or ea == eb:
+            out.append(f)
+            continue
+        assert a is not None and b is not None
+        groups[(a.agent_key, a.context_epoch, a.op, a.tool_name, ea, eb)].append(f)
+    for (agent, epoch, op, tool, ea, eb), fs in groups.items():
+        if len(fs) < batch_min:
+            out.extend(fs)
+            continue
+        firsts = [by_key[f.calls[0]] for f in fs]
+        seconds = [by_key[f.calls[-1]] for f in fs]
+        members = sorted(firsts + seconds, key=lambda c: (c.order_ns, c.seq))
+        conf = min((f.confidence for f in fs), key=lambda c: B._CONF_RANK.get(c, 0))
+        gap_s = (min(c.order_ns for c in seconds) - min(c.order_ns for c in firsts)) / 1e9
+        verdicts: dict[str, int] = {}
+        for f in fs:
+            for v in f.evidence.get("pair_verdicts") or []:
+                verdicts[str(v.get("verdict"))] = verdicts.get(str(v.get("verdict")), 0) + 1
+        counters: list[str] = []
+        for f in fs:
+            counters += [c for c in f.counter_indications if c not in counters]
+        missing: list[str] = []
+        for f in fs:
+            missing += [m for m in f.missing_data if m not in missing]
+        n = len(fs)
+        out.append(B.Finding(
+            rule_id=RULE_ID, rule_version=RULE_VERSION, kind="repeated_read_batch",
+            title=f"Lot de {n} lectures ({op}) refait a l'identique via {tool}",
+            confidence=conf,
+            confidence_rationale=(f"{n} relectures emises dans une meme reponse du modele, de lectures emises ensemble dans une "
+                                  f"autre ; niveau le plus prudent de ses {n} paires. " + B.LIMIT_HEURISTIC),
+            calls=[c.key for c in members], call_refs=B.refs(members[:30]),
+            evidence={"operation": op, "tool": tool, "items": n, "targets": [f.evidence.get("target") for f in fs][:40],
+                      "agent": agent, "context_epoch": epoch, "first_request": ea, "second_request": eb,
+                      "gap_s": round(gap_s, 1), "pair_verdicts_summary": verdicts,
+                      "member_findings": [f.finding_id for f in fs]},
+            explanation=(f"{n} lectures ({op} via {tool}) faites ensemble ont ete refaites ensemble {round(gap_s)} s plus tard, "
+                         f"dans une autre reponse du modele : meme agent, meme epoque de contexte, contenu identique pour "
+                         f"chacune. Un seul geste, donc un seul signalement ; chaque cible reste dans la preuve."),
+            counter_indications=counters, missing_data=missing, observed_cost=B.observed_cost(seconds),
+            proposal={"type": "reuse_previous_result",
+                      "text": ("Reutiliser le lot deja lu ; s'il faut verifier un changement, ne relire que ce qui a pu changer "
+                               "(date de mise a jour, liste filtree) plutot que tout le lot."),
+                      "requires_judgment": "Decider si la seconde lecture du lot etait une verification voulue."},
+            validation_protocol=[
+                "Verifier dans le rollout que les deux lots sont deux reponses distinctes du modele et que rien n'a ecrit entre les deux.",
+                "Marquer le signalement : agentwatch feedback --finding <id> --mark relevant|false-positive.",
+            ],
+        ))
+    return out
 
 
 # ---------------------------------------------------------------------------- lectures

@@ -46,7 +46,7 @@ DEFAULTS: dict[str, Any] = {
     "mcp_param_value_max_chars": 300,
     # --- detecteurs (seuils configurables, voir docs/detectors.md) ---
     "detectors": {
-        "redundant_reads": {"enabled": True, "window_calls": 60, "window_seconds": 900},
+        "redundant_reads": {"enabled": True, "window_calls": 60, "window_seconds": 900, "batch_min": 3},
         "error_loops": {"enabled": True, "min_failures": 3, "window_calls": 40, "window_seconds": 1800},
         "batchable": {"enabled": True, "min_group": 3, "max_gap_calls": 0, "same_response_gap_ms": 2000},
         "automation_candidates": {"enabled": True, "min_occurrences": 3, "min_pattern_len": 2,
