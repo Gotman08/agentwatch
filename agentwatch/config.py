@@ -48,7 +48,7 @@ DEFAULTS: dict[str, Any] = {
     "detectors": {
         "redundant_reads": {"enabled": True, "window_calls": 60, "window_seconds": 900},
         "error_loops": {"enabled": True, "min_failures": 3, "window_calls": 40, "window_seconds": 1800},
-        "batchable": {"enabled": True, "min_group": 3, "max_gap_calls": 0},
+        "batchable": {"enabled": True, "min_group": 3, "max_gap_calls": 0, "same_response_gap_ms": 2000},
         "automation_candidates": {"enabled": True, "min_occurrences": 3, "min_pattern_len": 2,
                                   "max_pattern_len": 6, "max_calls": 2000},
         "tool_gap": {"enabled": True, "min_calls": 3, "strong_calls": 6},

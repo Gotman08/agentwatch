@@ -1,8 +1,16 @@
 """Detecteur C : operations regroupables.
 
 Regle : une suite d'au moins `min_group` appels consecutifs du meme outil de lecture
-(read/list/search, ou MCP cible par chemin) sur des cibles differentes, executes l'un
-apres l'autre (non chevauchants), sans erreur.
+(read/list/search, ou MCP cible par chemin) sur des cibles differentes, emis dans des
+reponses successives du modele (un aller-retour par appel), sans erreur.
+
+# ! Des appels emis ensemble dans une meme reponse peuvent etre executes l'un apres l'autre
+#   par le client : ce n'est pas au modele qu'il faut le reprocher. Faux positif constate le
+#   2026-09-19 (3 Read emis dans une reponse, executes en serie par Claude Code). Preuve de
+#   separation : identifiant de la requete emettrice lu dans le transcript (exact), sinon ecart
+#   entre la fin d'un appel et le debut du suivant (heuristique) : mesure sur 249 paires reelles,
+#   deux lectures d'une meme reponse sont separees de -119 a 1 967 ms (surcout des hooks), deux
+#   reponses distinctes d'au moins 2 559 ms (temps de reponse du modele). Seuil par defaut 2 000 ms.
 
 L'independance est etablie a partir des preuves disponibles :
 - forte : les cibles proviennent toutes d'un listage/recherche precedent (result_paths) ;
@@ -23,7 +31,7 @@ from agentwatch.core.correlate import Call, SessionView
 from agentwatch.detectors import base as B
 
 RULE_ID = "C.batchable"
-RULE_VERSION = "1.0"
+RULE_VERSION = "1.1"
 _GROUPABLE = {S.CAT_READ, S.CAT_LIST, S.CAT_SEARCH, S.CAT_MCP}
 _BATCH_HINTS = ("batch", "many", "multi", "all", "bulk", "list")
 
@@ -41,6 +49,29 @@ def _overlaps(prev: Call, cur: Call) -> bool | None:
     if prev.end_ns is None or cur.start_ns is None:
         return None
     return cur.start_ns < prev.end_ns
+
+
+def _emitter(c: Call) -> str | None:
+    """Requete API qui a emis l'appel (import du transcript Claude Code), sinon None."""
+    rid = (c.usage or {}).get("emitter_request_id")
+    return rid if isinstance(rid, str) and rid else None
+
+
+def _gap_ms(prev: Call, cur: Call) -> int | None:
+    if prev.end_ns is None or cur.start_ns is None:
+        return None
+    return (cur.start_ns - prev.end_ns) // 1_000_000
+
+
+def _same_response(prev: Call, cur: Call, gap_threshold_ms: int) -> tuple[bool, str]:
+    """(emis dans la meme reponse du modele ?, base de la decision)."""
+    ea, eb = _emitter(prev), _emitter(cur)
+    if ea and eb:
+        return ea == eb, "transcript"
+    gap = _gap_ms(prev, cur)
+    if gap is None:
+        return False, "inconnu"
+    return gap < gap_threshold_ms, "ecart"
 
 
 def _path_of(c: Call) -> str:
@@ -77,7 +108,8 @@ def _grouped_tool(run: list[Call], view: SessionView, parallel_seen: bool) -> di
     if first.category == S.CAT_SHELL:
         return {"status": "proposal", "note": "une seule commande avec plusieurs chemins (ex. cat a b c, rg motif a b c) ; non verifiee"}
     if parallel_seen:
-        return {"status": "verified_in_session", "note": "des appels chevauchants du meme outil ont ete observes dans cette session : le client sait paralleliser"}
+        return {"status": "verified_in_session", "note": ("des appels du meme outil emis ensemble (chevauchants, ou dans une meme "
+                                                          "reponse du modele) ont ete observes dans cette session")}
     if view.client == CLIENT_CLAUDE_CODE:
         return {"status": "documented_not_verified", "note": "Claude Code peut emettre plusieurs appels d'outil dans un meme tour ; non observe dans cette session"}
     return {"status": "unknown", "note": "capacite de regroupement non verifiee pour ce client"}
@@ -87,9 +119,11 @@ def detect(view: SessionView, cfg: dict[str, Any]) -> list[B.Finding]:
     d = cfg.get("detectors", {}).get("batchable", {})
     min_group = int(d.get("min_group", 3))
     max_gap = int(d.get("max_gap_calls", 0))
+    gap_threshold = int(d.get("same_response_gap_ms", 2000))
     case_insensitive = bool(cfg.get("case_insensitive_paths", False))
     calls = view.calls
-    parallel_seen = any(_overlaps(a, b) for a, b in zip(calls, calls[1:]) if a.tool_name == b.tool_name and a.agent_key == b.agent_key)
+    parallel_seen = any(_overlaps(a, b) or _same_response(a, b, gap_threshold)[0]
+                        for a, b in zip(calls, calls[1:]) if a.tool_name == b.tool_name and a.agent_key == b.agent_key)
     findings: list[B.Finding] = []
     run: list[Call] = []
     gap = 0
@@ -97,7 +131,7 @@ def detect(view: SessionView, cfg: dict[str, Any]) -> list[B.Finding]:
     def flush() -> None:
         nonlocal run
         if len(run) >= min_group:
-            findings.append(_finding(run, view, calls, case_insensitive, parallel_seen))
+            findings.append(_finding(run, view, calls, case_insensitive, parallel_seen, gap_threshold))
         run = []
 
     for c in calls:
@@ -106,8 +140,8 @@ def detect(view: SessionView, cfg: dict[str, Any]) -> list[B.Finding]:
             gap = 0
         if _eligible(c):
             if run and c.tool_name == run[-1].tool_name and c.target_key not in {r.target_key for r in run}:
-                if _overlaps(run[-1], c):
-                    flush()          # ? deja parallele : ce n'est pas un regroupement a proposer
+                if _overlaps(run[-1], c) or _same_response(run[-1], c, gap_threshold)[0]:
+                    flush()          # ? deja emis ensemble (parallele, ou meme reponse executee en serie) : rien a regrouper
                     run = [c]
                     continue
                 run.append(c)
@@ -124,27 +158,37 @@ def detect(view: SessionView, cfg: dict[str, Any]) -> list[B.Finding]:
     return findings
 
 
-def _finding(run: list[Call], view: SessionView, calls: list[Call], case_insensitive: bool, parallel_seen: bool) -> B.Finding:
+def _finding(run: list[Call], view: SessionView, calls: list[Call], case_insensitive: bool, parallel_seen: bool,
+             gap_threshold: int) -> B.Finding:
     first = run[0]
     indep, indep_why = _independence(run, calls, case_insensitive)
     conf = {"high": B.CONFIDENCE_HIGH, "medium": B.CONFIDENCE_MEDIUM, "low": B.CONFIDENCE_LOW}[indep]
     grouped = _grouped_tool(run, view, parallel_seen)
+    exact = all(_same_response(a, b, gap_threshold)[1] == "transcript" for a, b in zip(run, run[1:]))
+    if exact:
+        separation = "requetes emettrices distinctes (transcript)"
+    else:
+        separation = f"ecarts d'au moins {gap_threshold} ms entre la fin d'un appel et le debut du suivant (heuristique)"
     return B.Finding(
         rule_id=RULE_ID, rule_version=RULE_VERSION, kind="sequential_similar_calls",
         title=f"{len(run)} appels {first.tool_name} sequentiels sur des cibles differentes",
-        confidence=conf, confidence_rationale=f"independance : {indep_why}. " + B.LIMIT_HEURISTIC,
+        confidence=conf, confidence_rationale=f"independance : {indep_why} ; reponses distinctes : {separation}. " + B.LIMIT_HEURISTIC,
         calls=[c.key for c in run], call_refs=B.refs(run),
         evidence={"tool": first.tool_name, "targets": [c.target for c in run], "independence": indep,
                   "independence_basis": indep_why, "sequential": True, "grouped_tool": grouped,
+                  "round_trips": len(run), "separation_basis": separation,
+                  "gaps_ms": [_gap_ms(a, b) for a, b in zip(run, run[1:])],
                   "durations_ms": [c.duration_ms for c in run], "duration_sources": sorted({c.duration_source for c in run if c.duration_source})},
-        explanation=(f"{len(run)} appels {first.tool_name} ont ete emis l'un apres l'autre (chacun apres la fin du precedent) "
-                     f"sur {len(run)} cibles distinctes, sans appel intermediaire."),
+        explanation=(f"{len(run)} appels {first.tool_name} ont ete emis dans {len(run)} reponses successives du modele "
+                     f"(chacun apres le resultat du precedent) sur {len(run)} cibles distinctes, sans appel intermediaire."),
         counter_indications=[
             "Si une cible a ete choisie d'apres le contenu lu juste avant, les appels ne sont pas independants.",
             "Un regroupement concatene les sorties : verifier que la taille totale reste acceptable pour le contexte.",
             "Les contraintes du client (limites de parallelisme, sandbox, quotas MCP) ne sont pas observees.",
         ],
         missing_data=["contenu des resultats non conserve : la dependance entre lectures est inferee, pas observee"]
+                     + ([] if exact else
+                        ["requete emettrice inconnue (transcript non importe) : separation des reponses deduite des ecarts"])
                      + (["durees inconnues"] if all(c.duration_ms is None for c in run) else []),
         observed_cost=B.observed_cost(run),
         proposal={

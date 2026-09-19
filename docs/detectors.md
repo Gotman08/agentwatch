@@ -98,11 +98,29 @@ hypotheses tirees de la signature (`No such file`, `permission`, `timeout`, ...)
 Exemple positif : trois `python run.py` avec `ModuleNotFoundError`. Contre-exemple :
 echec, `Write cfg.json`, echec, succes -> la correction observee casse la chaine.
 
-## C. `C.batchable` — operations regroupables
+## C. `C.batchable` (v1.1) — operations regroupables
 
 Regle : au moins `min_group` (3) appels consecutifs du meme outil de lecture (`read`,
-`list`, `search`, MCP cible par chemin) sur des cibles differentes, chacun commence apres
-la fin du precedent, sans erreur, avec au plus `max_gap_calls` (0) appels intercales.
+`list`, `search`, MCP cible par chemin) sur des cibles differentes, emis dans des reponses
+successives du modele (un aller-retour par appel), sans erreur, avec au plus
+`max_gap_calls` (0) appels intercales.
+
+Reponses distinctes : un client peut executer l'un apres l'autre des appels que le modele a
+emis ensemble (Claude Code le fait pour `Read`) ; le modele a alors deja regroupe, rien ne
+lui est reproche. La separation se prouve par la requete emettrice lue dans le transcript
+(`import-transcripts`, exact) ; sans transcript, par l'ecart entre la fin d'un appel et le
+debut du suivant : en dessous de `same_response_gap_ms` (2 000 ms), les deux appels sont
+tenus pour emis ensemble. Mesure du 2026-09-19 sur 249 paires reelles (Claude Code, transcript
+comme reference) : lectures d'une meme reponse separees de -119 a 1 967 ms (surcout des
+hooks), reponses distinctes d'au moins 2 559 ms. Le seuil est une heuristique : une machine
+tres chargee allonge l'ecart des hooks, un modele tres rapide raccourcit l'aller-retour.
+Faux positifs corriges par cette regle : 3 `Read` d'une reponse (session `38f05d3c`) et
+23 `Read` emis en 3 reponses (session `57258ee2`), signales avant v1.1 comme 3 et 23
+allers-retours. Des appels emis ensemble ailleurs dans la session du meme outil valent preuve
+que le regroupement est possible (`verified_in_session`).
+
+Preuve : `round_trips`, `gaps_ms` (ecarts entre appels) et `separation_basis` (transcript
+ou heuristique) ; `missing_data` le rappelle quand le transcript n'est pas importe.
 
 Independance (elle fixe la confiance) :
 
@@ -112,11 +130,11 @@ Independance (elle fixe la confiance) :
 | meme dossier ou meme extension | medium |
 | sinon | low (« independance non etablie ») |
 
-Outil groupe : annonce `verified_in_session` seulement si des appels chevauchants du meme
-outil ont ete observes dans la session ; `candidate_observed` si un outil MCP du meme
-serveur au nom evocateur (batch, many, multi, all, bulk, list) a ete vu ; sinon
-`documented_not_verified` (Claude Code) ou `proposal`. Des appels deja chevauchants ne
-sont pas signales.
+Outil groupe : annonce `verified_in_session` seulement si des appels du meme outil emis
+ensemble (chevauchants, ou dans une meme reponse) ont ete observes dans la session ;
+`candidate_observed` si un outil MCP du meme serveur au nom evocateur (batch, many, multi,
+all, bulk, list) a ete vu ; sinon `documented_not_verified` (Claude Code) ou `proposal`.
+Des appels deja chevauchants ou emis dans une meme reponse ne sont pas signales.
 
 ## D. `D.automation_candidates` — sequences candidates a une automatisation
 

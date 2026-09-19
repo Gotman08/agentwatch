@@ -43,6 +43,9 @@ class Synth:
         self.turn = 0
         self.agent: tuple[str | None, str | None] = (None, None)
         self.payloads: list[dict[str, Any]] = []
+        # * Temps de reponse du modele entre le resultat d'un appel et le debut du suivant. Une valeur
+        #   courte (50 ms) simule des appels emis dans une meme reponse et executes en serie par le client.
+        self.response_gap_ms = 3000
 
     # ---------------------------------------------------------------- horloge
     def tick(self, ms: int) -> None:
@@ -112,16 +115,18 @@ class Synth:
         if self.client == CLIENT_CLAUDE_CODE:
             if fail is not None or interrupt:
                 self.emit(self._base("PostToolUseFailure", tool_name=tool, tool_input=tool_input, tool_use_id=cid,
-                                     error=fail or "interrupted", is_interrupt=interrupt))
+                                     error=fail or "interrupted", is_interrupt=interrupt), gap_ms=self.response_gap_ms)
             else:
-                self.emit(self._base("PostToolUse", tool_name=tool, tool_input=tool_input, tool_use_id=cid, tool_response=response))
+                self.emit(self._base("PostToolUse", tool_name=tool, tool_input=tool_input, tool_use_id=cid, tool_response=response),
+                          gap_ms=self.response_gap_ms)
         else:
             resp = response if isinstance(response, dict) else {"output": response if isinstance(response, str) else json.dumps(response)}
             if fail is not None:
                 resp = {"output": fail, "exit_code": exit_code if exit_code is not None else 1}
             elif exit_code is not None:
                 resp = dict(resp, exit_code=exit_code)
-            self.emit(self._base("PostToolUse", tool_name=tool, tool_input=tool_input, tool_use_id=cid, tool_response=resp))
+            self.emit(self._base("PostToolUse", tool_name=tool, tool_input=tool_input, tool_use_id=cid, tool_response=resp),
+                      gap_ms=self.response_gap_ms)
         return cid
 
     # ---------------------------------------------------------------- raccourcis Claude Code
