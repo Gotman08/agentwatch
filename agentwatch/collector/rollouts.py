@@ -1121,4 +1121,17 @@ def import_rollouts(store: EventStore, cfg: dict[str, Any], paths: list[str], si
             s = out["sessions"].setdefault(summ.get("session_id") or "?", {"threads": 0, "events": 0})
             s["threads"] += 1
             s["events"] += summ["events"]
+    # * Trace du passage, pour verifier apres coup la derniere collecte et ses erreurs (`doctor`). Les erreurs des
+    #   passages precedents sont gardees (20 au plus) avec leur date : une erreur passee ne disparait pas en silence.
+    now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    state["last_run"] = {"time": now, "files_checked": len(paths), "files_read": out["files"], "lines": out["lines"],
+                         "events": out["events"], "errors": len(out["errors"])}
+    if out["events"]:
+        state["last_import"] = {"time": now, "files": out["files"], "events": out["events"]}
+    if out["errors"]:
+        state["errors"] = ([{"time": now, "error": e[:300]} for e in out["errors"]] + list(state.get("errors") or []))[:20]
+    try:
+        save_state(home, state)
+    except OSError as exc:
+        out["errors"].append(f"etat de l'import non enregistre : {type(exc).__name__}: {exc}")
     return out

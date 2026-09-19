@@ -75,6 +75,11 @@ les chemins conserves. Les chemins relatifs au projet sont stockes relatifs.
   dans le texte, qui n'est pas conserve. `AGENTS.md` et
   skills injectes : longueur et empreinte. L'etat de lecture (`<home>/import/`) ne contient que
   des offsets, des identifiants et des compteurs.
+- Export detaille (`agentwatch inspect`) : sur demande explicite seulement, relit les rollouts d'une session et
+  ecrit un fichier LOCAL lisible (consignes, messages, arguments, scripts, sorties, erreurs), secrets masques par
+  les memes motifs que la collecte, textes bornes. Ce detail n'entre jamais dans le stockage d'AgentWatch, n'est
+  envoye nulle part, et reste en clair dans le fichier : a relire avant tout partage. Le raisonnement brut que
+  Codex ecrit parfois en clair n'est inclus qu'avec `--reasoning` ; le raisonnement chiffre reste illisible.
 - Sante de la collecte : seules les dates de modification des transcripts Claude Code et
   des rollouts Codex sont lues (jamais leur contenu) pour reperer un client actif sans
   evenement recu.

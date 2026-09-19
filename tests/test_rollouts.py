@@ -257,6 +257,21 @@ class RolloutImportTests(unittest.TestCase):
         other = R.signature_params(b"z" * 32)                        # * autre cle, autre signature : rien de comparable
         self.assertNotEqual(a, R.paragraph_signature("rappel : ne jamais toucher au dossier content, seulement source.", other))
 
+    def test_collector_keeps_a_trace_of_its_last_run_and_errors(self) -> None:
+        # * Verifier apres coup la derniere collecte et ses erreurs (doctor), sans relancer l'import.
+        p = self._write(self._main())
+        missing = str(self.day / "rollout-2026-09-19T11-00-00-01a0aaaa-0000-7000-8000-00000000dead.jsonl")
+        R.import_rollouts(self.store, self.cfg, [str(p), missing])
+        st = R.load_state(str(self.home))
+        self.assertEqual((st["last_run"]["files_checked"], st["last_run"]["files_read"], st["last_run"]["errors"]), (2, 1, 1))
+        self.assertGreater(st["last_import"]["events"], 0)
+        self.assertEqual(len(st["errors"]), 1)
+        self.assertIn("dead.jsonl", st["errors"][0]["error"])
+        R.import_rollouts(self.store, self.cfg, [str(p)])              # * un passage sans erreur ne les efface pas
+        st2 = R.load_state(str(self.home))
+        self.assertEqual((st2["last_run"]["errors"], len(st2["errors"])), (0, 1))
+        self.assertEqual(st2["last_import"], st["last_import"])        # * rien de nouveau : dernier import inchange
+
     def test_nothing_is_stored_in_clear(self) -> None:
         p = self._write(self._main())
         R.import_rollouts(self.store, self.cfg, [str(p)])

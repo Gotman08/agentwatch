@@ -492,6 +492,31 @@ def cmd_compare(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_inspect(args: argparse.Namespace) -> int:
+    """Export detaille d'une session Codex, relu dans ses rollouts (lecture seule), secrets masques, fichier local."""
+    from agentwatch.collector.store import EventStore
+    from agentwatch.reports import inspect as INS
+    home = home_dir(args.home)
+    cfg = load_config(home)
+    _auto_import_rollouts(home, cfg, EventStore(home, cfg))    # * parts calculees par appel a jour
+    since, until = _slice_bounds(args)
+    ext = "md" if args.format == "markdown" else "jsonl"
+    out_path = Path(args.out) if args.out else home / "exports" / f"{args.session[:13]}-{time.strftime('%Y%m%d-%H%M%S')}.{ext}"
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        with open(out_path, "w", encoding="utf-8", newline="\n") as fh:
+            summary = INS.export_session(cfg, str(home), args.session, fh, thread=args.thread, since=since, until=until,
+                                         max_chars=args.max_chars, reasoning=args.reasoning, fmt=args.format,
+                                         conclusions=not args.no_conclusions)
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from None
+    flags = ", ".join(f"{k.strip('[]')} {v}" for k, v in summary["flags"].items() if v) or "aucun"
+    _out(f"export ecrit : {out_path} ({out_path.stat().st_size} octets) ; {len(summary['threads'])} fil(s) ; "
+         f"{sum(summary['kinds'].values())} evenement(s) ; signalements : {flags}")
+    _out("contenu en clair (secrets masques) : fichier local, a ne pas partager sans relecture")
+    return 0
+
+
 def cmd_feedback(args: argparse.Namespace) -> int:
     from agentwatch.reports.feedback import set_feedback
     home = home_dir(args.home)
@@ -776,10 +801,24 @@ def cmd_doctor(args: argparse.Namespace) -> int:
                                                          " (la sonde lance codex app-server : --codex-trust pour l'autoriser)"))
             # * Collecte sans hooks : lecture passive des rollouts (collector/rollouts.py).
             from agentwatch.collector import rollouts as R
-            tracked = R.load_state(str(home)).get("files") or {}
+            rstate = R.load_state(str(home))
+            tracked = rstate.get("files") or {}
             roots = {((st or {}).get("meta") or {}).get("root_id") for st in tracked.values()} - {None}
             _out(f"    rollouts : lecture passive {'automatique avant sessions, report et trends' if _rollouts_cfg(cfg).get('auto_import', True) else 'sur demande (import-rollouts)'}"
                  f" (lecture seule, sans hooks, sans effet sur Codex) ; {len(tracked)} fichier(s) suivi(s), {len(roots)} session(s) Codex importee(s)")
+            lr, li = rstate.get("last_run") or {}, rstate.get("last_import") or {}
+            if lr:
+                _out(f"    dernier passage du collecteur : {lr.get('time')} ; {lr.get('files_checked')} rollout(s) examine(s), "
+                     f"{lr.get('files_read')} lu(s), {lr.get('events')} evenement(s), {lr.get('errors')} erreur(s)"
+                     + (f" ; dernier import d'evenements : {li.get('time')} ({li.get('events')} evenement(s))" if li else ""))
+            try:
+                pending = R.pending_rollouts(str(home), R.list_rollouts(cfg, float(_rollouts_cfg(cfg).get("days", 7) or 7)))
+            except OSError:
+                pending = []
+            _out(f"    en attente de lecture : {len(pending)} rollout(s) avec des lignes nouvelles (lues au prochain passage ; "
+                 "reprise a l'octet pres apres une interruption)")
+            for e in (rstate.get("errors") or [])[:3]:
+                _out(f"    ! erreur de collecte du {e.get('time')} : {e.get('error')}")
     health = trust_alerts + _health(home, cfg, store)
     if health:
         _out("- Sante de la collecte (panne silencieuse) :")
@@ -900,6 +939,20 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--since", help="seulement a partir de cet instant (AAAA-MM-JJ[THH:MM], heure locale sans fuseau)")
     s.add_argument("--until", help="seulement avant cet instant (meme format)")
     s.set_defaults(func=cmd_report)
+
+    s = sub.add_parser("inspect", help="export detaille d'une session Codex (consignes, messages, appels, resultats, tokens), "
+                                       "relu dans les rollouts, secrets masques")
+    s.add_argument("--session", required=True, help="identifiant (ou prefixe) du fil racine de la session")
+    s.add_argument("--thread", help="seulement ce fil (identifiant ou prefixe)")
+    s.add_argument("--day", help="seulement ce jour (AAAA-MM-JJ, jour local)")
+    s.add_argument("--since", help="seulement a partir de cet instant (heure locale sans fuseau ; Z ou +02:00 acceptes)")
+    s.add_argument("--until", help="seulement avant cet instant")
+    s.add_argument("--max-chars", type=int, default=4000, help="texte affiche par champ (defaut 4000) ; au-dela : [tronque]")
+    s.add_argument("--reasoning", action="store_true", help="inclure le raisonnement brut quand Codex l'ecrit en clair")
+    s.add_argument("--no-conclusions", action="store_true", help="ne pas ajouter l'annexe des conclusions des detecteurs")
+    s.add_argument("--format", default="markdown", choices=("markdown", "jsonl"))
+    s.add_argument("--out", help="fichier de sortie (defaut : <donnees>/exports/<session>-<date>.md)")
+    s.set_defaults(func=cmd_inspect)
 
     s = sub.add_parser("compare", help="avant / apres une correction : les pertes ont-elles reellement baisse ? (IC 95 %%)")
     s.add_argument("--at", help="instant de la correction (AAAA-MM-JJ[THH:MM], heure locale) ou agents-md:<empreinte>")
