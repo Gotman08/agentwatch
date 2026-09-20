@@ -327,6 +327,9 @@ _RG_RE = re.compile(r"(?m)^rg: (.+)$")
 _PY_EXC_RE = re.compile(r"(?m)^([A-Za-z_][\w.]*(?:Error|Exception|Exit|Interrupt))\b:?[ \t]*(.*)$")
 _GIT_RE = re.compile(r"(?m)^(fatal|error): (.+)$")
 _SCRIPT_EXIT_RE = re.compile(r'"ExitCode"\s*:\s*(-?\d+)')
+# * Compteur d'echecs qu'un script de test ou de compilation ecrit dans son rapport. Noms sans ambiguite
+#   seulement : un « Errors » generique pourrait n'etre qu'une colonne de comptage.
+_SCRIPT_FAILED_RE = re.compile(r'"(?:Failed|Failures|FailedCount|FailedTests)"\s*:\s*(\d+)')
 _SERVICE_RE = re.compile(r'"error"\s*:\s*"([^"]{1,80})"')
 _NOT_FOUND_RE = re.compile(r"(?im)^.*(?:is not recognized as|command not found|n'est pas reconnu).*$")
 
@@ -345,14 +348,23 @@ def classify_error(summary: str | None) -> dict[str, Any]:
     #   sortie, souvent un fragment de code (`{`, `Vector<n>D(X, Y));`). La forme de l'erreur (bloc PowerShell, ligne
     #   `rg:`, exception Python, `"ExitCode"` d'un script) se lit ailleurs dans ce meme texte.
     # * `script_exit_code` : code que le script ecrit dans sa propre sortie ; il differe du code de la commande.
+    # ! Un code ECRIT NUL n'etablit aucun echec interne : il dit que le script s'est termine normalement. Constate le
+    #   2026-09-21 sur les appels #1881, #1959 et #3207, presentes comme « echec ecrit par le script » alors que leur
+    #   sortie portait `"ExitCode": 0`. Ce qui etablit un echec interne, c'est un code ECRIT non nul, ou un compteur
+    #   d'echecs non nul (`"Failed": 2`). A defaut, la sortie n'est pas classee, et le code de sortie de la COMMANDE
+    #   continue de valoir ce qu'il vaut : rien ici ne transforme un echec en succes.
     """
-    out: dict[str, Any] = {"kind": "unclassified", "detail": None, "script_exit_code": None}
+    out: dict[str, Any] = {"kind": "unclassified", "detail": None, "script_exit_code": None, "script_failed": None}
     if not summary:
         return out
     text = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", "", summary)
-    m = _SCRIPT_EXIT_RE.search(text)
-    if m:
-        out["script_exit_code"] = int(m.group(1))
+    codes = [int(x) for x in _SCRIPT_EXIT_RE.findall(text)]
+    if codes:
+        # * Plusieurs etapes peuvent ecrire leur code : un code non nul fait foi sur un code nul qui le precede.
+        out["script_exit_code"] = next((c for c in codes if c != 0), codes[0])
+    failed = [int(x) for x in _SCRIPT_FAILED_RE.findall(text)]
+    if failed:
+        out["script_failed"] = max(failed)
     heads = _PS_HEAD_RE.findall(text)
     msgs = [x for x in _PS_MSG_RE.findall(text) if not re.match(r"^\d+\s*\|", x)]
     if heads and msgs:
@@ -378,8 +390,10 @@ def classify_error(summary: str | None) -> dict[str, Any]:
     if m:
         out.update(kind="command_not_found", detail=_neutralise(m.group(0)))
         return out
-    if out["script_exit_code"] is not None:
+    if out["script_exit_code"]:                       # non nul seulement : un 0 ecrit n'etablit rien
         out.update(kind="script_result", detail=f"ExitCode {out['script_exit_code']} ecrit par le script")
+    elif out["script_failed"]:
+        out.update(kind="script_result", detail=f"{out['script_failed']} echec(s) rapporte(s) par le script (champ Failed)")
     return out
 
 

@@ -265,6 +265,14 @@ processus enfants vers `AppData\Local\Packages\<paquet>\LocalCache\...`. Consequ
   correspondance avant de le requalifier en succes. Aucune classification n'est forcee : sans forme
   reconnue dans la source, l'erreur reste non classee (34 non classees ramenees a 27 sur la session
   du 2026-09-20).
+- Resultat ecrit par un script (precise le 2026-09-21) : ce qui etablit un echec INTERNE est un code ecrit non nul
+  (`"ExitCode": 6`) ou un compteur d'echecs non nul (`"Failed": 2`, `"Failures"`, `"FailedCount"`, `"FailedTests"`),
+  et le rapport cite celui des deux qui s'applique. Un `"ExitCode": 0` ecrit par le script n'etablit rien : il dit
+  que le script s'est termine normalement, et la cause de l'echec est ailleurs. Constate sur les appels #1881,
+  #1959 et #3207, presentes comme « echec ecrit par le script » avec un ExitCode nul : les deux premiers portaient
+  `"Failed": 2` et `"Failed": 1` dans leur `TestSummary` (fil principal, lignes 3290 et 3439), le troisieme rien du
+  tout et sa sortie n'est plus classee. Leur statut n'a pas bouge : le code de sortie de la COMMANDE vaut 1, donc
+  l'appel reste un echec ; seule la categorie a ete rectifiee.
 - **Regle : un extrait tronque ne requalifie jamais un echec en succes.** Un code de sortie non nul
   n'est reinterprete (recherche sans correspondance, `git diff` avec differences) que si la sortie a
   ete vue ENTIEREMENT : resume plus court que `max_error_chars`, ou source relue rendue complete

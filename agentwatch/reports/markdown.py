@@ -153,14 +153,23 @@ def _render_errors(st: dict[str, Any]) -> list[str]:
                 "source : le resume conserve la fin de la sortie, or l'echec peut s'y afficher avant des lignes normales. "
                 "Ces lignes portent la mention « relu dans la source ».", ""]
     out += [
-           "| Fois | Outil (commande) | Statut de l'outil | Code de sortie | Resultat ecrit par le script | Nature de l'erreur | "
-           "Exemples (#appel) | Source |", "|---|---|---|---|---|---|---|---|"]
+           "| Fois | Outil (commande) | Statut de l'outil | Code de sortie de la commande | Ce que le script ecrit de son "
+           "propre resultat | Nature de l'erreur | Exemples (#appel) | Source |", "|---|---|---|---|---|---|---|---|"]
     groups = err.get("groups") or []
     for g in groups:
         heads = f" ({', '.join(g['heads'])})" if g.get("heads") else ""
         tool_status = str(g["tool_status"]) if g.get("tool_status") else "non fourni"
         code = str(g["exit_code"]) if g.get("exit_code") is not None else "aucun"
-        script = f"ExitCode {g['script_exit_code']} dans la sortie" if g.get("script_exit_code") is not None else "-"
+        # * La colonne cite l'element qui ETABLIT l'echec interne. Un code ecrit nul n'en est pas un : il est montre
+        #   comme tel, sans etre presente comme un echec.
+        if g.get("script_exit_code"):
+            script = f"ExitCode {g['script_exit_code']} dans la sortie"
+        elif g.get("script_failed"):
+            script = f"champ Failed : {g['script_failed']} dans la sortie"
+        elif g.get("script_exit_code") == 0:
+            script = "ExitCode 0 : le script s'est termine normalement, aucun echec interne rapporte"
+        else:
+            script = "-"
         nature = g["kind_label"] + (f" : `{_cell(g['detail'], 110)}`" if g.get("detail") and g["kind"] != "script_result" else "")
         if g.get("detail_source"):
             nature += f" (relu dans la source : {_cell(g['detail_source'], 90)})"
@@ -175,9 +184,11 @@ def _render_errors(st: dict[str, Any]) -> list[str]:
     code_bases = sorted({str(g["exit_code_basis"]) for g in groups if g.get("exit_code_basis")})
     out.append("Statut de l'outil : ce que le client ecrit de l'appel" + (f" (base : {' ; '.join(status_bases)})" if status_bases else "")
                + ". Code de sortie : celui de la commande" + (f" (base : {' ; '.join(code_bases)})" if code_bases else "")
-               + ". Resultat ecrit par le script : un code que le script imprime dans sa propre sortie (par exemple `\"ExitCode\": 6` "
-               "d'une compilation) ; il differe du code de la commande, qui vaut 1 des qu'une etape echoue. Source : fichier et "
-               "ligne du rollout du premier exemple ; les autres sont dans l'export JSON.")
+               + ". Ce que le script ecrit de son propre resultat : le code ou le compte d'echecs qu'il imprime lui-meme (par "
+               "exemple `\"ExitCode\": 6` d'une compilation, ou `\"Failed\": 2` d'une serie de tests). Il differe du code de la "
+               "commande, qui vaut 1 des qu'une etape echoue. Un `\"ExitCode\": 0` ecrit par le script n'etablit aucun echec "
+               "interne : il dit que le script s'est termine normalement, et la cause de l'echec est alors ailleurs. Source : "
+               "fichier et ligne du rollout du premier exemple ; les autres sont dans l'export JSON.")
     if err.get("unclassified"):
         out.append("Sortie non classee : seule la fin de la sortie est conservee (400 caracteres, deja masques). Dans une chaine de "
                    "commandes, l'etape en echec peut preceder cette fin : la nature de l'erreur n'est alors pas lisible et reste non "

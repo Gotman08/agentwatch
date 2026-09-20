@@ -206,7 +206,8 @@ def error_breakdown(view: SessionView, limit: int = 12, cfg: dict[str, Any] | No
     classified.update(recovered)
     for c in failed:
         k = classified[c.key]
-        if k["script_exit_code"] is not None:
+        # * Ne compte que ce qui ETABLIT un echec interne : code ecrit non nul, ou compteur d'echecs non nul.
+        if k["script_exit_code"] or k.get("script_failed"):
             script_results += 1
         tool_status = c.evidence.get("item_status") or c.evidence.get("collab_status")
         if tool_status and c.origin == ORIGIN_ROLLOUT:
@@ -215,13 +216,14 @@ def error_breakdown(view: SessionView, limit: int = 12, cfg: dict[str, Any] | No
             basis = "statut deduit par AgentWatch : " + str(c.evidence.get("status_basis"))
         else:
             basis = None
-        key = (c.tool_name, c.status, tool_status, c.exit_code, k["kind"], k["detail"], k["script_exit_code"])
+        key = (c.tool_name, c.status, tool_status, c.exit_code, k["kind"], k["detail"], k["script_exit_code"],
+               k.get("script_failed"))
         g = groups.setdefault(key, {"tool": c.tool_name, "status": c.status, "tool_status": tool_status,
                                     "tool_status_basis": basis,
                                     "exit_code": c.exit_code, "exit_code_basis": _exit_code_basis(c),
                                     "kind": k["kind"], "kind_label": N.ERROR_KIND_LABELS.get(k["kind"], k["kind"]),
                                     "detail": k["detail"], "script_exit_code": k["script_exit_code"],
-                                    "detail_source": k.get("detail_source"),
+                                    "script_failed": k.get("script_failed"), "detail_source": k.get("detail_source"),
                                     "count": 0, "seqs": [], "sources": [], "heads": Counter()})
         g["count"] += 1
         if len(g["seqs"]) < 5:

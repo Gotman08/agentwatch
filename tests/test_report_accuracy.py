@@ -333,6 +333,51 @@ class ReportAccuracyTests(unittest.TestCase):
         self.assertEqual(c.status, S.STATUS_UNKNOWN)
         self.assertEqual(c.evidence["status_basis"], "undetermined_truncated_output")
 
+    def test_script_result_cites_what_establishes_an_internal_failure(self) -> None:
+        """Un `"ExitCode": 0` ecrit par le script n'est pas un echec interne ; un compteur d'echecs en est un.
+
+        Reproduit les appels #1881, #1959 (code ecrit nul mais `"Failed": 2`) et #3207 (code ecrit nul, rien d'autre)
+        du 2026-09-20, presentes a tort comme « echec ecrit par le script » avec ExitCode 0.
+        """
+        rapport = ('{{\r\n  "ExitCode": 0,\r\n  "TestSummary": {{\r\n    "Succeeded": {ok},\r\n    "Failed": {ko},\r\n'
+                   '    "NotRun": 0\r\n  }}\r\n}}\r\n')
+        # code ecrit nul, aucun echec rapporte : rien n'etablit un echec interne
+        k = N.classify_error(rapport.format(ok=3, ko=0))
+        self.assertEqual(k["kind"], "unclassified")
+        self.assertEqual(k["script_exit_code"], 0)
+        self.assertIsNone(k["detail"])
+        # code ecrit nul mais deux echecs rapportes : c'est le compteur qui etablit l'echec, et il est cite
+        k = N.classify_error(rapport.format(ok=1, ko=2))
+        self.assertEqual(k["kind"], "script_result")
+        self.assertEqual(k["script_failed"], 2)
+        self.assertIn("champ Failed", k["detail"])
+        self.assertIn("2", k["detail"])
+        # code ecrit non nul : il fait foi, meme precede d'un zero
+        k = N.classify_error('{"ExitCode": 0, "Steps": 2, "ExitCode": 6}')
+        self.assertEqual(k["kind"], "script_result")
+        self.assertEqual(k["script_exit_code"], 6)
+        self.assertIn("ExitCode 6", k["detail"])
+
+    def test_zero_script_code_does_not_turn_a_failure_into_a_success(self) -> None:
+        """La rectification de categorie ne touche pas au statut : la commande echoue toujours."""
+        b = RolloutBuilder(ROOT).meta().turn("turn-1", "Une serie de tests.")
+        out = ('{\r\n  "ExitCode": 0,\r\n  "TestSummary": {\r\n    "Succeeded": 3,\r\n    "Failed": 0\r\n  }\r\n}\r\n')
+        b.exec_("s_zero", [b.cmd("i_zero", "& './run_tests.ps1'", out, code=1)])
+        self._write(b)
+        R.import_rollouts(self.store, self.cfg, [str(self.day / f"rollout-2026-09-20T18-00-00-{ROOT}.jsonl")])
+        view = load_session(self.store, *cli._resolve_session(self.store, ROOT, None), self.cfg)
+        call = next(c for c in view.calls if c.tool_name == "Bash")
+        self.assertEqual(call.status, "error")          # le code de sortie de la commande vaut toujours 1
+        self.assertEqual(call.exit_code, 1)
+        err = compute_stats(view, self.cfg)["errors"]
+        self.assertEqual(err["failed_calls"], 1)
+        self.assertEqual(err["with_script_result"], 0)  # aucun echec interne etabli
+        g = err["groups"][0]
+        self.assertEqual(g["kind"], "unclassified")
+        self.assertEqual(g["script_exit_code"], 0)
+        md = render_markdown(self._report(view))
+        self.assertIn("ExitCode 0 : le script s'est termine normalement, aucun echec interne rapporte", md)
+
     def test_error_natures_total_matches_failed_calls(self) -> None:
         """Le decompte par nature couvre tous les appels en erreur, meme ceux hors du tableau borne."""
         view = self._session()
