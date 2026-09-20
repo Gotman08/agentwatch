@@ -312,6 +312,77 @@ def make_error_signature(text: str | None, limit: int = 160) -> str | None:
     return line[:limit]
 
 
+def _neutralise(line: str, limit: int = 160) -> str:
+    """Chemins, empreintes et nombres remplaces : deux erreurs de meme nature se regroupent."""
+    line = re.sub(r"'[^']*[\\/][^']*'", "<path>", line)
+    line = re.sub(r"[A-Za-z]:[\\/][^\s:'\"]+|(?:/[\w.\-]+){2,}|(?:[\w.\-]+[\\/])+[\w.\-*]+", "<path>", line)
+    line = re.sub(r"\b[0-9a-f]{7,}\b", "<hex>", line)
+    line = re.sub(r"\d+", "<n>", line)
+    return re.sub(r"\s+", " ", line).strip()[:limit]
+
+
+_PS_HEAD_RE = re.compile(r"(?m)^([A-Za-z][\w.\-]*):\s*\r?\n\s*Line \|")
+_PS_MSG_RE = re.compile(r"(?m)^\s+\|\s+(?!~)(\S.*)$")
+_RG_RE = re.compile(r"(?m)^rg: (.+)$")
+_PY_EXC_RE = re.compile(r"(?m)^([A-Za-z_][\w.]*(?:Error|Exception|Exit|Interrupt))\b:?[ \t]*(.*)$")
+_GIT_RE = re.compile(r"(?m)^(fatal|error): (.+)$")
+_SCRIPT_EXIT_RE = re.compile(r'"ExitCode"\s*:\s*(-?\d+)')
+_SERVICE_RE = re.compile(r'"error"\s*:\s*"([^"]{1,80})"')
+_NOT_FOUND_RE = re.compile(r"(?im)^.*(?:is not recognized as|command not found|n'est pas reconnu).*$")
+
+ERROR_KIND_LABELS = {
+    "powershell": "erreur PowerShell", "rg": "erreur de rg", "python": "exception Python", "git": "erreur git",
+    "service": "erreur renvoyee par le service", "command_not_found": "commande introuvable",
+    "script_result": "echec ecrit par le script dans sa sortie", "unclassified": "sortie non classee",
+}
+
+
+def classify_error(summary: str | None) -> dict[str, Any]:
+    """Nature d'une erreur, lue dans le resume deja masque (fin de la sortie). Rien n'est devine : un texte qui ne
+    correspond a aucune forme connue reste `unclassified`, sans detail.
+
+    # * Constate le 2026-09-20 sur une session Codex : la « signature » prenait la premiere ligne de la FIN de la
+    #   sortie, souvent un fragment de code (`{`, `Vector<n>D(X, Y));`). La forme de l'erreur (bloc PowerShell, ligne
+    #   `rg:`, exception Python, `"ExitCode"` d'un script) se lit ailleurs dans ce meme texte.
+    # * `script_exit_code` : code que le script ecrit dans sa propre sortie ; il differe du code de la commande.
+    """
+    out: dict[str, Any] = {"kind": "unclassified", "detail": None, "script_exit_code": None}
+    if not summary:
+        return out
+    text = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", "", summary)
+    m = _SCRIPT_EXIT_RE.search(text)
+    if m:
+        out["script_exit_code"] = int(m.group(1))
+    heads = _PS_HEAD_RE.findall(text)
+    msgs = [x for x in _PS_MSG_RE.findall(text) if not re.match(r"^\d+\s*\|", x)]
+    if heads and msgs:
+        out.update(kind="powershell", detail=_neutralise(f"{heads[-1]}: {msgs[-1]}"))
+        return out
+    m = _RG_RE.search(text)
+    if m:
+        out.update(kind="rg", detail=_neutralise("rg: " + m.group(1)))
+        return out
+    if "Traceback (most recent call last)" in text or _PY_EXC_RE.search(text):
+        excs = _PY_EXC_RE.findall(text)
+        out.update(kind="python", detail=_neutralise(f"{excs[-1][0]}: {excs[-1][1]}") if excs else None)
+        return out
+    m = _GIT_RE.search(text)
+    if m:
+        out.update(kind="git", detail=_neutralise(f"{m.group(1)}: {m.group(2)}"))
+        return out
+    m = _SERVICE_RE.search(text)
+    if m:
+        out.update(kind="service", detail=_neutralise(m.group(1)))
+        return out
+    m = _NOT_FOUND_RE.search(text)
+    if m:
+        out.update(kind="command_not_found", detail=_neutralise(m.group(0)))
+        return out
+    if out["script_exit_code"] is not None:
+        out.update(kind="script_result", detail=f"ExitCode {out['script_exit_code']} ecrit par le script")
+    return out
+
+
 def size_of(obj: Any) -> int:
     """Taille en octets de la representation JSON (mesure 'serialized')."""
     if obj is None:

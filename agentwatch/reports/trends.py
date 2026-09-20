@@ -388,7 +388,7 @@ def _feedback_cell(fb: dict[str, int]) -> str:
 
 def _pattern_table(rows: list[dict[str, Any]], with_projects: bool = True) -> list[str]:
     head = ("| # | Motif | Regle | Sessions |" + (" Projets |" if with_projects else "")
-            + " Clients | Occurrences | Appels | Tokens mesures | Sortie (octets) | Confiance max | Retours |")
+            + " Clients | Occurrences | Appels | Tokens repartis par calcul | Sortie (octets) | Confiance max | Retours |")
     sep = "|---|---|---|---|" + ("---|" if with_projects else "") + "---|---|---|---|---|---|---|"
     out = [head, sep]
     for i, r in enumerate(rows, 1):

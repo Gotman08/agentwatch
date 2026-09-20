@@ -18,6 +18,11 @@ from agentwatch.core import schema as S
 
 STATUS_OPEN = "open"
 DURATION_RECONSTRUCTED = "reconstructed_between_hooks"
+# * Appel lu dans un rollout Codex : debut et fin sont des horodatages ecrits par Codex, aucun hook n'intervient.
+DURATION_RECONSTRUCTED_ROLLOUT = "reconstructed_between_rollout_timestamps"
+RECONSTRUCTED_SOURCES = (DURATION_RECONSTRUCTED, DURATION_RECONSTRUCTED_ROLLOUT)
+ORIGIN_HOOK = "hook"
+ORIGIN_ROLLOUT = "codex:rollout"
 
 # * Parametres exclus de la cle de comparaison (volatils ou deja portes par la cible).
 _VOLATILE_PARAMS = {"command", "shell_heads", "shell_kind", "shell_paths", "timeout", "timeout_ms",
@@ -82,6 +87,10 @@ class Call:
     ambiguous: bool = False
     has_start: bool = False
     has_end: bool = False
+    # * D'ou viennent les evenements de l'appel : "hook", "codex:rollout" ou un autre import. Jamais suppose.
+    origin: str | None = None
+    # * Modele ecrit sur les evenements de l'appel ; `model` peut ensuite etre complete par celui de la session.
+    model_observed: str | None = None
 
     @property
     def order_ns(self) -> int:
@@ -110,10 +119,26 @@ class Call:
             return self.shell_kind not in ("read", "write")
         return self.category in (S.CAT_MCP, S.CAT_AGENT, S.CAT_UNKNOWN, S.CAT_OTHER)
 
+    @property
+    def label(self) -> str | None:
+        """Cible AFFICHEE. Un appel MCP a pour cible son outil (`mcp:linear/get_issue`) : sans ses parametres en
+        clair, dix fiches differentes se lisent comme une seule ligne. Seuls les parametres deja gardes en clair a
+        l'ingestion (liste `mcp_param_allowlist`) sont montres ; les valeurs en empreinte ne le sont jamais.
+
+        # ! Affichage seulement : les regroupements comparent `params_key`, qui distinguait deja ces appels.
+        """
+        if self.target_kind != "mcp" or not isinstance(self.target, str):
+            return self.target
+        shown = [f"{k}={str(v)[:60]}" for k, v in self.params.items()
+                 if not k.startswith("_") and isinstance(v, (str, int, float)) and not isinstance(v, bool)
+                 and k not in _VOLATILE_PARAMS][:3]
+        return f"{self.target} {' '.join(shown)}" if shown else self.target
+
     def summary(self) -> dict[str, Any]:
         return {
             "seq": self.seq, "call_id": self.call_id, "tool": self.tool_name, "category": self.category,
-            "op": self.op, "op_target": self.op_target,
+            "op": self.op, "op_target": self.op_target, "label": self.label, "exit_code": self.exit_code,
+            "origin": self.origin,
             "target": self.target, "status": self.status, "start_time": self.start_time,
             "end_time": self.end_time, "agent": self.agent_key, "turn_index": self.turn_index,
             "duration_ms": self.duration_ms, "duration_source": self.duration_source,
@@ -147,6 +172,19 @@ class AgentInfo:
     model: str | None
     client_duration_ms: int | None
     usage: dict[str, Any] | None
+    # * Ce qui suit vient des faits deja recueillis (rollouts Codex surtout) ; "inconnu" reste None, jamais devine.
+    nickname: str | None = None
+    agent_path: str | None = None
+    parent_agent_id: str | None = None     # "main" ou identifiant du fil parent
+    parent_basis: str | None = None
+    depth: int | None = None
+    stops: int = 0
+    last_stop_time: str | None = None
+    last_call_time: str | None = None
+    end_state: str = "not_observed"        # stopped | resumed_after_stop | not_observed
+    model_basis: str | None = None
+    usage_basis: str | None = None
+    origin: str | None = None
 
 
 @dataclass
@@ -174,6 +212,27 @@ class SessionView:
     # * Agents dont les horodatages ne sont pas ceux des actions (rollout reecrit d'un bloc) : durees, intervalles
     #   et cadences n'ont pas de sens pour eux.
     timing_unreliable_agents: list[str] = field(default_factory=list)
+    # * Nombre d'evenements par origine ("hook", "codex:rollout", autre import) : la provenance affichee en depend.
+    origins: dict[str, int] = field(default_factory=dict)
+
+    @property
+    def collection(self) -> str:
+        """hooks | rollout | mixed | unknown : d'ou viennent les appels de la session."""
+        tool = {c.origin for c in self.calls if c.origin}
+        if not tool:
+            tool = {o for o in self.origins if o in (ORIGIN_HOOK, ORIGIN_ROLLOUT)}
+        if tool == {ORIGIN_ROLLOUT}:
+            return "rollout"
+        if tool == {ORIGIN_HOOK}:
+            return "hooks"
+        return "mixed" if len(tool) > 1 else "unknown"
+
+
+def event_origin(ev: dict[str, Any]) -> str:
+    """Origine d'un evenement : hook du client, rollout Codex, ou autre import (transcript, usage)."""
+    if ev.get("source") == S.SOURCE_IMPORT:
+        return str((ev.get("evidence") or {}).get("import_source") or "import")
+    return ORIGIN_HOOK
 
 
 def _sort_key(ev: dict[str, Any]) -> tuple[int, int]:
@@ -247,6 +306,8 @@ def build_session(events: list[dict[str, Any]], cfg: dict[str, Any]) -> SessionV
         ns: int = raw_ns if isinstance(raw_ns, int) else 0
         if view.session_id is None and ev.get("session_id"):
             view.session_id = ev["session_id"]
+        origin = event_origin(ev)
+        view.origins[origin] = view.origins.get(origin, 0) + 1
         # * Un import (usage, transcript) date du moment de l'import : il ne deplace ni le debut ni la fin de la session.
         #   Exception : les evenements lus dans un rollout Codex portent l'heure reelle de l'action ou de la ligne.
         if ev.get("source") != S.SOURCE_IMPORT or (ev.get("evidence") or {}).get("import_source") == "codex:rollout":
@@ -307,7 +368,8 @@ def build_session(events: list[dict[str, Any]], cfg: dict[str, Any]) -> SessionV
             counts["open_calls"] += 1
         if c.duration_ms is None and c.start_ns is not None and c.end_ns is not None:
             c.duration_ms = max(0, (c.end_ns - c.start_ns) // 1_000_000)
-            c.duration_source = DURATION_RECONSTRUCTED
+            c.duration_source = DURATION_RECONSTRUCTED_ROLLOUT if c.origin == ORIGIN_ROLLOUT else DURATION_RECONSTRUCTED
+        c.model_observed = c.model
         if c.model is None:
             c.model = view.model
     view.calls = calls
@@ -364,10 +426,18 @@ def _build_agents(view: SessionView) -> list[AgentInfo]:
                                     "calls": [], "first_ns": None, "last_ns": None})
 
     for m in view.markers:
-        if m.phase in (S.PHASE_SUBAGENT_START, S.PHASE_SUBAGENT_STOP) and m.agent_id:
-            s = slot(m.agent_id)
+        # * L'arret d'un sous-agent Codex est ecrit dans le fil de son PARENT (element SubAgentActivity) : l'agent
+        #   concerne est dans les metadonnees du marqueur, pas dans son emetteur. Claude Code porte les deux, egaux.
+        aid_m = (m.meta.get("agent_id") or m.agent_id) if m.phase == S.PHASE_SUBAGENT_STOP else m.agent_id
+        if m.phase in (S.PHASE_SUBAGENT_START, S.PHASE_SUBAGENT_STOP) and aid_m:
+            s = slot(str(aid_m))
             s["type"] = s["type"] or m.meta.get("agent_type")
             if m.phase == S.PHASE_SUBAGENT_START:
+                for k in ("agent_nickname", "agent_path", "parent_thread_id", "depth"):
+                    if s.get(k) is None and m.meta.get(k) is not None:
+                        s[k] = m.meta.get(k)
+                s["origin"] = s.get("origin") or (ORIGIN_ROLLOUT if m.meta.get("thread_source") or m.meta.get("parent_thread_id")
+                                                   else None)
                 # * Un agent repris re-emet SubagentStart : on garde le premier debut et on compte.
                 s["starts"] = s.get("starts", 0) + 1
                 s["last_start_ns"] = max(s.get("last_start_ns") or 0, m.ns)
@@ -382,6 +452,14 @@ def _build_agents(view: SessionView) -> list[AgentInfo]:
             s = slot(c.agent_id)
             s["type"] = s["type"] or c.agent_type
             s["calls"].append(c)
+    # * Usage par fil releve dans les rollouts Codex (marqueur de portee "thread") : le plus complet de chaque fil.
+    thread_usage: dict[str, dict[str, Any]] = {}
+    for m in view.markers:
+        u = m.meta.get("usage") if m.phase == S.PHASE_USAGE else None
+        if isinstance(u, dict) and u.get("scope") == "thread" and u.get("agent_id"):
+            aid_u = str(u["agent_id"])
+            if aid_u not in thread_usage or int(u.get("requests") or 0) > int(thread_usage[aid_u].get("requests") or 0):
+                thread_usage[aid_u] = u
     spawners = [c for c in view.calls if c.agent_id is None and c.category == S.CAT_AGENT]
     exact = {c.evidence.get("spawned_agent_id"): c for c in spawners if c.evidence.get("spawned_agent_id")}
     infos: list[AgentInfo] = []
@@ -410,15 +488,49 @@ def _build_agents(view: SessionView) -> list[AgentInfo]:
         #   suivi d'un nouveau debut signale la reprise ; le dernier arret fait foi pour la fin.
         resumes = max(0, starts - 1)
         last_start_ns = s.get("last_start_ns")
-        # * L'arret ne compte que s'il suit le DERNIER debut ; sinon l'agent a ete repris et tourne encore.
-        stop_time = s["stop"] if s["stop_ns"] and (not last_start_ns or s["stop_ns"] >= last_start_ns) else None
+        last_call_ns = max(call_ns) if call_ns else None
+        # * L'arret ne compte que s'il suit le DERNIER debut ET le dernier appel de l'agent ; sinon l'agent a ete
+        #   repris (nouvelle tache confiee a un sous-agent Codex, reprise Claude Code) et sa fin n'est pas etablie.
+        after_start = bool(s["stop_ns"]) and (not last_start_ns or s["stop_ns"] >= last_start_ns)
+        after_calls = bool(s["stop_ns"]) and (last_call_ns is None or s["stop_ns"] >= last_call_ns)
+        stop_time = s["stop"] if after_start and after_calls else None
+        end_state = "stopped" if stop_time else ("resumed_after_stop" if s["stop_ns"] else "not_observed")
+        origin = s.get("origin") or next((c.origin for c in s["calls"] if c.origin), None)
+        # * Modele : celui ecrit sur les evenements de CET agent, s'il est unique. Celui de la session n'est pas prete.
+        seen_models = {c.model_observed for c in s["calls"] if c.model_observed}
+        model, model_basis = (parent.evidence.get("spawned_agent_model") if parent else None), None
+        if model:
+            model_basis = "reponse de l'outil Agent"
+        elif len(seen_models) == 1:
+            model, model_basis = next(iter(seen_models)), ("turn_context du fil (rollout)" if origin == ORIGIN_ROLLOUT
+                                                           else "evenements de l'agent")
+        elif len(seen_models) > 1:
+            model_basis = f"{len(seen_models)} modeles differents sur ses appels : non tranche"
+        usage, usage_basis = (parent.usage if parent else None), ("reponse de l'outil Agent" if parent and parent.usage else None)
+        tu = thread_usage.get(aid)
+        if usage is None and tu is not None:
+            usage = {"source": tu.get("source"), "scope": "thread", "requests": tu.get("requests"),
+                     "input_tokens": tu.get("input_tokens"), "cached_input_tokens": tu.get("cached_input_tokens"),
+                     "output_tokens": tu.get("output_tokens"), "reasoning_output_tokens": tu.get("reasoning_output_tokens"),
+                     "total_tokens": tu.get("total_tokens"), "windows": tu.get("windows")}
+            usage_basis = "releves token_usage_record du fil (rollout), sommes"
+        parent_thread = s.get("parent_thread_id")
+        parent_agent = None
+        if isinstance(parent_thread, str) and parent_thread:
+            parent_agent = "main" if parent_thread == view.session_id else parent_thread
+        last_call = max(s["calls"], key=lambda c: c.order_ns) if s["calls"] else None
         infos.append(AgentInfo(
             agent_id=aid, agent_type=s["type"], classification=classification, classification_note=note,
             start_time=s["start"], stop_time=stop_time, calls=len(s["calls"]), resumes=resumes,
             parent_call_key=parent.key if parent else None, parent_call_seq=parent.seq if parent else None,
-            link_basis=basis, model=(parent.evidence.get("spawned_agent_model") if parent else None),
+            link_basis=basis, model=model,
             client_duration_ms=(parent.evidence.get("spawned_agent_duration_ms") if parent else None),
-            usage=(parent.usage if parent else None),
+            usage=usage,
+            nickname=s.get("agent_nickname"), agent_path=s.get("agent_path"), parent_agent_id=parent_agent,
+            parent_basis=("parent_thread_id ecrit par Codex dans le session_meta du fil" if parent_agent else None),
+            depth=s.get("depth") if isinstance(s.get("depth"), int) else None,
+            stops=stops, last_stop_time=s["stop"], last_call_time=(last_call.start_time or last_call.end_time) if last_call else None,
+            end_state=end_state, model_basis=model_basis, usage_basis=usage_basis, origin=origin,
         ))
     infos.sort(key=lambda a: (a.start_time or a.stop_time or ""))
     return infos
@@ -456,6 +568,9 @@ def _apply_tool_event(ev: dict[str, Any], phase: str, ns: int, agent: str, epoch
             call.warnings.append("start not observed for this call")
     call.ambiguous = call.ambiguous or ambiguous
     call.event_ids.append(ev["event_id"])
+    if phase in (S.PHASE_START, S.PHASE_END, S.PHASE_FAILURE):
+        origin = event_origin(ev)
+        call.origin = origin if call.origin in (None, origin) else "mixed"
     _merge_static(call, ev, cfg)
     src = (ev.get("evidence") or {}).get("source")
 

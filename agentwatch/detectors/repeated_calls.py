@@ -408,6 +408,16 @@ def _wait_profile(calls: list[Call]) -> dict[str, Any]:
     return {"measured": n, "to_deadline": full, "returned_early": early}
 
 
+def _wait_timing(calls: list[Call], idles: list[float], iv_stats: dict[str, Any] | None) -> dict[str, Any]:
+    """Les trois durees d'une attente, jamais confondues : delai demande (parametre), duree observee de l'appel, et
+    intervalle observe entre deux appels (duree de l'attente + temps mort jusqu'a la relance)."""
+    requested = sorted({r for r in (requested_delay_s(c) for c in calls) if r is not None})
+    durs = [c.duration_ms / 1000 for c in calls if isinstance(c.duration_ms, int)]
+    return {"requested_s": requested[:6], "call_duration_median_s": round(median(durs), 1) if durs else None,
+            "interval_median_s": iv_stats["median"] if iv_stats else None,
+            "idle_median_s": round(median(idles), 1) if idles else None}
+
+
 def _timeouts_used(calls: list[Call]) -> dict[str, list[Any]]:
     """Delais demandes par l'agent (parametres numeriques de delai, gardes en clair), tries, 6 au plus par parametre."""
     from agentwatch.core.normalize import is_timing_param
@@ -534,8 +544,18 @@ def _summarise(gk: str, calls: list[Call], reps: list[dict[str, Any]], d: dict[s
             used = _timeouts_used(calls)
             prof = _wait_profile(calls)
             best = (honored or {}).get(str(first.tool_name))
+            wt = _wait_timing(calls, idles, iv_stats)
             why = (f"l'attente est relancee {max(timed_out, reasons['waiting'])} fois avant que ce qu'elle attend n'arrive"
-                   + (f" (delai demande : {', '.join(f'{k}={v}' for k, v in used.items())})" if used else "")
+                   + (f" (delai DEMANDE a l'outil : {', '.join(f'{k}={v}' for k, v in used.items())})" if used else "")
+                   # * Trois durees distinctes : ce que l'agent demande, ce que dure l'appel, et l'ecart entre deux appels
+                   #   (duree de l'attente + temps de reponse du modele). Les confondre fait dire « relance toutes les 50 s »
+                   #   d'une attente relancee toutes les 1 min 45 s.
+                   + (f" ; duree OBSERVEE d'une attente : {fmt_duration(wt['call_duration_median_s'])} (mediane)"
+                      if wt["call_duration_median_s"] is not None else "")
+                   + (f" ; intervalle OBSERVE entre deux relances : {fmt_duration(wt['interval_median_s'])} (median, debut a debut)"
+                      if wt["interval_median_s"] is not None else "")
+                   + (f", dont {fmt_duration(wt['idle_median_s'])} entre la fin d'une attente et la suivante"
+                      if wt["idle_median_s"] is not None else "")
                    + (f" ; {prof['to_deadline']} attente(s) sur {prof['measured']} vont jusqu'au delai demande, "
                       f"{prof['returned_early']} rendent la main avant" if prof["measured"] else "")
                    + (f" ; delai le plus long respecte par cet outil dans la session : {fmt_duration(best)}" if best else ""))
@@ -564,10 +584,12 @@ def _summarise(gk: str, calls: list[Call], reps: list[dict[str, Any]], d: dict[s
                           + (f" ; {cad_txt}" if cad_txt else ""))
     elif values["no_gain"] * 2 >= n_rt and values["no_gain"] >= 2:
         verdict, kind = "agent", "unexplained_repeats"
-        why = (f"{values['no_gain']} reprise(s) sur {n_rt} sans raison observee et au meme resultat : "
-               "l'agent redemande ce qu'il a deja")
-        suggestion = ("consigne (AGENTS.md, skill) : reutiliser le resultat obtenu ; ou le garder court (resume) pour qu'il reste "
-                      "en contexte")
+        # * Un resultat identique ne prouve pas un gaspillage : verifier qu'un etat n'a pas bouge est un travail utile,
+        #   et le raisonnement du modele entre les deux appels n'est pas observe. C'est un candidat a verifier.
+        why = (f"{values['no_gain']} reprise(s) sur {n_rt} sans raison observee entre les deux appels et au resultat "
+               "identique : candidat a verifier (une verification voulue donne aussi un resultat identique)")
+        suggestion = ("a verifier sur 2 reprises avant toute consigne : si le resultat etait encore utile et en contexte, "
+                      "une consigne (AGENTS.md, skill) de le reutiliser s'applique ; sinon marquer faux positif")
         if domain_a:
             kind = None      # * lecture ou execution locale : signalee par le detecteur A
     elif reasons["after_failure"] * 2 >= n_rt:
@@ -579,8 +601,11 @@ def _summarise(gk: str, calls: list[Call], reps: list[dict[str, Any]], d: dict[s
                                                     if k in ("context_loss", "new_input", "after_change"))
                + (f" ; etat change {outcomes['changed']} fois" if outcomes["changed"] else ""))
         if reasons["context_loss"] * 2 >= n_rt:
-            suggestion = (f"{reasons['context_loss']} reprise(s) suivent une compaction : garder cette information hors du "
-                          "contexte (fichier d'etat, notes) eviterait de la redemander apres chaque compaction")
+            # * Reprendre une information apres une compaction est attendu : le contexte a ete remplace. Ce n'est un
+            #   gaspillage que si elle est stable, volumineuse et relue souvent ; cela se juge sur le cout, pas sur la forme.
+            suggestion = (f"{reasons['context_loss']} reprise(s) suivent une compaction (contexte remplace) : relecture attendue, "
+                          "aucun gaspillage demontre. A examiner seulement si le contenu relu est stable et volumineux (voir le "
+                          "cout calcule du groupe)")
     elif known * 2 < n_rt:
         verdict, why = "indetermine", f"apport inconnu pour {outcomes['unknown']} reprise(s) sur {n_rt} (empreinte d'etat absente)"
     else:
@@ -597,8 +622,9 @@ def _summarise(gk: str, calls: list[Call], reps: list[dict[str, Any]], d: dict[s
         confidence = B.CONFIDENCE_MEDIUM
     else:
         confidence = B.CONFIDENCE_LOW
-    target = first.target if first.target is not None else first.mcp_tool
+    target = first.label if first.label is not None else first.mcp_tool     # * cible affichee : parametres MCP en clair compris
     return {
+        "wait_timing": _wait_timing(calls, idles, iv_stats),
         "group": gk, "agent": first.agent_key, "tool": first.tool_name, "category": first.category, "op": first.op,
         "target": (str(target)[:160] if target is not None else None), "params_key": first.params_key[:200],
         "calls": len(calls), "round_trips": n_rt, "same_response": len(reps) - n_rt, "episodes": len(episodes),
@@ -732,12 +758,14 @@ def detect(view: SessionView, cfg: dict[str, Any]) -> list[B.Finding]:
                                        f"aller-retour)" if free else "") + ". "
                        f"Raisons observees : {reasons_txt or 'aucune'}. "
                        + (f"Raisons annoncees par l'agent : {declared_txt}. " if declared_txt else "")
-                       + (f"Intervalle median par groupe : {', '.join(fmt_duration(m) for m in medians[:5])}. " if medians else "")
-                       + (f"Delais demandes : {', '.join(f'{k}={v}' for k, v in used.items())}. " if used else "")
+                       + (f"Intervalle OBSERVE entre deux appels, median par groupe : {', '.join(fmt_duration(m) for m in medians[:5])}. "
+                          if medians else "")
+                       + (f"Delai DEMANDE a l'outil (parametre) : {', '.join(f'{k}={v}' for k, v in used.items())}. " if used else "")
                        + f"Verdict : {lead['verdict_label']} : {lead['why']}.")
         if ctx_tokens:
-            explanation += (f" Contexte relu pour decider ces reprises : {sum(ctx_tokens)} tokens (entree des reponses "
-                            f"emettrices, en grande partie en cache).")
+            explanation += (f" Entree des reponses qui ont decide ces reprises : {sum(ctx_tokens)} tokens (releves par reponse, "
+                            f"additionnes, en grande partie en cache) ; c'est la taille du contexte a ces moments-la, pas un "
+                            f"cout supplementaire demontre.")
         findings.append(B.Finding(
             rule_id=RULE_ID, rule_version=RULE_VERSION, kind=kind,
             title=(f"{_TITLES[kind]} : {tool} ({calls} appels, {rts} aller(s)-retour(s)"

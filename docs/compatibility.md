@@ -69,6 +69,19 @@ Particularites observees : un appel de fonction MCP (`mcp__cua_repl.js`) produit
 parent apres le sien ; le dossier de travail des commandes est une URL `file:///` ; GPT-6 Astra
 n'emet qu'un appel de haut niveau par reponse et parallelise a l'interieur d'`exec`.
 
+Ce que les rapports d'une telle session ne doivent pas dire (corrige le 2026-09-20). L'origine de chaque
+evenement est enregistree (`Call.origin`, `SessionView.collection`) et l'en-tete l'annonce. Pour une session
+lue dans les rollouts : aucune base de couverture ne cite de hook (table `CAPABILITIES_ROLLOUT`), la surcharge
+des hooks est declaree sans objet, une duree reconstruite l'est « entre les horodatages du rollout » et la
+version du client est celle ecrite dans son `session_meta`, pas celle relevee a l'installation des hooks.
+
+Faits du rollout repris dans le tableau des agents : surnom et role (`session_meta.thread_spawn`), fil parent
+(`parent_thread_id`), modele (`turn_context` du fil), tokens du fil (`token_usage_record`). L'arret d'un
+sous-agent est ecrit dans le fil du PARENT (item `SubAgentActivity`, `kind: completed`) et signifie « tache
+rendue » : un meme sous-agent peut en recevoir une autre ensuite (observe 5 arrets pour un sous-agent le
+2026-09-20). Un arret n'est donc retenu comme fin que s'il suit le dernier appel de l'agent ; sinon la fin
+est declaree inconnue. L'appel de lancement n'est relie par aucun identifiant : il reste « non etabli ».
+
 ## Smoke tests reels
 
 Script : `python tests/live_smoke.py --client codex|claude-code`. Il cree un dossier
@@ -188,8 +201,14 @@ processus enfants vers `AppData\Local\Packages\<paquet>\LocalCache\...`. Consequ
 - Les hooks n'observent pas : le contenu des raisonnements, la presence d'un resultat
   dans le contexte du modele, les modifications externes, les outils herberges de Codex,
   la sortie d'une commande en arriere-plan apres son lancement.
-- Codex : pas de code de sortie ni de duree ; statut d'une commande shell `unknown`
-  (indice textuel seulement) ; approbation manuelle des hooks obligatoire.
+- Codex par les hooks : pas de code de sortie ni de duree ; statut d'une commande shell `unknown`
+  (indice textuel seulement) ; approbation manuelle des hooks obligatoire. Par les rollouts (voie
+  utilisee aujourd'hui) : code de sortie et duree presents, statut ecrit par le client.
+- Erreurs : seule la fin de la sortie est conservee (400 caracteres, masques). Dans une chaine de
+  commandes, l'etape en echec peut preceder cette fin : la nature de l'erreur reste alors « non
+  classee » plutot que devinee (34 cas sur 93 le 2026-09-20). Le rapport distingue le statut de
+  l'outil, le code de sortie de la commande et le resultat que le script ecrit dans sa propre sortie
+  (`"ExitCode": 6` d'une compilation alors que la commande rend 1).
 - Claude Code : `duration` et `prompt_id` dependent de la version (>= 2.1.267 et
   >= 2.1.196) ; le CLI du PATH est en 2.1.87.
 - Linux / macOS / WSL : non executes.

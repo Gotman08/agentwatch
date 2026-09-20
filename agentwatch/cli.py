@@ -879,11 +879,14 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         for h in health:
             _out(f"    ! {h['client']} : {h['message']}")
     else:
-        _out("- Sante de la collecte : rien a signaler (interpreteur et point d'entree en place, hooks presents, "
-             "aucun silence apres une activite du client)")
+        # * Ne pas dire « hooks presents » pour un client qui n'en a pas : Codex est lu dans ses rollouts, sans hook.
+        _out("- Sante de la collecte : rien a signaler (interpreteur et point d'entree en place ; pour chaque client, la voie "
+             "de collecte decrite ci-dessus, hooks ou lecture des rollouts, est en place ; aucun silence apres une activite "
+             "du client)")
     tcfg = cfg.get("transcripts") if isinstance(cfg.get("transcripts"), dict) else {}
     _out(f"- Transcripts Claude Code (usage en tokens) : {'import automatique a chaque rapport' if tcfg.get('auto_import') else 'sur demande (agentwatch import-transcripts ; transcripts.auto_import=true pour automatiser)'}")
-    _out("Rappel : AgentWatch n'observe que les evenements de hooks ; voir docs/compatibility.md pour les limites par client.")
+    _out("Rappel : AgentWatch observe les evenements de hooks (Claude Code) et lit passivement les rollouts Codex, sans jamais "
+         "lancer ni interroger Codex ; voir docs/compatibility.md pour les limites par client.")
     return 0
 
 

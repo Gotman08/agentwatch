@@ -132,6 +132,16 @@ def _mine(seq: list[Call], n_min: int, n_max: int, min_occ: int) -> list[tuple[t
     return kept
 
 
+_READ_RUN_CATS = (S.CAT_READ, S.CAT_SEARCH, S.CAT_LIST, S.CAT_SHELL)
+
+
+def _is_dev_cycle(steps: list[dict[str, Any]]) -> bool:
+    """Lire puis modifier, ou modifier puis verifier : une edition au contenu compose a chaque fois, a cote d'une
+    lecture ou d'une execution. C'est le travail normal d'un developpeur, pas une sequence a scripter."""
+    edits = [s for s in steps if s["category"] in (S.CAT_EDIT, S.CAT_WRITE) and s["kind"] == "judgment"]
+    return bool(edits) and any(s["category"] in _READ_RUN_CATS for s in steps)
+
+
 def _analyse(gram: tuple[str, ...], occ: list[list[Call]]) -> dict[str, Any]:
     steps: list[dict[str, Any]] = []
     judgment = 0
@@ -144,8 +154,12 @@ def _analyse(gram: tuple[str, ...], occ: list[list[Call]]) -> dict[str, Any]:
         kind = "mechanical"
         reason = "structure stable" + (", cible variable" if variable else ", cible fixe")
         if first.category in (S.CAT_EDIT, S.CAT_WRITE):
-            fps = {c.params.get("new_fp") or c.params.get("content_fp") or c.params.get("patch_fp") for c in col}
-            if len(fps) > 1:
+            fp_list = [c.params.get("new_fp") or c.params.get("content_fp") or c.params.get("patch_fp") for c in col]
+            if any(fp is None for fp in fp_list):
+                # * Constate le 2026-09-20 : des patches Codex sans diff enregistre (`patch_fp` absent) etaient supposes
+                #   identiques entre eux, donc « mecaniques ». Un contenu inconnu n'est jamais suppose identique.
+                kind, reason = "judgment", "contenu d'edition inconnu pour au moins une occurrence (empreinte absente) : jamais suppose identique"
+            elif len(set(fp_list)) > 1:
                 kind, reason = "judgment", "contenu d'edition different a chaque occurrence"
         elif first.category == S.CAT_SHELL and variable:
             heads = {tuple(c.params.get("shell_heads") or []) for c in col}
@@ -201,15 +215,33 @@ def detect(view: SessionView, cfg: dict[str, Any]) -> list[B.Finding]:
             for step in info["steps"]:
                 if isinstance(step.get("example_target"), str) and len(step["example_target"]) > 80:
                     step["example_target"] = step["example_target"][:80] + "..."
-            if info["judgment_steps"] == 0 and info["all_success"] and n >= min_occ + 1 and avoidable >= n:
+            # * Correction du 2026-09-20 (version inchangee : identifiants et retours deja enregistres restent valables) :
+            #   « lire puis modifier » et « modifier puis lancer le test » etaient classes en confiance moyenne et
+            #   presentes comme des allers-retours « evites ». Or l'etape de jugement (contenu d'edition compose a chaque
+            #   fois, statut qui varie) DEPEND du resultat precedent : le modele doit le lire pour decider. La seule
+            #   repetition d'une structure ne demontre aucune economie ; un tel motif ne peut plus etre une opportunite.
+            dev_cycle = _is_dev_cycle(info["steps"])
+            if info["judgment_steps"] >= 1:
+                conf = B.CONFIDENCE_LOW
+                why = (f"{n} occurrences ; {info['judgment_steps']} etape(s) de jugement : l'aller-retour qui les precede sert a "
+                       "decider de la suite, son economie n'est pas demontree")
+            elif info["all_success"] and n >= min_occ + 1 and avoidable >= n:
                 conf, why = B.CONFIDENCE_HIGH, f"{n} occurrences, toutes reussies, aucune etape de jugement detectee"
-            elif info["judgment_steps"] <= 1 and avoidable * 2 >= n:
-                conf, why = B.CONFIDENCE_MEDIUM, f"{n} occurrences ; {info['judgment_steps']} etape(s) de jugement ou occurrences au seuil"
-            elif info["judgment_steps"] <= 1:
-                conf, why = B.CONFIDENCE_LOW, (f"{n} occurrences mais la plupart deja emises en une seule reponse "
-                                               f"({avoidable} aller(s)-retour(s) evitable(s) seulement)")
+            elif avoidable * 2 >= n:
+                conf, why = B.CONFIDENCE_MEDIUM, f"{n} occurrences, aucune etape de jugement ; occurrences au seuil ou echecs"
             else:
-                conf, why = B.CONFIDENCE_LOW, f"{n} occurrences mais {info['judgment_steps']} etapes exigent encore un jugement"
+                conf, why = B.CONFIDENCE_LOW, (f"{n} occurrences mais la plupart deja emises en une seule reponse "
+                                               f"({avoidable} aller(s)-retour(s) entre etapes seulement)")
+            demonstrated = info["judgment_steps"] == 0
+            if demonstrated:
+                saving_txt = (f"{avoidable} aller(s)-retour(s) du modele separent ces etapes, toutes mecaniques : ils seraient "
+                              "evitables si la sequence etait faite d'un bloc (a valider).")
+            else:
+                saving_txt = (f"{avoidable} aller(s)-retour(s) du modele separent ces etapes, mais {info['judgment_steps']} etape(s) "
+                              "exigent un jugement : le modele lit le resultat precedent pour decider de la suite. La repetition "
+                              "de la structure ne demontre aucune economie.")
+            if dev_cycle:
+                saving_txt = "Cycle normal de developpement (lire, modifier, verifier). " + saving_txt
             members = [c for o in occ for c in o]
             recipe = {
                 "name": " -> ".join(s["tool"] or "?" for s in info["steps"]),
@@ -226,16 +258,19 @@ def detect(view: SessionView, cfg: dict[str, Any]) -> list[B.Finding]:
             }
             findings.append(B.Finding(
                 rule_id=RULE_ID, rule_version=RULE_VERSION, kind="recurring_pattern",
-                title=f"Motif recurrent ({n}x) : {recipe['name']}",
+                title=(f"Cycle de developpement repete ({n}x) : {recipe['name']}" if dev_cycle and not demonstrated
+                       else f"Motif recurrent ({n}x) : {recipe['name']}"),
                 confidence=conf, confidence_rationale=why + ". " + B.LIMIT_HEURISTIC,
                 calls=[c.key for c in members], call_refs=B.refs(members),
                 evidence={"agent": agent, "pattern": list(gram), "occurrences": n, "pattern_length": len(gram),
                           "occurrence_seqs": [[c.seq for c in o] for o in occ], "judgment_steps": info["judgment_steps"],
-                          "responses_per_occurrence": per_occ, "avoidable_round_trips": avoidable,
+                          "responses_per_occurrence": per_occ, "round_trips_between_steps": avoidable,
+                          # * « evitable » seulement quand toutes les etapes sont mecaniques ; sinon rien n'est demontre.
+                          "avoidable_round_trips": avoidable if demonstrated else 0,
+                          "saving_demonstrated": demonstrated, "development_cycle": dev_cycle,
                           "round_trip_basis": "requetes emettrices (transcript ou rollout)" if exact else "ecarts entre appels (heuristique)"},
                 explanation=(f"La sequence {recipe['name']} apparait {n} fois avec la meme structure ; "
-                             f"{len(info['inputs'])} position(s) ont une cible variable ; {avoidable} aller(s)-retour(s) du modele "
-                             f"auraient ete evites si elle avait ete faite d'un bloc."),
+                             f"{len(info['inputs'])} position(s) ont une cible variable. " + saving_txt),
                 counter_indications=[
                     "Les decisions prises entre deux appels (lecture du resultat, choix de la cible suivante) ne sont pas observables.",
                     "Une structure stable n'implique pas une semantique stable (commandes shell notamment).",
@@ -243,7 +278,10 @@ def detect(view: SessionView, cfg: dict[str, Any]) -> list[B.Finding]:
                 missing_data=["contenu des resultats et raisonnement du modele non observes"],
                 observed_cost=B.observed_cost(members),
                 proposal={"type": "deterministic_recipe_candidate", "recipe": recipe,
-                          "text": "Candidat de script/recette a valider manuellement ; AgentWatch ne le genere ni ne l'execute."},
+                          "text": ("Candidat de script/recette a valider manuellement ; AgentWatch ne le genere ni ne l'execute."
+                                   if demonstrated else
+                                   "Aucune amelioration demontree : tant qu'une etape exige un jugement, il n'y a rien a scripter. "
+                                   "Signalement garde pour memoire, a marquer faux positif s'il ne sert pas.")},
                 validation_protocol=[
                     "Verifier sur 2 occurrences que les entrees variables suffisent a reproduire chaque etape.",
                     "Ecrire la recette, l'executer sur une copie, comparer les sorties avec les empreintes observees.",

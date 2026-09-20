@@ -14,12 +14,19 @@ transcripts ont ete importes), puis octets de sortie observes. Aucun score globa
 
 Le cout observe d'un signalement somme, par provenance, les octets de sortie et les durees
 des appels concernes. Les tokens ne sont jamais deduits des octets : ils viennent de
-`agentwatch import-transcripts` (Claude Code), qui lit dans le transcript du client l'usage
-de chaque requete API et l'attribue aux appels (part de l'entree non mise en cache de la
-requete qui a consomme le resultat + part de la sortie de la requete qui a emis l'appel ;
-methode dans `docs/events.md`). Quand ils sont mesures, le rapport les affiche a cote de la
-methode, et `trends` les cumule par motif : c'est ce qu'un outil ou une regle eviterait a
-chaque fois que le motif revient.
+`agentwatch import-transcripts` (Claude Code) ou `import-rollouts` (Codex), qui lisent l'usage
+ecrit par le client. `trends` les cumule par motif : c'est l'ordre de grandeur qu'un outil ou une
+regle eviterait a chaque fois que le motif revient.
+
+Trois natures de nombres, jamais melangees dans les rapports (precision du 2026-09-20) :
+
+| Nature | Ce que c'est | Ou |
+|---|---|---|
+| mesure | releve ecrit par le client, un par reponse du modele (`token_usage_record`) ou par requete API (transcript) | totaux de session, tableau par fil |
+| repartition calculee | part d'un releve attribuee a un appel d'outil par AgentWatch : entree non mise en cache de la reponse qui a consomme le resultat (au prorata des tailles) + part de la sortie de la reponse emettrice | cout observe d'un signalement, `trends` |
+| estimation | aucune : rien n'est deduit d'octets, d'un tarif ou d'un modele de cout | nulle part |
+
+Aucune donnee de facturation n'est lue : les rapports ne disent jamais ce qui a ete « paye ».
 
 ## Unites de travail (prealable a A et D)
 
@@ -187,18 +194,25 @@ requete ; statut variable selon l'occurrence). Les appels de coordination (messa
 agents, plan, questions) n'entrent pas dans les sequences. Un meme cycle n'est rapporte qu'une fois
 (A -> B et B -> A).
 
-Valeur (v1.2) : les allers-retours du modele qu'une automatisation eviterait, `avoidable_round_trips`,
-comptes par occurrence d'apres la requete emettrice (transcript ou rollout), sinon les ecarts. Un motif
-que le modele enchaine deja en une seule reponse (actions d'un meme `exec` Codex) n'est pas signale ; un
-motif dont moins de la moitie des occurrences coute un aller-retour de plus est en confiance basse.
+Valeur (v1.2) : les allers-retours du modele entre les etapes, `round_trips_between_steps`, comptes par
+occurrence d'apres la requete emettrice (transcript ou rollout), sinon les ecarts. Un motif que le modele
+enchaine deja en une seule reponse (actions d'un meme `exec` Codex) n'est pas signale.
 Constate le 2026-09-19 : 30 des 32 signalements d'une session Codex etaient faux (coordination, code
 reecrit a chaque fois) ; "patch puis verification" (12 fois) tenait 11 fois sur 12 dans une reponse.
+
+Economie demontree ou non (precision du 2026-09-20). `avoidable_round_trips` n'est renseigne que si
+TOUTES les etapes sont mecaniques (`saving_demonstrated`). Des qu'une etape exige un jugement, l'aller-retour
+qui la precede sert au modele a lire le resultat pour decider de la suite : la seule repetition d'une
+structure ne demontre aucune economie, le signalement passe en confiance basse et sa proposition le dit.
+Un contenu d'edition inconnu (empreinte absente) n'est jamais suppose identique : l'etape est de jugement.
+Lire puis modifier, ou modifier puis verifier, est reconnu comme un `development_cycle` et titre comme tel :
+c'est le travail normal d'un developpeur, pas une sequence a scripter.
 
 | Confiance | Condition |
 |---|---|
 | high | au moins `min_occurrences` + 1 occurrences, toutes reussies, aucune etape de jugement |
-| medium | au plus une etape de jugement ou occurrences au seuil |
-| low | plusieurs etapes de jugement |
+| medium | aucune etape de jugement, occurrences au seuil ou echecs |
+| low | au moins une etape de jugement (aucune economie demontree) |
 
 Le signalement contient une recette (entrees, preconditions, etapes, sortie, tests,
 risques) a valider par un humain. AgentWatch ne genere ni n'execute ce script, et ne
@@ -296,6 +310,17 @@ Verdict par groupe, sur les reprises qui ont coute un aller-retour :
 | justifie | reprises expliquees (modification, nouvelle consigne, perte de contexte) ou qui ont appris quelque chose | aucune ; si les compactions dominent : garder l'information hors du contexte |
 | sans aller-retour | toutes les repetitions dans une meme reponse | aucune |
 | indetermine | apport inconnu pour la majorite | aucune |
+
+Trois durees d'une attente, jamais confondues (precision du 2026-09-20) : le delai DEMANDE a l'outil
+(parametre `timeout_ms`...), la duree OBSERVEE de l'appel, et l'INTERVALLE OBSERVE entre deux appels
+(duree de l'attente + temps de reponse du modele). Le rapport donne les trois (`wait_timing`) : une attente
+de 50 s relancee toutes les 1 min 45 s ne se resume pas a « relancee toutes les 50 s ».
+
+Ce qu'un resultat identique ou une compaction ne prouvent pas (precision du 2026-09-20). Un resultat
+identique a la reprise est un CANDIDAT a verifier, pas un gaspillage demontre : verifier qu'un etat n'a
+pas bouge donne aussi un resultat identique, et le raisonnement du modele entre les deux appels n'est pas
+observe. Une reprise apres compaction est attendue, puisque le contexte a ete remplace ; elle ne se discute
+que si le contenu relu est stable et volumineux. Les propositions le disent, au lieu de conclure.
 
 Attente relancee (`wait_timeout`) : G distingue l'attente qui va jusqu'au delai demande (demander plus long ;
 le rapport cite le plus long delai que l'outil a respecte dans la session, preuve qu'il est accepte) de celle

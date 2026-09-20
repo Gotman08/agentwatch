@@ -242,7 +242,10 @@ def _detect_reads(calls: list[Call], window_calls: int, window_seconds: int, cas
             why += (" ; outil MCP : l'etat renvoye peut etre volatil et le serveur peut avoir des effets non declares ; "
                     "les ecritures locales intercalees ne sont pas considerees comme modifiant une ressource distante")
         cross_tool = len(tools) > 1
-        title = f"{first.op} de {first.op_target!r} repete {n} fois via {', '.join(tools)}"
+        # * Cible affichee : pour un appel MCP, l'outil ET ses parametres gardes en clair (`get_issue id=NYK-69`), sinon
+        #   dix fiches differentes portent le meme titre. Le regroupement, lui, comparait deja les parametres.
+        shown = first.label if first.category == S.CAT_MCP else first.op_target
+        title = f"{first.op} de {shown!r} repete {n} fois via {', '.join(tools)}"
         if first.op == I.OP_UNKNOWN:
             title = f"Commande de lecture repetee {n} fois : {first.target!r}"
         counter = [
@@ -300,7 +303,7 @@ def _detect_reads(calls: list[Call], window_calls: int, window_seconds: int, cas
                 "intervening_total": sum(len(b) for b in cl["between"]),
                 "context_epoch": first.context_epoch, "agent": first.agent_key, "pair_verdicts": verdicts,
             },
-            explanation=(f"La meme unite de travail ({first.op} sur {first.op_target!r}, memes parametres) a ete refaite {n} fois "
+            explanation=(f"La meme unite de travail ({first.op} sur {shown!r}, memes parametres) a ete refaite {n} fois "
                          f"dans la fenetre ({window_calls} appels / {window_seconds} s)" + (f", par des outils differents ({', '.join(tools)})." if cross_tool else ".")
                          + (" Le contenu obtenu etait identique a chaque fois." if all_same_known else " Le contenu n'a pas pu etre compare pour tous les appels.")),
             counter_indications=counter, missing_data=missing, observed_cost=B.observed_cost(members[1:]),

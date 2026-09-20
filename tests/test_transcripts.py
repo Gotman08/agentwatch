@@ -143,11 +143,13 @@ class TranscriptTests(unittest.TestCase):
         js = json.loads(buf.getvalue())
         self.assertIn("4 requetes API", js["stats"]["usage"]["status"])
         self.assertEqual(js["stats"]["usage"]["transcript_calls"], 5)
-        self.assertIn("tokens mesures (transcripts ou rollouts importes)", js["ranking_criteria"])
+        # * Les tokens d'un signalement sont une part CALCULEE a partir des releves par reponse : le libelle ne dit
+        #   plus « mesures » (correction du 2026-09-20, voir tests/test_report_accuracy.py).
+        self.assertIn("tokens repartis par calcul sur ces appels (a partir des releves par reponse)", js["ranking_criteria"])
         buf = io.StringIO()
         with redirect_stdout(buf):
             self.assertEqual(cli.main(["--home", str(self.home), "report", "--session", "tx"]), 0)
-        self.assertIn("tokens mesures", buf.getvalue())
+        self.assertIn("tokens repartis par calcul", buf.getvalue())
         buf = io.StringIO()
         with redirect_stdout(buf):
             self.assertEqual(cli.main(["--home", str(self.home), "trends", "--days", "0", "--format", "json"]), 0)

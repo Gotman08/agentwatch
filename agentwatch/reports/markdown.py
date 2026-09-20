@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from agentwatch.detectors.base import Finding
+from agentwatch.reports.labels import agent_cells, agent_label, other_tools_row, recon_label, tokens_cost_text
 
 
 def _fmt(v: Any) -> str:
@@ -19,6 +20,8 @@ def _fmt(v: Any) -> str:
 
 def _short(value: Any, limit: int = 100) -> str:
     """Cible bornee pour l'affichage : une commande longue reste lisible dans le JSON."""
+    if value is None:
+        return "(sans cible)"
     s = repr(value) if not isinstance(value, str) else value
     s = s.replace("\n", " ")
     return f"`{s}`" if len(s) <= limit else f"`{s[:limit]}...` ({len(s)} car., complet dans l'export JSON)"
@@ -31,17 +34,15 @@ def _cost_line(cost: dict[str, Any]) -> str:
     if cost.get("duration_client_ms_sum") is not None:
         parts.append(f"{cost['duration_client_ms_sum']} ms (duree client)")
     if cost.get("duration_reconstructed_ms_sum") is not None:
-        parts.append(f"{cost['duration_reconstructed_ms_sum']} ms (reconstruite entre hooks, inclut la surcharge des hooks)")
+        parts.append(f"{cost['duration_reconstructed_ms_sum']} ms ({recon_label(cost)})")
     if cost.get("duration_unknown_for"):
         parts.append(f"duree inconnue pour {cost['duration_unknown_for']} appel(s)")
-    tok = cost.get("tokens")
-    if isinstance(tok, dict):
-        src = {"claude-code:transcript": "transcript", "codex:rollout": "rollout"}.get(str(tok.get("source")), str(tok.get("source")))
-        parts.append(f"{tok['total']} tokens mesures ({tok['uncached_input']} d'entree non mise en cache + {tok['output']} de sortie ; "
-                     f"{tok['known_for']}/{cost.get('calls')} appels, {src})")
-    else:
-        parts.append("tokens : non mesures (agentwatch import-transcripts ou import-rollouts)")
+    parts.append(tokens_cost_text(cost))
     return " ; ".join(parts)
+
+
+def _agent(report: dict[str, Any], agent_id: Any) -> str:
+    return agent_label(report, agent_id)
 
 
 def _cell(value: Any, limit: int = 60) -> str:
@@ -54,7 +55,7 @@ def _counts(d: dict[str, int], labels: dict[str, str], limit: int = 4) -> str:
     return ", ".join(f"{labels.get(k, k)} {v}" for k, v in items[:limit]) or "-"
 
 
-def _render_repetitions(rep: dict[str, Any], top: int) -> list[str]:
+def _render_repetitions(rep: dict[str, Any], top: int, report: dict[str, Any] | None = None) -> list[str]:
     """Section G : chaque groupe d'appels repetes avec sa raison, son rythme, son apport et son verdict ; puis le
     rythme de chaque outil. Les groupes justifies y figurent aussi : ce qu'on ne peut pas ameliorer se lit ici."""
     from agentwatch.detectors import repeated_calls as G
@@ -71,9 +72,12 @@ def _render_repetitions(rep: dict[str, Any], top: int) -> list[str]:
                    + (", ".join(f"{G.VERDICT_LABELS.get(k, k)} {v}" for k, v in sorted(byv.items(), key=lambda kv: -kv[1])) or "-")
                    + ".")
         out.append("")
-        out += ["| Agent | Outil | Cible | Appels (episodes) | Intervalle median (min) | Raisons observees | Raisons annoncees | "
-                "Apport | Verdict | Suggestion |", "|---|---|---|---|---|---|---|---|---|---|"]
+        out += ["| Agent | Outil | Cible | Appels (episodes) | Delai demande a l'outil | Intervalle observe entre deux appels : "
+                "median (minimum) | Raisons observees | Raisons annoncees | Resultat suivant | Verdict | Suggestion |",
+                "|---|---|---|---|---|---|---|---|---|---|---|"]
         for g in groups[:top]:
+            req = (g.get("wait_timing") or {}).get("requested_s") or []
+            req_txt = ", ".join(G.fmt_duration(float(r)) for r in req[:3]) or "-"
             iv = g.get("interval_s") or {}
             oc = g.get("outcomes") or {}
             gain = (f"change {oc.get('changed', 0)} / identique {oc.get('same', 0)}"
@@ -82,17 +86,22 @@ def _render_repetitions(rep: dict[str, Any], top: int) -> list[str]:
             sugg = g.get("suggestion") or ""
             if rec and not sugg:
                 sugg = f"1 appel / {G.fmt_duration(rec['cooldown_s'])} : -{rec['avoided']} appels"
-            agent = "principal" if g["agent"] == "main" else f"`{str(g['agent'])[:8]}`"
-            out.append(f"| {agent} | {_cell(g['tool'], 40)} | {_cell(g.get('target') or '-', 50)} | {g['calls']} ({g['episodes']}) | "
+            agent = _agent(report or {}, g["agent"])
+            out.append(f"| {agent} | {_cell(g['tool'], 40)} | {_cell(g.get('target') or '-', 70)} | {g['calls']} ({g['episodes']}) | "
+                       f"{req_txt} | "
                        f"{G.fmt_duration(iv.get('median')) if iv else '-'} ({G.fmt_duration(iv.get('min')) if iv else '-'}) | "
                        f"{_counts(g.get('reasons') or {}, G.REASON_LABELS)} | {_counts(g.get('declared') or {}, G.DECLARED_LABELS)} | "
                        f"{gain} | **{g['verdict_label']}** | {_cell(sugg, 120) or '-'} |")
         if len(groups) > top:
-            out.append(f"| ... | {len(groups) - top} autre(s) groupe(s) dans l'export JSON | | | | | | | | |")
+            out.append(f"| ... | {len(groups) - top} autre(s) groupe(s) dans l'export JSON | | | | | | | | | |")
         out.append("")
-        out.append("Raisons observees : ce qui precede chaque reprise (resultat precedent, actions et messages entre les deux). "
+        out.append("Delai demande : parametre de delai passe a l'outil (`-` s'il n'y en a pas). Intervalle observe : ecart reel entre "
+                   "le debut de deux appels successifs (duree de l'appel + temps de reponse du modele) ; les deux ne se confondent pas. "
+                   "Raisons observees : ce qui precede chaque reprise (resultat precedent, actions et messages entre les deux). "
                    "Raisons annoncees : categories reconnues dans les commentaires de l'agent, sans texte conserve. "
-                   "Apport : etat du resultat (horodatages neutralises) change ou identique.")
+                   "Resultat suivant : etat du resultat (horodatages neutralises) change ou identique au precedent. "
+                   "Un resultat identique, ou une reprise apres compaction, ne prouve pas un gaspillage : verifier qu'un etat n'a pas "
+                   "bouge, ou relire apres le remplacement du contexte, sont des travaux normaux.")
         out.append("")
         for g in [g for g in groups if g.get("cadence") and (g["cadence"].get("recommended") or {})][:3]:
             cad = g["cadence"]
@@ -109,12 +118,64 @@ def _render_repetitions(rep: dict[str, Any], top: int) -> list[str]:
         out += ["Rythme des outils (intervalle entre deux appels successifs d'un meme agent, hors appels d'une meme reponse ; "
                 "pics tous agents confondus) :", "",
                 "| Outil | Appels | Agents | Intervalle median | 10 % des intervalles sous | Max / 1 min | Max / 10 min | "
-                "Identiques a un precedent | dont sans apport |", "|---|---|---|---|---|---|---|---|---|"]
+                "Identiques a un precedent | dont au resultat identique |", "|---|---|---|---|---|---|---|---|---|"]
         for r in rhythm:
             out.append(f"| {_cell(r['tool'], 50)} | {r['calls']} | {r['agents']} | {G.fmt_duration(r['interval_median_s'])} | "
                        f"{G.fmt_duration(r['interval_p10_s'])} | {r['max_per_min']} | {r['max_per_10min']} | "
                        f"{r['identical_repeats']} | {r['repeats_no_gain']} |")
         out.append("")
+    return out
+
+
+def _agent_row(report: dict[str, Any], a: dict[str, Any]) -> str:
+    c = agent_cells(report, a)
+    return (f"| {c['label']} | `{c['id']}` | {c['type']} | {c['status']} | {c['calls']} | {c['start']} | {c['end']} | "
+            f"{c['parent']} | {c['basis']} | {c['model']} | {c['tokens']} |")
+
+
+def _render_errors(st: dict[str, Any]) -> list[str]:
+    """Erreurs en trois niveaux sources : statut de l'outil, code de sortie de la commande, resultat ecrit par le script.
+    Remplace la liste de « signatures » (premiere ligne de la fin de sortie, souvent un fragment de code)."""
+    err = st.get("errors") or {}
+    if not err.get("failed_calls"):
+        return []
+    out = ["## Erreurs : statut de l'outil, code de sortie, resultat du script", "",
+           f"{err['failed_calls']} appel(s) en erreur, en {err['groups_total']} groupe(s) ; {err['with_exit_code']} ont un code de sortie ; "
+           f"{err['with_script_result']} portent un resultat ecrit par le script lui-meme ; {err['unclassified']} ont une sortie "
+           f"qu'aucune forme connue ne classe (laissee non classee, rien n'est devine).", "",
+           "| Fois | Outil (commande) | Statut de l'outil | Code de sortie | Resultat ecrit par le script | Nature de l'erreur | "
+           "Exemples (#appel) | Source |", "|---|---|---|---|---|---|---|---|"]
+    groups = err.get("groups") or []
+    for g in groups:
+        heads = f" ({', '.join(g['heads'])})" if g.get("heads") else ""
+        tool_status = str(g["tool_status"]) if g.get("tool_status") else "non fourni"
+        code = str(g["exit_code"]) if g.get("exit_code") is not None else "aucun"
+        script = f"ExitCode {g['script_exit_code']} dans la sortie" if g.get("script_exit_code") is not None else "-"
+        nature = g["kind_label"] + (f" : `{_cell(g['detail'], 110)}`" if g.get("detail") and g["kind"] != "script_result" else "")
+        srcs = [x for x in (g.get("sources") or []) if x.get("file")]
+        src = f"#{srcs[0]['seq']} : {srcs[0]['file']}:{srcs[0]['line']}" if srcs else "-"
+        out.append(f"| {g['count']} | {_cell(g['tool'], 40)}{_cell(heads, 50)} | {tool_status} | {code} | {script} | "
+                   f"{nature} | {', '.join('#' + str(x) for x in g['seqs'])} | {_cell(src, 120)} |")
+    if err["groups_total"] > len(groups):
+        out.append(f"| ... | {err['groups_total'] - len(groups)} autre(s) groupe(s) dans l'export JSON | | | | | | |")
+    out.append("")
+    status_bases = sorted({str(g["tool_status_basis"]) for g in groups if g.get("tool_status_basis")})
+    code_bases = sorted({str(g["exit_code_basis"]) for g in groups if g.get("exit_code_basis")})
+    out.append("Statut de l'outil : ce que le client ecrit de l'appel" + (f" (base : {' ; '.join(status_bases)})" if status_bases else "")
+               + ". Code de sortie : celui de la commande" + (f" (base : {' ; '.join(code_bases)})" if code_bases else "")
+               + ". Resultat ecrit par le script : un code que le script imprime dans sa propre sortie (par exemple `\"ExitCode\": 6` "
+               "d'une compilation) ; il differe du code de la commande, qui vaut 1 des qu'une etape echoue. Source : fichier et "
+               "ligne du rollout du premier exemple ; les autres sont dans l'export JSON.")
+    if err.get("unclassified"):
+        out.append("Sortie non classee : seule la fin de la sortie est conservee (400 caracteres, deja masques). Dans une chaine de "
+                   "commandes, l'etape en echec peut preceder cette fin : la nature de l'erreur n'est alors pas lisible et reste non "
+                   "classee plutot que devinee.")
+    rein = err.get("reinterpreted_as_success") or {}
+    if rein.get("count"):
+        out.append(f"{rein['count']} autre(s) appel(s) ont un code de sortie non nul sans etre des erreurs, et sont comptes en succes : "
+                   "recherche sans correspondance, `git diff` avec differences (voir evidence.exit_status_meaning). Exemples : "
+                   + ", ".join("#" + str(x) for x in rein["seqs"]) + (" ..." if rein["count"] > len(rein["seqs"]) else "") + ".")
+    out.append("")
     return out
 
 
@@ -176,13 +237,26 @@ def render_markdown(report: dict[str, Any]) -> str:
     s = report["session"]
     findings = report["findings"]
     top_ids = set(report["top_findings"])
+    prov = s.get("provenance") or {}
+    rollout_only = prov.get("collection") == "rollout"
+    if rollout_only:
+        # * Session lue dans ses rollouts : la version est celle que Codex ecrit dans son session_meta, aucun hook en jeu.
+        version_line = (f"- Version de `{s['client']}` : {s.get('client_version_observed') or 'inconnue'} "
+                        f"(ecrite par le client dans le session_meta du rollout) ; AgentWatch {report['agentwatch_version']} ; "
+                        f"schema {report['schema_version']}")
+    else:
+        version_line = (f"- Version de l'executable `{s['client']}` du PATH lors de `configure` : "
+                        f"{s.get('client_version_at_configure') or 'inconnue'} (la version reellement executee n'est pas transmise "
+                        f"aux hooks) ; AgentWatch {report['agentwatch_version']} ; schema {report['schema_version']}")
     lines = [f"# AgentWatch - rapport de session", "",
              f"- Client : `{s['client']}` ; session `{s['session_id']}` ; modele : `{s['model'] or 'non observe'}` ({s['model_source']})",
              f"- Projet : `{s['project_dir'] or 'inconnu'}` ; periode : {s['first_time']} -> {s['last_time']}",
-             f"- Tours : {s['turns']} ; epoques de contexte : {s['context_epochs']} ; agents : {', '.join(s['agents']) or 'aucun'}",
-             f"- Version de l'executable `{s['client']}` du PATH lors de `configure` : {s.get('client_version_at_configure') or 'inconnue'} "
-             f"(la version reellement executee n'est pas transmise aux hooks) ; AgentWatch {report['agentwatch_version']} ; schema {report['schema_version']}",
-             ""]
+             f"- Tours : {s['turns']} ; epoques de contexte : {s['context_epochs']} ; agents : "
+             f"{', '.join(_agent(report, a) for a in s['agents']) or 'aucun'}",
+             version_line]
+    if prov.get("text"):
+        lines.append(f"- Source des evenements : {prov['text']}")
+    lines.append("")
     if s.get("warnings"):
         lines.append("Avertissements de lecture : " + " ; ".join(s["warnings"][:5]))
         lines.append("")
@@ -193,6 +267,10 @@ def render_markdown(report: dict[str, Any]) -> str:
     lines.append("")
     lines.append("Classement : " + " > ".join(report["ranking_criteria"]) + ". Aucun score global.")
     lines.append("")
+    cross = (report.get("stats") or {}).get("cross_agent") or {}
+    if cross.get("agents", 0) > 1:
+        lines.append(f"Portee des signalements : {cross['note']}")
+        lines.append("")
     if not findings:
         lines.append(report["no_issue_statement"] or "Aucun probleme demontre dans les donnees couvertes.")
         lines.append("")
@@ -224,68 +302,89 @@ def render_markdown(report: dict[str, Any]) -> str:
     st = report["stats"]
     lines += ["## Statistiques descriptives", "",
               f"- Evenements : {st['events']} ; appels correles : {st['calls']} ; statuts : {st['status']}",
-              f"- Correlation : {st['correlation']}",
-              f"- Surcharge des hooks (dans le processus, hors demarrage de l'interpreteur) : {st['hook_overhead_ms']}",
-              f"- Usage de tokens : {st['usage']['status']} ({st['usage']['note']})", ""]
+              f"- Correlation : {st['correlation']}"]
+    if rollout_only and not (st.get("hook_overhead_ms") or {}).get("n"):
+        lines.append("- Surcharge des hooks : sans objet, aucun hook dans cette session (lecture passive des rollouts)")
+    else:
+        lines.append(f"- Surcharge des hooks (dans le processus, hors demarrage de l'interpreteur) : {st['hook_overhead_ms']}")
+    lines.append(f"- Tokens, releves mesures : {st['usage']['status']} ({st['usage']['note']})")
+    kinds = st["usage"].get("kinds") or {}
+    if kinds:
+        # * Trois natures de nombres, jamais melangees : mesure par reponse, part calculee par appel, estimation (aucune).
+        lines += [f"- Tokens, mesure : {kinds['measured']}",
+                  f"- Tokens, repartition calculee : {kinds['allocated']}",
+                  f"- Tokens, estimation : {kinds['estimated']}"]
+    lines.append("")
     threads = st["usage"].get("threads") or []
     if threads:
-        lines += ["| Fil | Agent | Requetes du modele (demandes de compaction comprises) | Tokens | Entree (dont en cache) | Sortie (dont raisonnement) | Fenetres de contexte (lignes compacted + 1) |",
+        lines += ["| Fil | Agent | Requetes du modele (demandes de compaction comprises) | Tokens releves | Entree (dont en cache) | Sortie (dont raisonnement) | Fenetres de contexte (lignes compacted + 1) |",
                   "|---|---|---|---|---|---|---|"]
         for t in threads:
-            who = "principal" if not t.get("agent_id") else f"{t.get('agent_nickname') or '?'} ({t.get('agent_type') or 'sous-agent'})"
-            lines.append(f"| `{str(t['thread_id'])[:13]}` | {who} | {t['requests']} | {t['total_tokens']} | "
+            who = _agent(report, t.get("agent_id")) + (f" ({t['agent_type']})" if t.get("agent_id") and t.get("agent_type") else "")
+            lines.append(f"| `{str(t['thread_id'])}` | {who} | {t['requests']} | {t['total_tokens']} | "
                          f"{t['input_tokens']} ({t['cached_input_tokens']}) | {t['output_tokens']} ({t['reasoning_output_tokens']}) | "
                          f"{_fmt(t.get('windows'))} |")
         lines.append("")
+    recon_header = ("Duree reconstruite entre horodatages du rollout, mediane (n)" if rollout_only
+                    else "Duree reconstruite mediane (n)")
+    client_header = "Duree ecrite par le client, mediane (n)" if rollout_only else "Duree client mediane (n)"
     lines += [
-              "| Outil | Appels | Erreurs | Statut inconnu | Ouverts | Sortie (octets, mesures) | Duree client mediane (n) | Duree reconstruite mediane (n) |",
+              f"| Outil | Appels | Erreurs | Statut inconnu | Ouverts | Sortie (octets, mesures) | {client_header} | {recon_header} |",
               "|---|---|---|---|---|---|---|---|"]
-    for t in st["tools"][:15]:
+    shown_tools = st["tools"][:15]
+    for t in shown_tools:
         lines.append(f"| {t['tool']} | {t['calls']} | {t['errors']} | {t['unknown_status']} | {t['open']} | "
                      f"{_fmt(t['output_bytes'])} ({t['output_known_for']}) | {_fmt(t['client_duration_median_ms'])} ({t['client_duration_n']}) | "
                      f"{_fmt(t['reconstructed_duration_median_ms'])} ({t['reconstructed_duration_n']}) |")
+    # * Le tableau se limite aux 15 premiers outils : le reste est additionne sur une ligne pour que le total retombe
+    #   sur le nombre d'appels annonce (constate le 2026-09-20 : 2 857 appels affiches pour 2 870).
+    other = other_tools_row(st["tools"], 15)
+    if other:
+        lines.append(f"| *{other['tools']} autre(s) outil(s)* : {other['names']} | {other['calls']} | {other['errors']} | "
+                     f"{other['unknown_status']} | {other['open']} | - | - | - |")
+    tt = st.get("tools_total") or {}
+    if tt:
+        lines.append(f"| **Total : {tt['tools']} outil(s)** | **{tt['calls']}** | **{tt['errors']}** | **{tt['unknown_status']}** | "
+                     f"**{tt['open']}** | | | |")
     lines.append("")
     wu = [w for w in st.get("work_units", []) if w["repeated"]]
     if wu:
         lines += ["Unites de travail refaites (meme operation, meme cible, tous outils confondus) :", "",
                   "| Operation | Cible | Fois | Outils | Agents | Contenus distincts obtenus |", "|---|---|---|---|---|---|"]
         for w in wu[:15]:
-            target = str(w["target"]).replace("|", "\\|").replace("\n", " ")
+            target = ("(sans cible)" if w["target"] is None else str(w["target"])).replace("|", "\\|").replace("\n", " ")
             shown = target if len(target) <= 110 else target[:110] + "..."
             lines.append(f"| {w['op']} | {shown} | {w['calls']} | {', '.join(w['tools'])} | {w['agents']} | "
                          f"{_fmt(w['distinct_contents'])} |")
         lines.append("")
-        lines.append("Un travail refait n'est pas forcement inutile : voir les signalements et leurs contre-indications.")
+        lines.append("Un travail refait n'est pas forcement inutile : voir les signalements et leurs contre-indications."
+                     + (" La colonne Agents additionne des agents differents a titre descriptif : aucun signalement ne compare "
+                        "deux agents entre eux." if cross.get("agents", 0) > 1 else ""))
         lines.append("")
-    lines += _render_repetitions(st.get("repetitions") or {}, int(report.get("repetitions_top", 15)))
-    if st["error_signatures"]:
-        lines.append("Signatures d'erreur les plus frequentes :")
-        lines += [f"- {e['count']}x `{e['signature']}`" for e in st["error_signatures"]]
-        lines.append("")
+    lines += _render_repetitions(st.get("repetitions") or {}, int(report.get("repetitions_top", 15)), report)
+    lines += _render_errors(st)
     if st["largest_outputs"]:
         lines.append("Sorties les plus volumineuses (une sortie volumineuse n'est pas, seule, un gaspillage) :")
-        lines += [f"- #{c['seq']} {c['tool']} {_short(c['target'])} : {c['output_size_bytes']} octets" for c in st["largest_outputs"]]
+        lines += [f"- #{c['seq']} {c['tool']} {_short(c.get('label') or c['target'])} : {c['output_size_bytes']} octets"
+                  for c in st["largest_outputs"]]
         lines.append("")
     if st["longest_calls"]:
         lines.append("Appels les plus longs (source de la duree indiquee) :")
-        lines += [f"- #{c['seq']} {c['tool']} {_short(c['target'])} : {c['duration_ms']} ms ({c['duration_source']})" for c in st["longest_calls"]]
+        lines += [f"- #{c['seq']} {c['tool']} {_short(c.get('label') or c['target'])} : {c['duration_ms']} ms ({c['duration_source']})"
+                  for c in st["longest_calls"]]
         lines.append("")
     agents = report.get("agents") or []
     if agents:
         internal = [a for a in agents if a["classification"] == "stop_only"]
         shown = [a for a in agents if a["classification"] != "stop_only"]
         lines += ["## Agents", "",
-                  "| Agent | Type | Statut | Appels | Debut -> fin | Lance par | Base du lien | Modele | Tokens (rapportes par le client) |",
-                  "|---|---|---|---|---|---|---|---|---|"]
+                  "| Agent | Identifiant | Type | Statut | Appels | Debut | Fin | Lance par | Base du lien | Modele | Tokens (et leur source) |",
+                  "|---|---|---|---|---|---|---|---|---|---|---|"]
         for a in shown:
-            u = a.get("usage") or {}
-            tokens = (f"in {_fmt(u.get('input_tokens'))} / out {_fmt(u.get('output_tokens'))} / cache lu {_fmt(u.get('cache_read_tokens'))}"
-                      f" / total {_fmt(u.get('total_tokens'))}") if u else "non rapportes"
-            parent = f"#{a['parent_call_seq']} (Agent)" if a.get("parent_call_seq") is not None else "aucun lien"
-            status_txt = a["classification"] + (f" (repris {a['resumes']}x)" if a.get("resumes") else "")
-            lines.append(f"| `{a['agent_id'][:12]}` | {a.get('agent_type') or 'inconnu'} | {status_txt} | {a['calls']} | "
-                         f"{a.get('start_time') or '?'} -> {a.get('stop_time') or 'en cours'} | {parent} | {a.get('link_basis') or '-'} | "
-                         f"{a.get('model') or 'inconnu'} | {tokens} |")
+            lines.append(_agent_row(report, a))
+        lines.append("")
+        lines.append("« inconnu » et « non etabli » sont gardes tels quels : un parent, un modele ou une fin ne sont affiches que "
+                     "s'ils sont ecrits dans les donnees, jamais deduits.")
         lines.append("")
         if internal:
             lines.append(f"- {len(internal)} agent(s) interne(s) non detailles : seulement un `SubagentStop`, sans type ni appel "
@@ -293,7 +392,14 @@ def render_markdown(report: dict[str, Any]) -> str:
         if shown:
             lines.append("- sous-agent observe : demarrage et/ou appels d'outils ; les detecteurs ne comparent jamais deux agents entre eux.")
         lines.append("")
-    lines += ["## Couverture", "", "| Capacite | Documente | Observe dans cette session | Base |", "|---|---|---|---|"]
+    cov_rollout = any(r.get("source") == "rollout" for r in report["coverage"])
+    if cov_rollout:
+        lines += ["## Couverture", "",
+                  "Session lue dans les rollouts Codex : la base citee est la ligne ou l'element du rollout, aucun hook n'intervient. "
+                  "Le format des rollouts n'est pas documente par l'editeur : la colonne dit ce que l'import sait lire.", "",
+                  "| Capacite | Lue par l'import des rollouts | Observe dans cette session | Base (rollout) |", "|---|---|---|---|"]
+    else:
+        lines += ["## Couverture", "", "| Capacite | Documente | Observe dans cette session | Base |", "|---|---|---|---|"]
     for r in report["coverage"]:
         lines.append(f"| {r['capability']} | {r['documented']} | {r['observed_in_session']} | {r['basis']} |")
     lines.append("")

@@ -9,7 +9,8 @@ from typing import Any
 
 from agentwatch import CLIENT_CLAUDE_CODE, CLIENT_CODEX
 from agentwatch.core import schema as S
-from agentwatch.core.correlate import STATUS_OPEN, SessionView
+from agentwatch.core import normalize as N
+from agentwatch.core.correlate import ORIGIN_ROLLOUT, RECONSTRUCTED_SOURCES, STATUS_OPEN, SessionView
 
 # * Capacites documentees par client (source : docs officielles, voir docs/compatibility.md).
 #   Valeurs : supported | partial | absent. "observed" / "not_tested" viennent des donnees.
@@ -53,6 +54,28 @@ CAPABILITIES: dict[str, dict[str, tuple[str, str]]] = {
 }
 
 
+# * Session Codex lue dans ses rollouts (lecture passive, aucun hook) : ce que l'import sait lire, ligne par ligne.
+#   Le format des rollouts n'est pas documente par l'editeur : la colonne dit "import", pas "documente".
+CAPABILITIES_ROLLOUT: dict[str, tuple[str, str]] = {
+    "tool_start": ("supported", "ligne function_call / custom_tool_call, ou started_at_ms de l'element item_completed"),
+    "tool_end": ("supported", "element item_completed (CommandExecution, McpToolCall, FileChange...) ou sortie de la fonction"),
+    "tool_failure": ("partial", "statut de l'element (failed, declined), code de sortie, isError MCP ; fonction sans statut : texte d'erreur (heuristique)"),
+    "exit_code": ("supported", "exit_code de l'element CommandExecution"),
+    "client_duration": ("supported", "duration de l'element, ecrite par Codex ; sinon ecart entre les horodatages du rollout"),
+    "output_size": ("supported", "taille de la reponse reconstituee depuis le rollout (sortie et champs de statut)"),
+    "result_fingerprint": ("supported", "empreinte HMAC de la reponse reconstituee depuis le rollout"),
+    "mcp_calls": ("supported", "element McpToolCall (serveur, outil, arguments)"),
+    "subagents": ("supported", "un rollout par sous-agent : session_meta.thread_spawn (parent, role, surnom) ; SubAgentActivity dans le fil parent"),
+    "compaction": ("supported", "ligne compacted (et son identifiant de demande de compaction)"),
+    "interrupts": ("partial", "event_msg turn_aborted : interruption du tour, pas de statut par appel"),
+    "turn_boundaries": ("supported", "event_msg task_started / task_complete"),
+    "background_commands": ("partial", "sessions exec/write_stdin non correlees a un appel unique"),
+    "hosted_tools": ("partial", "recherches web visibles (elements WebSearch et Extension)"),
+    "long_commands_polling": ("partial", "un appel long = un element avec sa duree ; le sondage interne n'est pas visible"),
+    "token_usage": ("supported", "token_usage_record : un releve par reponse du modele ; la part par appel est calculee, pas mesuree"),
+}
+
+
 def compute_stats(view: SessionView, cfg: dict[str, Any] | None = None) -> dict[str, Any]:
     calls = view.calls
     by_tool: dict[str, dict[str, Any]] = defaultdict(lambda: {
@@ -80,7 +103,7 @@ def compute_stats(view: SessionView, cfg: dict[str, Any] | None = None) -> dict[
         if isinstance(c.duration_ms, int):
             if c.duration_source and c.duration_source.startswith("client"):
                 row["client_durations"].append(c.duration_ms)
-            elif c.duration_source == "reconstructed_between_hooks":
+            elif c.duration_source in RECONSTRUCTED_SOURCES:
                 row["reconstructed_durations"].append(c.duration_ms)
     tools = []
     for name, row in sorted(by_tool.items(), key=lambda kv: kv[1]["calls"], reverse=True):
@@ -104,7 +127,12 @@ def compute_stats(view: SessionView, cfg: dict[str, Any] | None = None) -> dict[
         "events": view.counts.get("events", 0),
         "status": dict(status_counter),
         "tools": tools,
+        "tools_total": {"tools": len(tools), "calls": sum(t["calls"] for t in tools), "errors": sum(t["errors"] for t in tools),
+                        "unknown_status": sum(t["unknown_status"] for t in tools), "open": sum(t["open"] for t in tools)},
         "error_signatures": [{"signature": s, "count": n} for s, n in err_sig.most_common(10)],
+        "errors": error_breakdown(view),
+        "collection": view.collection, "origins": dict(view.origins),
+        "cross_agent": cross_agent_note(view),
         "largest_outputs": [c.summary() for c in biggest],
         "longest_calls": [c.summary() for c in longest],
         "hook_overhead_ms": _describe(view.hook_ms_samples),
@@ -116,11 +144,98 @@ def compute_stats(view: SessionView, cfg: dict[str, Any] | None = None) -> dict[
     }
 
 
+_FAILED_STATUSES = (S.STATUS_ERROR, S.STATUS_TIMEOUT, S.STATUS_DENIED)
+
+
+def _exit_code_basis(c: Any) -> str:
+    if c.exit_code is None:
+        return "aucun code de sortie fourni"
+    if c.evidence.get("exit_code_source"):
+        return str(c.evidence["exit_code_source"])
+    return "exit_code de l'element du rollout Codex" if c.origin == ORIGIN_ROLLOUT else "tool_response du hook"
+
+
+def error_breakdown(view: SessionView, limit: int = 12) -> dict[str, Any]:
+    """Erreurs en trois niveaux qui ne se confondent pas : STATUT de l'outil (ce que le client dit de l'appel), CODE DE
+    SORTIE de la commande (avec sa provenance), et RESULTAT ecrit par le script dans sa sortie (`"ExitCode"` d'une
+    compilation, exception Python). Chaque groupe garde des exemples (#appel) et leur source (fichier et ligne du rollout).
+
+    # * Remplace les « signatures » prises sur la premiere ligne de la fin de sortie (fragments de code).
+    """
+    groups: dict[tuple[Any, ...], dict[str, Any]] = {}
+    failed = [c for c in view.calls if c.status in _FAILED_STATUSES]
+    script_results = 0
+    for c in failed:
+        k = N.classify_error(c.error_summary)
+        if k["script_exit_code"] is not None:
+            script_results += 1
+        tool_status = c.evidence.get("item_status") or c.evidence.get("collab_status")
+        if tool_status and c.origin == ORIGIN_ROLLOUT:
+            basis = "statut de l'element du rollout Codex"
+        elif c.evidence.get("status_basis"):
+            basis = "statut deduit par AgentWatch : " + str(c.evidence.get("status_basis"))
+        else:
+            basis = None
+        key = (c.tool_name, c.status, tool_status, c.exit_code, k["kind"], k["detail"], k["script_exit_code"])
+        g = groups.setdefault(key, {"tool": c.tool_name, "status": c.status, "tool_status": tool_status,
+                                    "tool_status_basis": basis,
+                                    "exit_code": c.exit_code, "exit_code_basis": _exit_code_basis(c),
+                                    "kind": k["kind"], "kind_label": N.ERROR_KIND_LABELS.get(k["kind"], k["kind"]),
+                                    "detail": k["detail"], "script_exit_code": k["script_exit_code"],
+                                    "count": 0, "seqs": [], "sources": [], "heads": Counter()})
+        g["count"] += 1
+        if len(g["seqs"]) < 5:
+            g["seqs"].append(c.seq)
+        src = c.evidence.get("source_end")
+        if isinstance(src, dict) and len(g["sources"]) < 3:
+            g["sources"].append({"seq": c.seq, "file": src.get("file"), "line": src.get("line")})
+        head = (c.params.get("shell_heads") or [None])[0]
+        if head:
+            g["heads"][str(head)[:30]] += 1
+    rows = sorted(groups.values(), key=lambda g: -g["count"])
+    for g in rows:
+        g["heads"] = [h for h, _ in g["heads"].most_common(3)]
+    reinterpreted = [c for c in view.calls if c.evidence.get("status_basis") == "reinterpreted_exit_code"]
+    return {
+        "failed_calls": len(failed), "groups": rows[:limit], "groups_total": len(rows),
+        "unclassified": sum(g["count"] for g in rows if g["kind"] == "unclassified"),
+        "with_exit_code": sum(1 for c in failed if c.exit_code is not None),
+        "with_script_result": script_results,
+        "reinterpreted_as_success": {"count": len(reinterpreted), "seqs": [c.seq for c in reinterpreted[:5]],
+                                     "note": ("code de sortie non nul mais resultat normal (recherche sans correspondance, git diff "
+                                              "avec differences) : comptes en succes, voir evidence.exit_status_meaning")},
+    }
+
+
+def cross_agent_note(view: SessionView) -> dict[str, Any]:
+    """Dit en clair ce qui n'est PAS compare : chaque detecteur raisonne agent par agent."""
+    n = len(view.agents)
+    if n > 1:
+        note = ("comparaisons entre agents : non effectuees. Les detecteurs raisonnent agent par agent ; un meme travail fait "
+                "par plusieurs agents (meme fichier lu, meme fiche relue) n'est ni signale ni chiffre. Les tableaux qui "
+                "additionnent plusieurs agents sont descriptifs.")
+    else:
+        note = "un seul agent dans la session : aucune comparaison entre agents a faire"
+    return {"agents": n, "performed": False, "note": note}
+
+
 def _repetitions(view: SessionView, cfg: dict[str, Any] | None) -> dict[str, Any]:
     """Appels repetes (pourquoi, a quel rythme, verdict) et rythme des outils : analyse du detecteur G."""
     from agentwatch.config import DEFAULTS
     from agentwatch.detectors import repeated_calls as G
     return G.analyse(view, cfg if cfg is not None else DEFAULTS)
+
+
+def _unit_target(c: Any) -> Any:
+    """Cible AFFICHEE d'une unite de travail : ce qui la distingue deja dans sa cle de regroupement doit se lire.
+    Sans cela deux lignes differentes portent le meme libelle (`mcp:linear/get_issue`, `module:py_compile`)."""
+    if c.target_kind == "mcp" and c.label:
+        return c.label
+    target = c.op_target or c.target
+    if c.op == "run_script" and isinstance(target, str) and target.startswith("module:"):
+        args = [str(a) for a in (c.op_params.get("args") or [])[:2]]
+        return f"{target} {' '.join(args)}".strip()
+    return target
 
 
 def work_units(view: SessionView, limit: int = 25) -> list[dict[str, Any]]:
@@ -132,7 +247,7 @@ def work_units(view: SessionView, limit: int = 25) -> list[dict[str, Any]]:
     for c in view.calls:
         if c.op in ("other", "agent") or not c.op_key:
             continue
-        g = groups.setdefault(c.op_key, {"op": c.op, "target": c.op_target or c.target, "calls": 0,
+        g = groups.setdefault(c.op_key, {"op": c.op, "target": _unit_target(c), "calls": 0,
                                          "tools": set(), "agents": set(), "statuses": {}, "content_fps": set(), "seqs": []})
         g["calls"] += 1
         g["tools"].add(c.tool_name or "?")
@@ -249,10 +364,15 @@ def _usage_summary(view: SessionView) -> dict[str, Any]:
                        f"ecrit par Codex, {len(comp) - by_id} par position), {session['total_tokens']} tokens "
                        f"(entree {session['input_tokens']} dont {session['cached_input_tokens']} en cache, soit "
                        f"{session['uncached_input_tokens']} non mis en cache ; sortie {session['output_tokens']} dont "
-                       f"{session['reasoning_output_tokens']} de raisonnement) ; {len(session['threads'])} fil(s) ; "
-                       f"{transcript_calls}/{len(view.calls)} appels avec un cout attribue"),
-            "note": ("releves token_usage_record ecrits par Codex, un par reponse ; par appel : part de l'entree non mise en cache "
-                     "de la reponse qui a consomme la sortie (prorata des tailles) + part de la sortie de la reponse emettrice"),
+                       f"{session['reasoning_output_tokens']} de raisonnement) ; {len(session['threads'])} fil(s)"),
+            "note": "releves token_usage_record ecrits par Codex, un par reponse du modele, additionnes sans conversion",
+            "kinds": {
+                "measured": "par reponse du modele : releves ecrits par le client (token_usage_record), sommes par fil et par session",
+                "allocated": (f"par appel d'outil : {transcript_calls}/{len(view.calls)} appels ont une part CALCULEE par AgentWatch "
+                              "(entree non mise en cache de la reponse qui a consomme la sortie, au prorata des tailles, + part de "
+                              "la sortie de la reponse emettrice) ; ce n'est pas une mesure par appel"),
+                "estimated": "aucune estimation : rien n'est deduit d'octets ni d'un tarif ; aucune donnee de facturation n'est lue",
+            },
             "session": session, "transcript_calls": transcript_calls, "agents": rows, "imported": imported,
             "threads": session["threads"],
         }
@@ -260,10 +380,15 @@ def _usage_summary(view: SessionView) -> dict[str, Any]:
         return {
             "status": (f"mesure depuis le transcript : {session.get('requests')} requetes API, {session.get('total_tokens')} tokens "
                        f"(entree {session.get('input_tokens')}, creation de cache {session.get('cache_creation_tokens')}, "
-                       f"lecture de cache {session.get('cache_read_tokens')}, sortie {session.get('output_tokens')}) ; "
-                       f"{transcript_calls}/{len(view.calls)} appels avec un cout attribue"),
-            "note": ("comptes tels qu'ecrits par le client dans son transcript, dedoublonnes par requete ; par appel : part de "
-                     "l'entree non mise en cache de la requete qui a consomme le resultat + part de la sortie de la requete emettrice"),
+                       f"lecture de cache {session.get('cache_read_tokens')}, sortie {session.get('output_tokens')})"),
+            "note": "comptes tels qu'ecrits par le client dans son transcript, dedoublonnes par requete",
+            "kinds": {
+                "measured": "par requete API : comptes ecrits par le client dans son transcript, sommes pour la session",
+                "allocated": (f"par appel d'outil : {transcript_calls}/{len(view.calls)} appels ont une part CALCULEE par AgentWatch "
+                              "(entree non mise en cache de la requete qui a consomme le resultat + part de la sortie de la requete "
+                              "emettrice) ; ce n'est pas une mesure par appel"),
+                "estimated": "aucune estimation : rien n'est deduit d'octets ni d'un tarif ; aucune donnee de facturation n'est lue",
+            },
             "session": session, "transcript_calls": transcript_calls, "agents": rows, "imported": imported,
         }
     if not rows and not imported:
@@ -285,8 +410,13 @@ def _describe(samples: list[float]) -> dict[str, Any]:
 
 
 def coverage_matrix(view: SessionView) -> list[dict[str, Any]]:
-    """Ligne par capacite : statut documente + observation dans cette session."""
-    caps = CAPABILITIES.get(view.client, {})
+    """Ligne par capacite : statut documente + observation dans cette session.
+
+    # * La base citee est celle de la SOURCE reelle des appels : une session Codex lue dans ses rollouts ne cite
+    #   aucun hook (constate le 2026-09-20 : la table annoncait PreToolUse / PostToolUse pour une session sans hook).
+    """
+    rollout = view.collection == "rollout"
+    caps = CAPABILITIES_ROLLOUT if rollout else CAPABILITIES.get(view.client, {})
     calls = view.calls
     marker_phases = {m.phase for m in view.markers}
     observed: dict[str, bool] = {
@@ -310,6 +440,6 @@ def coverage_matrix(view: SessionView) -> list[dict[str, Any]]:
     rows = []
     for cap, (status, basis) in caps.items():
         seen = observed.get(cap, False)
-        rows.append({"capability": cap, "documented": status, "basis": basis,
+        rows.append({"capability": cap, "documented": status, "basis": basis, "source": "rollout" if rollout else "hooks",
                      "observed_in_session": "observed" if seen else ("absent" if status == "absent" else "not_observed")})
     return rows

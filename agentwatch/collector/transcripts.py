@@ -15,8 +15,9 @@
 #   requete qui a consomme le resultat, partagee entre les resultats consommes ensemble, plus
 #   la part de la sortie de la requete qui a emis l'appel. Cette entree non mise en cache
 #   contient aussi ce qui s'est ajoute au contexte au meme moment (rappels systeme, sortie
-#   precedente) : c'est le cout reellement paye, pas le poids exact du seul resultat. Aucune
-#   conversion depuis des octets.
+#   precedente) : c'est l'entree non mise en cache relevee pour cette requete, pas le poids exact
+#   du seul resultat. Aucune conversion depuis des octets, et aucune donnee de facturation : rien
+#   ici ne dit ce qui a ete « paye ».
 """
 
 from __future__ import annotations

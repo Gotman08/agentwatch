@@ -106,10 +106,10 @@ def _finding_panel(f: dict[str, Any], detailed: bool):
         parts.append(f"{cost['output_bytes_sum']} octets observes")
     if cost.get("duration_client_ms_sum") is not None:
         parts.append(f"{cost['duration_client_ms_sum']} ms (client)")
+    from agentwatch.reports.labels import recon_label, tokens_cost_text
     if cost.get("duration_reconstructed_ms_sum") is not None:
-        parts.append(f"{cost['duration_reconstructed_ms_sum']} ms (reconstruit)")
-    tok = cost.get("tokens")
-    parts.append(f"{tok['total']} tokens mesures ({tok['known_for']} appels, transcript)" if isinstance(tok, dict) else "tokens non mesures")
+        parts.append(f"{cost['duration_reconstructed_ms_sum']} ms ({recon_label(cost)})")
+    parts.append(tokens_cost_text(cost))     # * part calculee a partir des releves par reponse, jamais « mesuree par appel »
     body.append("Cout observe : ", style="bold")
     body.append(" ; ".join(parts) + "\n\n")
     body.append(f["explanation"] + "\n")
@@ -152,8 +152,16 @@ def render(report: dict[str, Any], console: Any) -> None:
     head.append(f"Projet : {s['project_dir'] or 'inconnu'}   Periode : {s['first_time']} -> {s['last_time']}\n")
     head.append(f"Tours : {s['turns']}   Epoques de contexte : {s['context_epochs']}   Agents : {len(s['agents'])}   "
                 f"Evenements : {st['events']}   Appels : {st['calls']}\n")
-    head.append(f"AgentWatch {report['agentwatch_version']}  schema {report['schema_version']}  "
-                f"executable {s['client']} du PATH a la configuration : {s.get('client_version_at_configure') or 'inconnu'}", style="dim")
+    from agentwatch.reports.labels import agent_cells, other_tools_row
+    prov = s.get("provenance") or {}
+    rollout_only = prov.get("collection") == "rollout"
+    if rollout_only:
+        version_txt = f"version de {s['client']} ecrite dans le rollout : {s.get('client_version_observed') or 'inconnue'}"
+    else:
+        version_txt = f"executable {s['client']} du PATH a la configuration : {s.get('client_version_at_configure') or 'inconnu'}"
+    head.append(f"AgentWatch {report['agentwatch_version']}  schema {report['schema_version']}  {version_txt}", style="dim")
+    if prov.get("text"):
+        head.append(f"\nSource des evenements : {prov['text']}", style="dim")
     console.print(Panel(head, title="AgentWatch - rapport de session", border_style="cyan"))
 
     findings = report["findings"]
@@ -198,11 +206,24 @@ def render(report: dict[str, Any], console: Any) -> None:
                   f"{_fmt(x['output_bytes'])} ({x['output_known_for']})", Text(_bar(x["output_bytes"] or 0, max_bytes, 8), style="magenta"),
                   _duration(x["client_duration_median_ms"], x["client_duration_n"]),
                   _duration(x["reconstructed_duration_median_ms"], x["reconstructed_duration_n"]))
+    other = other_tools_row(tools, 15)
+    if other:
+        # * Au-dela de 15 outils : une ligne additionnee, pour que le tableau retombe sur le nombre d'appels annonce.
+        t.add_row(f"{other['tools']} autres", str(other["calls"]), "", str(other["errors"]), str(other["open"]), "-", "", "-", "-")
+    tt = st.get("tools_total") or {}
+    if tt:
+        t.add_row("Total", str(tt["calls"]), "", str(tt["errors"]), str(tt["open"]), "", "", "", "")
     console.print(t)
     console.print(Text(f"Statuts : {st['status']}   Correlation : {st['correlation']}", style="dim"))
     ho = st["hook_overhead_ms"]
-    console.print(Text(f"Surcharge des hooks (dans le processus) : mediane {ho.get('median')} ms, p90 {ho.get('p90')} ms, max {ho.get('max')} ms sur {ho.get('n')} evenements", style="dim"))
-    console.print(Text(f"Tokens : {st['usage']['status']}", style="dim"))
+    if rollout_only and not ho.get("n"):
+        console.print(Text("Surcharge des hooks : sans objet, aucun hook dans cette session (lecture passive des rollouts)", style="dim"))
+    else:
+        console.print(Text(f"Surcharge des hooks (dans le processus) : mediane {ho.get('median')} ms, p90 {ho.get('p90')} ms, max {ho.get('max')} ms sur {ho.get('n')} evenements", style="dim"))
+    console.print(Text(f"Tokens, releves mesures : {st['usage']['status']}", style="dim"))
+    for label, key in (("Tokens, repartition calculee", "allocated"), ("Tokens, estimation", "estimated")):
+        if (st["usage"].get("kinds") or {}).get(key):
+            console.print(Text(f"{label} : {st['usage']['kinds'][key]}", style="dim"))
 
     wu = [w for w in st.get("work_units", []) if w["repeated"]]
     if wu:
@@ -213,11 +234,20 @@ def render(report: dict[str, Any], console: Any) -> None:
             t.add_row(w["op"], _short(str(w["target"]), 70), Text(f"{w['calls']} {_bar(w['calls'], max_w, 12)}", style="yellow"),
                       ", ".join(w["tools"]), str(w["agents"]), _fmt(w["distinct_contents"]))
         console.print(t)
-    if st["error_signatures"]:
-        t = Table(title="Signatures d'erreur", box=box.SIMPLE_HEAD, expand=True)
-        t.add_column("Fois", justify="right"); t.add_column("Signature")
-        for e in st["error_signatures"]:
-            t.add_row(str(e["count"]), _short(e["signature"], 110))
+    err = st.get("errors") or {}
+    if err.get("failed_calls"):
+        # * Trois niveaux sources (statut de l'outil, code de sortie, resultat ecrit par le script) a la place des
+        #   « signatures » prises sur la premiere ligne de la fin de sortie.
+        t = Table(title=f"Erreurs : {err['failed_calls']} appel(s), {err['unclassified']} a la sortie non classee",
+                  box=box.SIMPLE_HEAD, expand=True)
+        for col in ("Fois", "Outil", "Statut de l'outil", "Code de sortie", "Resultat du script", "Nature", "Exemples"):
+            t.add_column(col, justify="right" if col == "Fois" else "left")
+        for g in err.get("groups") or []:
+            t.add_row(str(g["count"]), _short(str(g["tool"]), 30), str(g.get("tool_status") or "non fourni"),
+                      "aucun" if g.get("exit_code") is None else str(g["exit_code"]),
+                      "-" if g.get("script_exit_code") is None else f"ExitCode {g['script_exit_code']}",
+                      _short(g["kind_label"] + (f" : {g['detail']}" if g.get("detail") else ""), 90),
+                      ", ".join("#" + str(x) for x in g["seqs"]))
         console.print(t)
     if st["longest_calls"]:
         t = Table(title="Appels les plus longs", box=box.SIMPLE_HEAD, expand=True)
@@ -231,27 +261,25 @@ def render(report: dict[str, Any], console: Any) -> None:
     if agents:
         console.rule("[bold]Agents")
         t = Table(box=box.SIMPLE_HEAD, expand=True)
-        for col in ("Agent", "Type", "Statut", "Appels", "Debut -> fin", "Lance par", "Lien", "Modele", "Tokens rapportes"):
-            t.add_column(col, no_wrap=col in ("Agent", "Appels", "Debut -> fin", "Lance par"), overflow="ellipsis")
+        for col in ("Agent", "Type", "Statut", "Appels", "Debut", "Fin", "Lance par", "Lien", "Modele", "Tokens (et source)"):
+            t.add_column(col, no_wrap=col in ("Agent", "Appels"), overflow="ellipsis")
         internal = 0
         for a in agents:
             if a["classification"] == "stop_only":
                 internal += 1
                 continue
-            u = a.get("usage") or {}
-            tokens = f"in {_fmt(u.get('input_tokens'))} / out {_fmt(u.get('output_tokens'))} / total {_fmt(u.get('total_tokens'))}" if u else "non rapportes"
-            status = a["classification"] + (f" (repris {a['resumes']}x)" if a.get("resumes") else "")
-            t.add_row(a["agent_id"][:12], a.get("agent_type") or "inconnu", status, str(a["calls"]),
-                      f"{(a.get('start_time') or '?')[11:19]} -> {(a.get('stop_time') or 'en cours')[11:19] if a.get('stop_time') else 'en cours'}",
-                      f"#{a['parent_call_seq']}" if a.get("parent_call_seq") is not None else "-", _short(a.get("link_basis") or "-", 40),
-                      a.get("model") or "inconnu", tokens)
+            c = agent_cells(report, a)      # * memes cellules que la vue Markdown : rien n'est deduit, « inconnu » reste
+            t.add_row(c["label"].replace("`", ""), c["type"], c["status"], c["calls"], c["start"], c["end"], c["parent"],
+                      _short(c["basis"], 60), c["model"], c["tokens"])
         console.print(t)
         if internal:
             console.print(Text(f"{internal} agent(s) interne(s) : seulement un SubagentStop, sans type ni appel (details dans le JSON).", style="dim"))
 
     console.rule("[bold]Couverture")
     t = Table(box=box.SIMPLE_HEAD, expand=True)
-    t.add_column("Capacite"); t.add_column("Documente"); t.add_column("Observe"); t.add_column("Base")
+    cov_rollout = any(r.get("source") == "rollout" for r in report["coverage"])
+    t.add_column("Capacite"); t.add_column("Lue par l'import des rollouts" if cov_rollout else "Documente")
+    t.add_column("Observe"); t.add_column("Base (rollout)" if cov_rollout else "Base")
     for r in report["coverage"]:
         t.add_row(r["capability"], r["documented"], Text(r["observed_in_session"], style=_COVER_STYLE.get(r["observed_in_session"], "")), _short(r["basis"], 90))
     console.print(t)
