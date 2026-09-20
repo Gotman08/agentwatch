@@ -163,10 +163,14 @@ class RepeatedCallsTests(unittest.TestCase):
             s.call("collaboration.wait_agent", {"targets": ["worker"], "timeout_ms": 30000},
                    {"output": json.dumps({"timed_out": True, "status": {}})}, duration_ms=30_000)
         g = self._group(s.view(), "collaboration.wait_agent")
-        # * outil du client : c'est l'agent qui choisit le delai (consigne), pas un serveur a modifier
+        # * outil du client : c'est l'agent qui choisit le delai, pas un serveur a modifier. Toutes les reprises sont
+        #   des attentes arrivees a echeance, sans rien d'autre d'observe : l'attribution tient.
         self.assertEqual((g["verdict"], g["kind"]), ("agent", "wait_timeout"))
         self.assertIn("timeout_ms=['30000']", g["why"])
-        self.assertIn("consigne", g["suggestion"])
+        # * La suggestion enonce un fait et une piste, jamais une instruction de modifier l'agent observe.
+        self.assertIn("fait observe", g["suggestion"])
+        self.assertIn("A examiner", g["suggestion"])
+        self.assertNotIn("consigne", g["suggestion"])
 
     def test_wait_to_deadline_cites_the_longest_delay_honored(self) -> None:
         # * Constate le 2026-09-19 (117 sessions) : wait_agent respecte 300 s et 600 s, mais l'agent demande 30 s
@@ -181,7 +185,7 @@ class RepeatedCallsTests(unittest.TestCase):
         g = self._group(s.view(), "collaboration.wait_agent")
         self.assertIn("4 attente(s) sur 4 vont jusqu'au delai demande", g["why"])
         self.assertIn("5 min", g["why"])
-        self.assertIn("5 min deja respecte", g["suggestion"])
+        self.assertIn("delai de 5 min a deja ete respecte", g["suggestion"])
 
     def test_wait_returning_early_points_to_intermediate_output(self) -> None:
         # * `wait` de Codex rend la main des qu'une sortie arrive : un script bavard la reveille sans cesse.
@@ -193,7 +197,7 @@ class RepeatedCallsTests(unittest.TestCase):
         g = self._group(s.view(), "wait")
         self.assertEqual(g["kind"], "wait_timeout")
         self.assertIn("5 rendent la main avant", g["why"])
-        self.assertIn("fichier journal", g["suggestion"])
+        self.assertIn("progression va dans un journal", g["suggestion"])
 
     def test_mcp_wait_tool_timing_out_is_a_tool_issue(self) -> None:
         s = self._synth("mcp-wait-timeout")

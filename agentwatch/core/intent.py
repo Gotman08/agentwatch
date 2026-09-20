@@ -215,11 +215,11 @@ def derive(call: Call) -> Intent:
     return Intent(OP_UNKNOWN, call.target, {}, "tool", f"{OP_UNKNOWN}:{call.tool_name}:{tkey}:{call.params_key}")
 
 
-def attach_intents(calls: list[Call]) -> None:
+def attach_intents(calls: list[Call], cfg: dict[str, Any] | None = None) -> None:
     for c in calls:
         it = derive(c)
         c.op, c.op_target, c.op_params, c.op_key, c.op_source = it.op, it.target, it.params, it.key, it.source
-    reinterpret_exit_status(calls)
+    reinterpret_exit_status(calls, cfg)
 
 
 _NO_MATCH_HEADS = {"rg", "grep", "egrep", "fgrep", "ag", "ack", "findstr", "select-string", "sls"}
@@ -229,14 +229,26 @@ _DIFF_PROBLEM_RE = re.compile(r"(?i)trailing whitespace|space before tab|conflic
 _EXIT_IN_SUMMARY_RE = re.compile(r"^\s*Exit code (\d+)\b")
 
 
-def reinterpret_exit_status(calls: list[Call]) -> None:
+MAX_SOURCE_LOOKUPS = 200
+
+
+def reinterpret_exit_status(calls: list[Call], cfg: dict[str, Any] | None = None) -> None:
     """Un code de sortie non nul n'est pas toujours un echec (a l'analyse, sur les appels shell).
 
     # * Constate sur une session Codex reelle (2026-09-19) : 25 des 179 "echecs" shell n'en etaient pas :
     #   `rg` sans correspondance (code 1, aucune sortie) et `git diff --no-index` (code 1 = les fichiers
     #   different, ce que le modele voulait voir). Compter ces cas gonflait les erreurs et pouvait fabriquer
     #   de fausses boucles d'erreurs. Tout autre texte d'erreur laisse l'echec en place.
+    # ! Le resume d'erreur ne conserve que la FIN de la sortie : une vraie erreur affichee au debut n'y figure
+    #   pas, et l'echec etait alors requalifie en succes a tort (12 fois sur 50 dans la session du 2026-09-20).
+    #   Quand la source de l'appel est disponible, son debut est relu avant de requalifier quoi que ce soit.
     """
+    lookups = 0
+    key = None
+    cache: dict[str, str | None] = {}
+    if cfg:
+        from agentwatch.collector import rollouts as R
+        key = R.source_key(cfg)
     for c in calls:
         if c.category != S.CAT_SHELL or c.status != S.STATUS_ERROR:
             continue
@@ -259,6 +271,16 @@ def reinterpret_exit_status(calls: list[Call]) -> None:
         elif heads[:1] == ["git"] and " diff" in f" {command}" and any(o in command for o in ("--no-index", "--exit-code", "--quiet")) \
                 and not _DIFF_PROBLEM_RE.search(summary) and not _REAL_ERROR_RE.search(summary.replace("warning:", "")):
             meaning = "code 1 = differences trouvees (git diff), pas un echec"
+        if meaning and key is not None and lookups < MAX_SOURCE_LOOKUPS:
+            # ! Le resume ne montre que la fin de la sortie : verifier dans la source qu'aucune erreur reelle ne
+            #   s'affiche avant elle. Source indisponible -> on s'en tient au resume, comme avant.
+            from agentwatch.collector import rollouts as R
+            lookups += 1
+            head = R.read_call_source(cfg, c.evidence.get("source_end"), key, cache)
+            if head and _REAL_ERROR_RE.search(head):
+                c.evidence["exit_status_meaning"] = ("code 1 conserve comme echec : une erreur figure au debut de la sortie, "
+                                                     "hors du resume (relue dans la source)")
+                meaning = None
         if meaning:
             c.status = S.STATUS_SUCCESS
             c.evidence["exit_status_meaning"] = meaning

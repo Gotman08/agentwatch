@@ -139,10 +139,20 @@ def _render_errors(st: dict[str, Any]) -> list[str]:
     err = st.get("errors") or {}
     if not err.get("failed_calls"):
         return []
+    natures = ", ".join(f"{k['label']} {k['count']}" for k in err.get("by_kind") or [])
     out = ["## Erreurs : statut de l'outil, code de sortie, resultat du script", "",
            f"{err['failed_calls']} appel(s) en erreur, en {err['groups_total']} groupe(s) ; {err['with_exit_code']} ont un code de sortie ; "
            f"{err['with_script_result']} portent un resultat ecrit par le script lui-meme ; {err['unclassified']} ont une sortie "
-           f"qu'aucune forme connue ne classe (laissee non classee, rien n'est devine).", "",
+           f"qu'aucune forme connue ne classe (laissee non classee, rien n'est devine).", ""]
+    if natures:
+        # * Decompte sur TOUS les groupes : le tableau est borne, ce total ne l'est pas.
+        out += [f"Natures, sur la totalite des {err['failed_calls']} appels en erreur (le tableau ci-dessous est borne aux "
+                f"{len(err.get('groups') or [])} premiers groupes) : {natures}.", ""]
+    if err.get("recovered_from_source"):
+        out += [f"{err['recovered_from_source']} cause(s) ont ete retrouvees en relisant le debut de la sortie dans le rollout "
+                "source : le resume conserve la fin de la sortie, or l'echec peut s'y afficher avant des lignes normales. "
+                "Ces lignes portent la mention « relu dans la source ».", ""]
+    out += [
            "| Fois | Outil (commande) | Statut de l'outil | Code de sortie | Resultat ecrit par le script | Nature de l'erreur | "
            "Exemples (#appel) | Source |", "|---|---|---|---|---|---|---|---|"]
     groups = err.get("groups") or []
@@ -152,6 +162,8 @@ def _render_errors(st: dict[str, Any]) -> list[str]:
         code = str(g["exit_code"]) if g.get("exit_code") is not None else "aucun"
         script = f"ExitCode {g['script_exit_code']} dans la sortie" if g.get("script_exit_code") is not None else "-"
         nature = g["kind_label"] + (f" : `{_cell(g['detail'], 110)}`" if g.get("detail") and g["kind"] != "script_result" else "")
+        if g.get("detail_source"):
+            nature += f" (relu dans la source : {_cell(g['detail_source'], 90)})"
         srcs = [x for x in (g.get("sources") or []) if x.get("file")]
         src = f"#{srcs[0]['seq']} : {srcs[0]['file']}:{srcs[0]['line']}" if srcs else "-"
         out.append(f"| {g['count']} | {_cell(g['tool'], 40)}{_cell(heads, 50)} | {tool_status} | {code} | {script} | "

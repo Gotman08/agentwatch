@@ -228,6 +228,94 @@ class ReportAccuracyTests(unittest.TestCase):
         self.assertIn("Erreurs : statut de l'outil, code de sortie, resultat du script", md)
         self.assertNotIn("Signatures d'erreur", md)
 
+    def test_error_at_start_of_long_output_is_recovered_from_source(self) -> None:
+        """Une cause au DEBUT d'une longue sortie n'est pas perdue parce que le resume garde la fin.
+
+        Le resume d'erreur conserve les `max_error_chars` derniers caracteres : une commande qui echoue puis
+        d'autres qui reussissent laissent un resume fait de lignes normales. La ligne du rollout est relue.
+        """
+        b = RolloutBuilder(ROOT).meta().turn("turn-1", "Une tache.")
+        # * l'echec s'affiche en premier, puis 3 000 caracteres de sortie normale et un secret a masquer
+        tail = "\r\n".join(f"Source/fichier_{i}.cpp:{i}: ligne normale de resultat" for i in range(80))
+        output = ("rg: Source/absent.cpp: The system cannot find the file specified. (os error 2)\r\n"
+                  + tail + "\r\ntoken=SECRETABCDEFGHIJKLMNOP1234567890\r\n")
+        self.assertGreater(len(output), 3000)
+        b.exec_("e_head", [b.cmd("i_head", "Get-Content Source/liste.txt; rg motif Source/absent.cpp", output, code=1)])
+        self._write(b)
+        R.import_rollouts(self.store, self.cfg, [str(self.day / f"rollout-2026-09-20T18-00-00-{ROOT}.jsonl")])
+        view = load_session(self.store, *cli._resolve_session(self.store, ROOT, None), self.cfg)
+        call = next(c for c in view.calls if c.status == "error")
+        # sans la source, la fin de la sortie ne montre aucune erreur
+        self.assertEqual(N.classify_error(call.error_summary)["kind"], "unclassified")
+        err = compute_stats(view, self.cfg)["errors"]
+        self.assertEqual(err["recovered_from_source"], 1)
+        g = err["groups"][0]
+        self.assertEqual(g["kind"], "rg")
+        self.assertIn("cannot find the file specified", g["detail"].lower())
+        self.assertIn("rollout-", g["detail_source"])          # source citee
+        self.assertEqual(err["unclassified"], 0)
+        md = render_markdown(self._report(view))
+        self.assertIn("relu dans la source", md)
+        self.assertNotIn("SECRETABCDEFGHIJKLMNOP", md)         # masquage conserve
+
+    def test_source_recovery_never_forces_a_classification(self) -> None:
+        """Sans forme reconnue dans la source, l'erreur reste non classee ; une source absente ne fait rien echouer."""
+        b = RolloutBuilder(ROOT).meta().turn("turn-1", "Une tache.")
+        tail = "\r\n".join(f"ligne de code {i} sans marqueur" for i in range(80))
+        b.exec_("e_mute", [b.cmd("i_mute", "Get-Content Source/x.cpp", "debut de sortie sans erreur\r\n" + tail, code=1)])
+        self._write(b)
+        R.import_rollouts(self.store, self.cfg, [str(self.day / f"rollout-2026-09-20T18-00-00-{ROOT}.jsonl")])
+        view = load_session(self.store, *cli._resolve_session(self.store, ROOT, None), self.cfg)
+        err = compute_stats(view, self.cfg)["errors"]
+        self.assertEqual(err["recovered_from_source"], 0)
+        self.assertEqual(err["unclassified"], 1)
+        self.assertEqual(err["groups"][0]["kind"], "unclassified")
+        self.assertIsNone(err["groups"][0]["detail"])
+        # rollout supprime : la relecture echoue en silence, le rapport reste complet
+        (self.day / f"rollout-2026-09-20T18-00-00-{ROOT}.jsonl").unlink()
+        again = compute_stats(view, self.cfg)["errors"]
+        self.assertEqual(again["failed_calls"], err["failed_calls"])
+        self.assertEqual(again["recovered_from_source"], 0)
+
+    def test_error_natures_total_matches_failed_calls(self) -> None:
+        """Le decompte par nature couvre tous les appels en erreur, meme ceux hors du tableau borne."""
+        view = self._session()
+        err = compute_stats(view, self.cfg)["errors"]
+        self.assertEqual(sum(k["count"] for k in err["by_kind"]), err["failed_calls"])
+        md = render_markdown(self._report(view))
+        self.assertIn(f"Natures, sur la totalite des {err['failed_calls']} appels en erreur", md)
+
+    def test_unproven_wait_repeats_are_a_candidate_not_a_verdict(self) -> None:
+        """Reprises d'attente dont une partie suit une consigne : candidat a examiner, sans attribution ni instruction."""
+        from agentwatch.detectors import repeated_calls as G
+        s = self._synth_waits()
+        view = s.view()
+        g = next(x for x in G.analyse(view, self.cfg)["groups"] if x["tool"] == "collaboration.wait_agent")
+        self.assertEqual(g["verdict"], "a_examiner")
+        self.assertEqual(g["verdict_label"], "candidat a examiner")
+        self.assertIn("rien n'etablisse qu'elles etaient inutiles", g["why"])
+        self.assertIn("l'alternative reste inconnue", g["suggestion"])
+        self.assertNotIn("consigne :", g["suggestion"])
+        f = next(x for x in G.detect(view, self.cfg) if x.evidence["tool"] == "collaboration.wait_agent")
+        self.assertTrue(f.title.startswith("Candidat a examiner"))
+        self.assertIn("inconnue", str(f.evidence["wait_alternative"]))
+        self.assertTrue(any("non etablie" in m for m in f.missing_data))
+        self.assertTrue(any("Etablir s'il existe un outil d'attente" in p for p in f.validation_protocol))
+
+    def _synth_waits(self):
+        """Attentes arrivees a echeance, dont deux relancees apres un message (raison observee legitime)."""
+        from agentwatch import CLIENT_CODEX
+        from agentwatch.selftest import Synth
+        s = Synth(self.home, client=CLIENT_CODEX, session_id="waits", cfg=self.cfg)
+        s.response_gap_ms = 2_500
+        s.session_start()
+        resp = {"output": json.dumps({"timed_out": True, "status": {}})}
+        for i in range(5):
+            if i in (2, 4):
+                s.user_prompt("Nouvelle consigne pour la suite.")
+            s.call("collaboration.wait_agent", {"targets": ["worker"], "timeout_ms": 30000}, resp, duration_ms=30_000)
+        return s
+
     def test_error_classification_never_guesses(self) -> None:
         """Un fragment de code n'est pas une erreur classee ; chaque forme reconnue l'est sur sa vraie ligne."""
         self.assertEqual(N.classify_error("Vector2D(X, Y));\r\n\t\t}\r\n")["kind"], "unclassified")

@@ -246,6 +246,106 @@ def sessions_dir(cfg: dict[str, Any]) -> str:
     return str(codex_sessions_dir(cfg))
 
 
+MAX_SOURCE_LINE_BYTES = 4 * 1024 * 1024      # * garde-fou : une ligne de rollout plus longue n'est pas relue
+_OUTPUT_KEYS = ("aggregated_output", "stdout", "output", "text")
+
+
+def find_rollout(cfg: dict[str, Any], file_name: str) -> str | None:
+    """Chemin d'un rollout a partir du nom de fichier enregistre dans la source d'un evenement.
+
+    Le nom porte sa date (`rollout-2026-09-20T18-11-09-<id>.jsonl`), qui donne le dossier `AAAA/MM/JJ`.
+    Repli sur une recherche si le rangement differe. Rien n'est ecrit : lecture seule.
+    """
+    base = sessions_dir(cfg)
+    if not file_name or os.path.basename(file_name) != file_name:
+        return None
+    m = re.match(r"rollout-(\d{4})-(\d{2})-(\d{2})T", file_name)
+    if m:
+        p = os.path.join(base, m.group(1), m.group(2), m.group(3), file_name)
+        if os.path.isfile(p):
+            return p
+    try:
+        for root, _dirs, files in os.walk(base):
+            if file_name in files:
+                return os.path.join(root, file_name)
+    except OSError:
+        return None
+    return None
+
+
+def read_source_output(path: str, offset: int, key: bytes, cfg: dict[str, Any], max_chars: int = 2000) -> str | None:
+    """Debut de la sortie d'un appel, relu dans la ligne du rollout qui l'a produit (secrets masques, texte borne).
+
+    # * Le resume d'erreur conserve la FIN de la sortie (`max_error_chars`). Quand l'echec s'affiche au DEBUT d'une
+    #   longue sortie (une commande qui echoue puis d'autres qui reussissent), la cause n'est pas dans ce resume.
+    #   Cette relecture sert a la retrouver a l'analyse, sans rien reimporter ni reexecuter.
+    # ! Lecture seule, bornee, tolerante : fichier absent, deplace, tronque ou ligne trop longue -> None.
+    """
+    try:
+        with open(path, "rb") as f:
+            f.seek(offset)
+            raw = f.readline(MAX_SOURCE_LINE_BYTES)
+        if not raw or len(raw) >= MAX_SOURCE_LINE_BYTES:
+            return None
+        o = json.loads(raw)
+    except (OSError, ValueError):
+        return None
+    if not isinstance(o, dict):
+        return None
+    p = o.get("payload") if isinstance(o.get("payload"), dict) else {}
+    item = p.get("item") if isinstance(p.get("item"), dict) else {}
+    text: Any = None
+    for src in (item, p):
+        for k in _OUTPUT_KEYS:
+            v = src.get(k)
+            if isinstance(v, str) and v:
+                text = v
+                break
+        if text is not None:
+            break
+    if text is None:
+        return None
+    return P.mask_secrets(text[:max_chars], key)
+
+
+def source_key(cfg: dict[str, Any] | None) -> bytes | None:
+    """Cle de masquage du dossier de donnees, sans jamais en creer une : None si elle n'existe pas deja."""
+    if not cfg:
+        return None
+    home = os.path.dirname(str(cfg.get("_config_path") or ""))
+    if not home or not os.path.isdir(os.path.join(home, "keys")):
+        return None
+    try:
+        return P.ensure_key(home)
+    except Exception:      # noqa: BLE001 - une relecture facultative ne doit jamais faire echouer un rapport
+        return None
+
+
+def read_call_source(cfg: dict[str, Any] | None, src: Any, key: bytes | None,
+                     cache: dict[str, str | None] | None = None, max_chars: int = 2000) -> str | None:
+    """Debut de la sortie d'un appel a partir de la source enregistree sur son evenement (`evidence.source_end`).
+
+    Rend None sans jamais lever : source absente ou incomplete, rollout introuvable, offset perime, ligne trop longue.
+    `cache` evite de rechercher plusieurs fois le meme fichier.
+    """
+    if key is None or not isinstance(src, dict) or not src.get("file") or not isinstance(src.get("offset"), int):
+        return None
+    name = str(src["file"])
+    store = cache if cache is not None else {}
+    if name not in store:
+        try:
+            store[name] = find_rollout(cfg or {}, name)
+        except Exception:  # noqa: BLE001
+            store[name] = None
+    path = store[name]
+    if not path:
+        return None
+    try:
+        return read_source_output(path, int(src["offset"]), key, cfg or {}, max_chars)
+    except Exception:      # noqa: BLE001
+        return None
+
+
 def last_line_ns(path: str) -> int | None:
     """Horodatage de la derniere ligne complete ecrite dans un rollout (lecture de la fin du fichier seulement)."""
     try:

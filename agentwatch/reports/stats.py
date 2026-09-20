@@ -130,7 +130,7 @@ def compute_stats(view: SessionView, cfg: dict[str, Any] | None = None) -> dict[
         "tools_total": {"tools": len(tools), "calls": sum(t["calls"] for t in tools), "errors": sum(t["errors"] for t in tools),
                         "unknown_status": sum(t["unknown_status"] for t in tools), "open": sum(t["open"] for t in tools)},
         "error_signatures": [{"signature": s, "count": n} for s, n in err_sig.most_common(10)],
-        "errors": error_breakdown(view),
+        "errors": error_breakdown(view, cfg=cfg),
         "collection": view.collection, "origins": dict(view.origins),
         "cross_agent": cross_agent_note(view),
         "largest_outputs": [c.summary() for c in biggest],
@@ -155,7 +155,41 @@ def _exit_code_basis(c: Any) -> str:
     return "exit_code de l'element du rollout Codex" if c.origin == ORIGIN_ROLLOUT else "tool_response du hook"
 
 
-def error_breakdown(view: SessionView, limit: int = 12) -> dict[str, Any]:
+MAX_SOURCE_LOOKUPS = 200          # * garde-fou : nombre de relectures de source par rapport
+
+
+def _recover_from_source(cfg: dict[str, Any] | None, unclassified: list[Any]) -> dict[str, dict[str, Any]]:
+    """Cause d'une erreur retrouvee dans la source, pour les seuls appels qu'aucune forme connue ne classe.
+
+    Le resume conserve la FIN de la sortie (`max_error_chars`) : quand l'echec s'affiche au DEBUT d'une longue
+    sortie (une commande qui echoue, puis d'autres qui reussissent), sa cause n'y est plus. La ligne du rollout
+    qui a produit l'appel est deja referencee (`evidence.source_end`) : on y relit un debut de sortie borne,
+    secrets masques, et on ne classe que si une forme connue s'y trouve. Rien n'est force, rien n'est reecrit.
+
+    # ! Lecture seule et tolerante : dossier introuvable, fichier deplace, offset perime -> l'appel reste non classe.
+    """
+    if not cfg or not unclassified:
+        return {}
+    from agentwatch.collector import rollouts as R
+    key = R.source_key(cfg)                            # * None si aucune cle n'existe deja : on ne relit pas
+    if key is None:
+        return {}
+    cache: dict[str, str | None] = {}
+    out: dict[str, dict[str, Any]] = {}
+    for c in unclassified[:MAX_SOURCE_LOOKUPS]:
+        src = c.evidence.get("source_end")
+        head = R.read_call_source(cfg, src, key, cache)
+        if not head:
+            continue
+        k = N.classify_error(head)
+        if k["kind"] == "unclassified":
+            continue                                   # * la source ne montre pas davantage : on n'invente rien
+        k["detail_source"] = f"debut de la sortie relu dans {src.get('file')}:{src.get('line')}"
+        out[c.key] = k
+    return out
+
+
+def error_breakdown(view: SessionView, limit: int = 12, cfg: dict[str, Any] | None = None) -> dict[str, Any]:
     """Erreurs en trois niveaux qui ne se confondent pas : STATUT de l'outil (ce que le client dit de l'appel), CODE DE
     SORTIE de la commande (avec sa provenance), et RESULTAT ecrit par le script dans sa sortie (`"ExitCode"` d'une
     compilation, exception Python). Chaque groupe garde des exemples (#appel) et leur source (fichier et ligne du rollout).
@@ -165,8 +199,13 @@ def error_breakdown(view: SessionView, limit: int = 12) -> dict[str, Any]:
     groups: dict[tuple[Any, ...], dict[str, Any]] = {}
     failed = [c for c in view.calls if c.status in _FAILED_STATUSES]
     script_results = 0
+    # * La cause peut se trouver au debut d'une longue sortie, hors du resume : on la relit dans la source
+    #   pour les seuls appels qu'aucune forme connue ne classe, avant de regrouper.
+    classified = {c.key: N.classify_error(c.error_summary) for c in failed}
+    recovered = _recover_from_source(cfg, [c for c in failed if classified[c.key]["kind"] == "unclassified"])
+    classified.update(recovered)
     for c in failed:
-        k = N.classify_error(c.error_summary)
+        k = classified[c.key]
         if k["script_exit_code"] is not None:
             script_results += 1
         tool_status = c.evidence.get("item_status") or c.evidence.get("collab_status")
@@ -182,6 +221,7 @@ def error_breakdown(view: SessionView, limit: int = 12) -> dict[str, Any]:
                                     "exit_code": c.exit_code, "exit_code_basis": _exit_code_basis(c),
                                     "kind": k["kind"], "kind_label": N.ERROR_KIND_LABELS.get(k["kind"], k["kind"]),
                                     "detail": k["detail"], "script_exit_code": k["script_exit_code"],
+                                    "detail_source": k.get("detail_source"),
                                     "count": 0, "seqs": [], "sources": [], "heads": Counter()})
         g["count"] += 1
         if len(g["seqs"]) < 5:
@@ -196,9 +236,15 @@ def error_breakdown(view: SessionView, limit: int = 12) -> dict[str, Any]:
     for g in rows:
         g["heads"] = [h for h, _ in g["heads"].most_common(3)]
     reinterpreted = [c for c in view.calls if c.evidence.get("status_basis") == "reinterpreted_exit_code"]
+    # * Decompte par nature sur TOUS les groupes : le tableau est borne, le compte rendu ne doit pas l'etre.
+    by_kind: Counter[str] = Counter()
+    for g in rows:
+        by_kind[g["kind"]] += g["count"]
     return {
         "failed_calls": len(failed), "groups": rows[:limit], "groups_total": len(rows),
         "unclassified": sum(g["count"] for g in rows if g["kind"] == "unclassified"),
+        "by_kind": [{"kind": k, "label": N.ERROR_KIND_LABELS.get(k, k), "count": n} for k, n in by_kind.most_common()],
+        "recovered_from_source": len(recovered),
         "with_exit_code": sum(1 for c in failed if c.exit_code is not None),
         "with_script_result": script_results,
         "reinterpreted_as_success": {"count": len(reinterpreted), "seqs": [c.seq for c in reinterpreted[:5]],

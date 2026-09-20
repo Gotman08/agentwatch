@@ -205,10 +205,17 @@ processus enfants vers `AppData\Local\Packages\<paquet>\LocalCache\...`. Consequ
   (indice textuel seulement) ; approbation manuelle des hooks obligatoire. Par les rollouts (voie
   utilisee aujourd'hui) : code de sortie et duree presents, statut ecrit par le client.
 - Erreurs : seule la fin de la sortie est conservee (400 caracteres, masques). Dans une chaine de
-  commandes, l'etape en echec peut preceder cette fin : la nature de l'erreur reste alors « non
-  classee » plutot que devinee (34 cas sur 93 le 2026-09-20). Le rapport distingue le statut de
-  l'outil, le code de sortie de la commande et le resultat que le script ecrit dans sa propre sortie
+  commandes, l'etape en echec peut preceder cette fin. Le rapport distingue le statut de l'outil, le
+  code de sortie de la commande et le resultat que le script ecrit dans sa propre sortie
   (`"ExitCode": 6` d'une compilation alors que la commande rend 1).
+- Relecture de la source (2026-09-21) : quand la cause manque au resume, la ligne du rollout qui a
+  produit l'appel est relue (`evidence.source_end`), bornee a 2 000 caracteres, secrets masques,
+  source citee dans le rapport. Deux usages, tous deux en lecture seule et sans rien reimporter :
+  completer une erreur non classee, et verifier qu'un code 1 de recherche est bien une absence de
+  correspondance avant de le requalifier en succes. Aucune classification n'est forcee : sans forme
+  reconnue dans la source, l'erreur reste non classee. Effet sur la session du 2026-09-20 : 34 non
+  classees ramenees a 26, et 12 echecs `rg` sur 50 qui n'etaient plus comptes comme des erreurs le
+  redeviennent (leur cause s'affichait avant les 400 derniers caracteres).
 - Claude Code : `duration` et `prompt_id` dependent de la version (>= 2.1.267 et
   >= 2.1.196) ; le CLI du PATH est en 2.1.87.
 - Linux / macOS / WSL : non executes.

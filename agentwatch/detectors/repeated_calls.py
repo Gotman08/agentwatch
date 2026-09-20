@@ -65,8 +65,10 @@ DECLARED_LABELS = {"retry": "reessai", "wait": "attente", "unavailable": "indisp
 VERDICT_LABELS = {
     "agent": "ameliorable : agent", "outil": "ameliorable : outil", "environnement": "environnement (pas l'agent)",
     "echec": "apres echec (voir B)", "justifie": "justifie", "gratuit": "sans aller-retour", "indetermine": "indetermine",
+    # * Les faits montrent une piste, mais pas a qui l'attribuer : une partie des reprises a une raison observee.
+    "a_examiner": "candidat a examiner",
 }
-IMPROVABLE = ("agent", "outil")
+IMPROVABLE = ("agent", "outil", "a_examiner")
 _FAILED = {S.STATUS_ERROR, S.STATUS_TIMEOUT, S.STATUS_DENIED, S.STATUS_INTERRUPTED}
 _WAIT_NAME = re.compile(r"(?i)(?:^|[_.])(?:wait|await|poll|watch|sleep)")
 _READ_NAME = re.compile(r"(?i)(?:^|[_.])(?:list|get|read|status|show|info)")
@@ -559,14 +561,35 @@ def _summarise(gk: str, calls: list[Call], reps: list[dict[str, Any]], d: dict[s
                    + (f" ; {prof['to_deadline']} attente(s) sur {prof['measured']} vont jusqu'au delai demande, "
                       f"{prof['returned_early']} rendent la main avant" if prof["measured"] else "")
                    + (f" ; delai le plus long respecte par cet outil dans la session : {fmt_duration(best)}" if best else ""))
+            # * Une reprise n'est inutile que si rien n'a change entre les deux appels. Quand des reprises suivent une
+            #   consigne, une modification ou une compaction, leur utilite n'est pas jugeable ici : le groupe devient un
+            #   candidat a examiner, sans attribuer le gaspillage a qui que ce soit (constate le 2026-09-20 : 2 des
+            #   4 reprises d'un groupe `wait_agent` suivaient une consigne ou une modification).
+            explained = reasons["new_input"] + reasons["after_change"] + reasons["context_loss"]
+            idle_only = reasons["waiting"] + reasons["none"]
+            if explained:
+                verdict, kind = "a_examiner", "wait_timeout"
+                why = (f"{idle_only} reprise(s) sur {n_rt} relancent une attente sans que rien d'observable n'ait change, et "
+                       f"{explained} suivent une consigne, une modification ou une compaction, sans que rien n'etablisse "
+                       f"qu'elles etaient inutiles ; faits observes : " + why)
             if prof["measured"] and prof["returned_early"] > prof["to_deadline"]:
                 # * L'attente rend la main avant l'echeance : une sortie intermediaire (progression) la reveille.
-                suggestion = ("l'attente rend la main avant l'echeance (sortie intermediaire du traitement attendu) : envoyer la "
-                              "progression dans un fichier journal et n'attendre que la fin, en un appel")
+                suggestion = ("fait observe : l'attente rend la main avant l'echeance (sortie intermediaire du traitement attendu). "
+                              "A examiner : ce que devient le nombre d'appels si la progression va dans un journal et qu'une seule "
+                              "attente porte sur la fin")
+            elif verdict == "a_examiner":
+                # ! Aucune instruction : des faits, ce qui reste a etablir, et l'alternative d'attente si elle est connue.
+                suggestion = ("a examiner sur les reprises sans rien de nouveau : l'attente va jusqu'au delai demande"
+                              + (f", et un delai de {fmt_duration(best)} a deja ete respecte par cet outil dans la session"
+                                 if best else ", et aucun delai plus long n'a ete observe dans la session")
+                              + (f" ; outil d'attente alternatif observe : `{wait_alt['tool']}`" if wait_alt else
+                                 " ; aucun outil d'attente alternatif observe : l'alternative reste inconnue")
+                              + ". Ce que les donnees n'etablissent pas : si les reprises restantes etaient utiles")
             elif by_tool_owner == "agent":
-                suggestion = ("consigne : demander un delai d'attente plus long (parametre de l'outil"
-                              + (f" ; {fmt_duration(best)} deja respecte dans la session" if best else "")
-                              + ") ; une attente par evenement attendu")
+                suggestion = ("fait observe : les attentes vont jusqu'au delai demande"
+                              + (f", et un delai de {fmt_duration(best)} a deja ete respecte par cet outil dans la session"
+                                 if best else "")
+                              + ". A examiner : un delai plus long, ou une attente par evenement attendu")
             else:
                 suggestion = ("cote serveur : relever le delai maximal d'attente (ou attendre jusqu'au changement d'etat) ; une "
                               "attente par evenement attendu")
@@ -768,7 +791,9 @@ def detect(view: SessionView, cfg: dict[str, Any]) -> list[B.Finding]:
                             f"cout supplementaire demontre.")
         findings.append(B.Finding(
             rule_id=RULE_ID, rule_version=RULE_VERSION, kind=kind,
-            title=(f"{_TITLES[kind]} : {tool} ({calls} appels, {rts} aller(s)-retour(s)"
+            # * Un verdict non attribue se lit des le titre : ni « ameliorable », ni reproche a l'agent.
+            title=(("Candidat a examiner : " if lead["verdict"] == "a_examiner" else "")
+                   + f"{_TITLES[kind]} : {tool} ({calls} appels, {rts} aller(s)-retour(s)"
                    + (f", {len(gs)} groupes)" if len(gs) > 1 else ")")),
             confidence=confidence,
             confidence_rationale=(f"{len(gs)} groupe(s), {rts} reprise(s) avec aller-retour ; apport connu pour "
@@ -779,7 +804,10 @@ def detect(view: SessionView, cfg: dict[str, Any]) -> list[B.Finding]:
             evidence={"tool": tool, "kind": kind, "verdict": lead["verdict"], "groups": len(gs), "calls": calls,
                       "round_trips": rts, "same_response": free, "reasons": reasons, "declared": declared, "outcomes": outcomes,
                       "phases": _sum(gs, "phases"), "context_reread_tokens": sum(ctx_tokens) if ctx_tokens else None,
-                      "timeouts_used": used, "wait_alternative": lead.get("wait_alternative"),
+                      "timeouts_used": used,
+                      # * « inconnue » explicite : aucun outil d'attente alternatif n'a ete observe, ce qui ne veut
+                      #   pas dire qu'il n'en existe pas.
+                      "wait_alternative": lead.get("wait_alternative") or "aucune observee dans la session (inconnue)",
                       "top_groups": [{"agent": g["agent"], "target": g.get("target"), "calls": g["calls"],
                                       "round_trips": g["round_trips"], "interval_s": g.get("interval_s"),
                                       "max_per_min": g["max_per_min"], "why": g["why"]} for g in gs[:8]],
@@ -794,14 +822,21 @@ def detect(view: SessionView, cfg: dict[str, Any]) -> list[B.Finding]:
             missing_data=[m for m in (
                 None if not outcomes.get("unknown") else f"apport inconnu pour {outcomes['unknown']} reprise(s)",
                 None if declared else "aucune raison annoncee par l'agent (commentaires non importes ou absents)",
+                None if lead["verdict"] != "a_examiner" else
+                "utilite des reprises qui suivent une consigne, une modification ou une compaction : non etablie",
+                None if lead["verdict"] != "a_examiner" or lead.get("wait_alternative") else
+                "aucun outil d'attente alternatif observe dans la session : l'alternative reste inconnue",
             ) if m],
             observed_cost=B.observed_cost(rt_members),
             proposal={"type": "repeated_calls", "verdict": lead["verdict"], "text": lead["suggestion"], "cadence": lead["cadence"]},
-            validation_protocol=[
-                "Relire 2 reprises du groupe principal : la raison observee et la raison annoncee concordent-elles ?",
-                "Appliquer la suggestion (consigne, delai, attente bloquante), puis comparer le nombre d'appels et le retard "
-                "de detection sur une session comparable (agentwatch trends).",
-                "Marquer le signalement : agentwatch feedback --finding <id> --mark relevant|false-positive.",
-            ],
+            validation_protocol=(
+                ["Relire les reprises sans rien de nouveau : le resultat precedent etait-il encore utilisable ?",
+                 "Etablir s'il existe un outil d'attente utilisable ici ; sans lui, aucune correction n'est chiffrable.",
+                 "Marquer le signalement : agentwatch feedback --finding <id> --mark relevant|false-positive."]
+                if lead["verdict"] == "a_examiner" else
+                ["Relire 2 reprises du groupe principal : la raison observee et la raison annoncee concordent-elles ?",
+                 "Appliquer la suggestion (consigne, delai, attente bloquante), puis comparer le nombre d'appels et le retard "
+                 "de detection sur une session comparable (agentwatch trends).",
+                 "Marquer le signalement : agentwatch feedback --finding <id> --mark relevant|false-positive."]),
         ))
     return findings

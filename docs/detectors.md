@@ -307,6 +307,7 @@ Verdict par groupe, sur les reprises qui ont coute un aller-retour :
 | ameliorable : outil | sondage ou attente d'un serveur MCP (`polling_cadence`, `wait_timeout`) | attente bloquante jusqu'au changement d'etat, delai maximal releve, cadence minimale |
 | environnement | reessais apres « indisponible » (`retry_cadence`) : legitimes | cote outil : rendre un delai de reprise ou attendre la disponibilite ; cadence simulee |
 | apres echec | reprises apres echec | detecteur B |
+| candidat a examiner | attente relancee a echeance, mais une partie des reprises suit une consigne, une modification ou une compaction : leur utilite n'est pas jugeable ici | aucune attribution ; les faits, ce qui reste a etablir, et l'alternative d'attente si elle est connue |
 | justifie | reprises expliquees (modification, nouvelle consigne, perte de contexte) ou qui ont appris quelque chose | aucune ; si les compactions dominent : garder l'information hors du contexte |
 | sans aller-retour | toutes les repetitions dans une meme reponse | aucune |
 | indetermine | apport inconnu pour la majorite | aucune |
@@ -315,6 +316,14 @@ Trois durees d'une attente, jamais confondues (precision du 2026-09-20) : le del
 (parametre `timeout_ms`...), la duree OBSERVEE de l'appel, et l'INTERVALLE OBSERVE entre deux appels
 (duree de l'attente + temps de reponse du modele). Le rapport donne les trois (`wait_timing`) : une attente
 de 50 s relancee toutes les 1 min 45 s ne se resume pas a « relancee toutes les 50 s ».
+
+Verdict aligne sur les preuves (precision du 2026-09-21). Une reprise n'est inutile que si rien n'a change entre
+les deux appels. Des qu'une partie des reprises d'un groupe d'attente suit une consigne, une modification ou une
+compaction, le verdict devient `candidat a examiner` : le signalement reste, son titre commence par « Candidat a
+examiner », et il ne designe personne. Les propositions enoncent alors un fait observe et une piste, jamais une
+instruction de modifier l'agent observe ou sa configuration. L'alternative d'attente est dite explicitement
+inconnue quand aucun outil d'attente n'a ete vu dans la session, et l'utilite des reprises expliquees figure dans
+les donnees manquantes.
 
 Ce qu'un resultat identique ou une compaction ne prouvent pas (precision du 2026-09-20). Un resultat
 identique a la reprise est un CANDIDAT a verifier, pas un gaspillage demontre : verifier qu'un etat n'a

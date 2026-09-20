@@ -383,7 +383,7 @@ def build_session(events: list[dict[str, Any]], cfg: dict[str, Any]) -> SessionV
                              "tient en moins de 2 s (rollout reecrit d'un bloc) ; durees, intervalles et cadences ignores pour eux")
     view.agent_infos = _build_agents(view)
     from agentwatch.core.intent import attach_intents  # import tardif : intent depend de Call
-    attach_intents(calls)
+    attach_intents(calls, cfg)
     return view
 
 
