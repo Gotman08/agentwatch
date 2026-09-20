@@ -84,10 +84,12 @@ est declaree inconnue. L'appel de lancement n'est relie par aucun identifiant : 
 
 ## Note de correction : appels reclasses sur la session `01a0bf95` (2026-09-20)
 
-Reference : le rapport publie avant cette correction, qui comptait 2 777 succes et 93 erreurs, dont 50 appels
-requalifies en succes parce que leur code 1 passait pour une recherche sans correspondance. Apres relecture de la
-source et application de la regle ci-dessus : 2 758 succes, 105 erreurs et 7 indetermines. Dix-neuf appels ont
-change, tous des recherches (`rg`, sauf mention), tous avec un code de sortie 1.
+Reference : le rapport publie avant cette correction, arrete a 2 870 appels, qui comptait 2 777 succes et
+93 erreurs, dont 50 appels requalifies en succes parce que leur code 1 passait pour une recherche sans
+correspondance. Apres relecture de la source et application de la regle ci-dessus, sur ce meme perimetre :
+2 758 succes, 105 erreurs et 7 indetermines. Dix-neuf appels ont change, tous des recherches (`rg`), tous avec un
+code de sortie 1. Les numeros d'appel restent valables quand la session s'allonge : ils suivent l'ordre
+chronologique et les appels suivants s'ajoutent apres (verifie sur la meme session portee a 3 305 appels).
 
 Le fil est donne a la place du nom de fichier : `principal` =
 `rollout-2026-09-20T18-11-09-01a0bf95-f057-7b33-bc47-154623979ff7.jsonl`, `Gauss` = `...-01a0bf98-91ee-...`,
