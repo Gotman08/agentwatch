@@ -82,6 +82,54 @@ rendue » : un meme sous-agent peut en recevoir une autre ensuite (observe 5 arr
 2026-09-20). Un arret n'est donc retenu comme fin que s'il suit le dernier appel de l'agent ; sinon la fin
 est declaree inconnue. L'appel de lancement n'est relie par aucun identifiant : il reste « non etabli ».
 
+## Note de correction : appels reclasses sur la session `01a0bf95` (2026-09-20)
+
+Reference : le rapport publie avant cette correction, qui comptait 2 777 succes et 93 erreurs, dont 50 appels
+requalifies en succes parce que leur code 1 passait pour une recherche sans correspondance. Apres relecture de la
+source et application de la regle ci-dessus : 2 758 succes, 105 erreurs et 7 indetermines. Dix-neuf appels ont
+change, tous des recherches (`rg`, sauf mention), tous avec un code de sortie 1.
+
+Le fil est donne a la place du nom de fichier : `principal` =
+`rollout-2026-09-20T18-11-09-01a0bf95-f057-7b33-bc47-154623979ff7.jsonl`, `Gauss` = `...-01a0bf98-91ee-...`,
+`Nietzsche` = `...-01a0bf98-d0cd-...`, `Dalton` = `...-01a0bf99-111e-...`.
+
+Douze echecs confirmes par la source (le message `rg:` s'affichait avant les 400 derniers caracteres conserves) :
+
+| # appel | Fil | Avant | Apres | Cause lue dans la source | Ligne du rollout |
+|---|---|---|---|---|---|
+| #431 | principal | succes (code 1 = aucune correspondance) | echec | `rg:` filename, directory name, or volume label syntax is incorrect | 717 |
+| #676 | Dalton | succes (code 1 = aucune correspondance) | echec | `rg:` filename, directory name, or volume label syntax is incorrect | 889 |
+| #688 | Dalton | succes (code 1 = aucune correspondance) | echec | `rg:` the system cannot find the file specified | 912 |
+| #834 | Gauss | succes (code 1 = aucune correspondance) | echec | `rg:` the system cannot find the path specified | 955 |
+| #845 | Gauss | succes (code 1 = aucune correspondance) | echec | `rg:` filename, directory name, or volume label syntax is incorrect | 986 |
+| #1015 | Gauss | succes (code 1 = aucune correspondance) | echec | `rg:` the system cannot find the file specified | 1238 |
+| #1121 | Gauss | succes (code 1 = aucune correspondance) | echec | `rg:` the system cannot find the file specified | 1381 |
+| #1348 | principal | succes (code 1 = aucune correspondance) | echec | `rg:` the system cannot find the path specified | 2361 |
+| #1610 | Dalton | succes (code 1 = aucune correspondance) | echec | `rg:` the system cannot find the path specified | 2254 |
+| #1933 | Gauss | succes (code 1 = aucune correspondance) | echec | `rg:` the system cannot find the file specified | 2635 |
+| #2140 | Gauss | succes (code 1 = aucune correspondance) | echec | `rg:` the system cannot find the file specified | 2881 |
+| #2508 | principal | succes (code 1 = aucune correspondance) | echec | `rg:` filename, directory name, or volume label syntax is incorrect | 4251 |
+
+Sept cas insuffisamment documentes, laisses indetermines (sortie tronquee, aucune forme d'erreur reconnue ni dans
+le resume ni dans les 2 000 premiers caracteres relus ; l'absence d'erreur dans un extrait ne demontre rien) :
+
+| # appel | Fil | Avant | Apres | Ligne du rollout |
+|---|---|---|---|---|
+| #622 | Gauss | succes (code 1 = aucune correspondance) | indetermine | 698 |
+| #1383 | Nietzsche | succes (code 1 = aucune correspondance) | indetermine | 1985 |
+| #1401 | principal | succes (code 1 = aucune correspondance) | indetermine | 2466 |
+| #1542 | principal | succes (code 1 = aucune correspondance) | indetermine | 2742 |
+| #1567 | Nietzsche | succes (code 1 = aucune correspondance) | indetermine | 2300 |
+| #1968 | principal | succes (code 1 = aucune correspondance) | indetermine | 3452 |
+| #2535 | Gauss | succes (code 1 = aucune correspondance) | indetermine | 3432 |
+
+Pourquoi « 12 cas `rg` » puis « 13 changements ». Le premier chiffre (12) comptait les appels dont la source
+montrait une forme d'erreur reconnue. Le treizieme etait `#1567` : une version intermediaire retenait l'echec sur
+un motif trop large, et le mot « Error » y venait d'une ligne de code C++ affichee par la recherche
+(`ITEMS_API bool ValidateSnapshot(..., FString& Error);`), pas d'un message d'erreur. Seules les formes reconnues
+confirment desormais un echec ; `#1567` rejoint les six autres cas indetermines, ce qui porte le total a 19
+changements par rapport au rapport de reference : 12 echecs confirmes et 7 indetermines.
+
 ## Smoke tests reels
 
 Script : `python tests/live_smoke.py --client codex|claude-code`. Il cree un dossier
@@ -213,9 +261,16 @@ processus enfants vers `AppData\Local\Packages\<paquet>\LocalCache\...`. Consequ
   source citee dans le rapport. Deux usages, tous deux en lecture seule et sans rien reimporter :
   completer une erreur non classee, et verifier qu'un code 1 de recherche est bien une absence de
   correspondance avant de le requalifier en succes. Aucune classification n'est forcee : sans forme
-  reconnue dans la source, l'erreur reste non classee. Effet sur la session du 2026-09-20 : 34 non
-  classees ramenees a 26, et 12 echecs `rg` sur 50 qui n'etaient plus comptes comme des erreurs le
-  redeviennent (leur cause s'affichait avant les 400 derniers caracteres).
+  reconnue dans la source, l'erreur reste non classee (34 non classees ramenees a 27 sur la session
+  du 2026-09-20).
+- **Regle : un extrait tronque ne requalifie jamais un echec en succes.** Un code de sortie non nul
+  n'est reinterprete (recherche sans correspondance, `git diff` avec differences) que si la sortie a
+  ete vue ENTIEREMENT : resume plus court que `max_error_chars`, ou source relue rendue complete
+  (`read_call_source` dit si son texte est la sortie entiere ou un extrait). Sinon le cas reste
+  INDETERMINE (`unknown`, `status_basis = undetermined_truncated_output`) : ni echec confirme, ni
+  succes. Seules les formes d'erreur reconnues par `classify_error` (`rg:`, bloc PowerShell,
+  exception Python, `fatal:`...) confirment un echec ; un simple mot comme « Error » dans une ligne
+  de code affichee par la recherche n'en est pas une.
 - Claude Code : `duration` et `prompt_id` dependent de la version (>= 2.1.267 et
   >= 2.1.196) ; le CLI du PATH est en 2.1.87.
 - Linux / macOS / WSL : non executes.

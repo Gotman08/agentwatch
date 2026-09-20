@@ -273,25 +273,29 @@ def find_rollout(cfg: dict[str, Any], file_name: str) -> str | None:
     return None
 
 
-def read_source_output(path: str, offset: int, key: bytes, cfg: dict[str, Any], max_chars: int = 2000) -> str | None:
+def read_source_output(path: str, offset: int, key: bytes, cfg: dict[str, Any],
+                       max_chars: int = 2000) -> tuple[str | None, bool]:
     """Debut de la sortie d'un appel, relu dans la ligne du rollout qui l'a produit (secrets masques, texte borne).
 
     # * Le resume d'erreur conserve la FIN de la sortie (`max_error_chars`). Quand l'echec s'affiche au DEBUT d'une
     #   longue sortie (une commande qui echoue puis d'autres qui reussissent), la cause n'est pas dans ce resume.
     #   Cette relecture sert a la retrouver a l'analyse, sans rien reimporter ni reexecuter.
-    # ! Lecture seule, bornee, tolerante : fichier absent, deplace, tronque ou ligne trop longue -> None.
+    Rend `(texte, complet)` : `complet` dit si le texte rendu est la sortie ENTIERE, et non un extrait. Sans cette
+    information, l'absence d'erreur dans le texte ne prouve rien.
+
+    # ! Lecture seule, bornee, tolerante : fichier absent, deplace, tronque ou ligne trop longue -> (None, False).
     """
     try:
         with open(path, "rb") as f:
             f.seek(offset)
             raw = f.readline(MAX_SOURCE_LINE_BYTES)
         if not raw or len(raw) >= MAX_SOURCE_LINE_BYTES:
-            return None
+            return None, False
         o = json.loads(raw)
     except (OSError, ValueError):
-        return None
+        return None, False
     if not isinstance(o, dict):
-        return None
+        return None, False
     p = o.get("payload") if isinstance(o.get("payload"), dict) else {}
     item = p.get("item") if isinstance(p.get("item"), dict) else {}
     text: Any = None
@@ -304,8 +308,8 @@ def read_source_output(path: str, offset: int, key: bytes, cfg: dict[str, Any], 
         if text is not None:
             break
     if text is None:
-        return None
-    return P.mask_secrets(text[:max_chars], key)
+        return None, False
+    return P.mask_secrets(text[:max_chars], key), len(text) <= max_chars
 
 
 def source_key(cfg: dict[str, Any] | None) -> bytes | None:
@@ -322,14 +326,14 @@ def source_key(cfg: dict[str, Any] | None) -> bytes | None:
 
 
 def read_call_source(cfg: dict[str, Any] | None, src: Any, key: bytes | None,
-                     cache: dict[str, str | None] | None = None, max_chars: int = 2000) -> str | None:
+                     cache: dict[str, str | None] | None = None, max_chars: int = 2000) -> tuple[str | None, bool]:
     """Debut de la sortie d'un appel a partir de la source enregistree sur son evenement (`evidence.source_end`).
 
-    Rend None sans jamais lever : source absente ou incomplete, rollout introuvable, offset perime, ligne trop longue.
-    `cache` evite de rechercher plusieurs fois le meme fichier.
+    Rend `(texte, complet)`, ou `(None, False)` sans jamais lever : source absente ou incomplete, rollout introuvable,
+    offset perime, ligne trop longue. `cache` evite de rechercher plusieurs fois le meme fichier.
     """
     if key is None or not isinstance(src, dict) or not src.get("file") or not isinstance(src.get("offset"), int):
-        return None
+        return None, False
     name = str(src["file"])
     store = cache if cache is not None else {}
     if name not in store:
@@ -339,11 +343,11 @@ def read_call_source(cfg: dict[str, Any] | None, src: Any, key: bytes | None,
             store[name] = None
     path = store[name]
     if not path:
-        return None
+        return None, False
     try:
         return read_source_output(path, int(src["offset"]), key, cfg or {}, max_chars)
     except Exception:      # noqa: BLE001
-        return None
+        return None, False
 
 
 def last_line_ns(path: str) -> int | None:

@@ -271,15 +271,32 @@ def reinterpret_exit_status(calls: list[Call], cfg: dict[str, Any] | None = None
         elif heads[:1] == ["git"] and " diff" in f" {command}" and any(o in command for o in ("--no-index", "--exit-code", "--quiet")) \
                 and not _DIFF_PROBLEM_RE.search(summary) and not _REAL_ERROR_RE.search(summary.replace("warning:", "")):
             meaning = "code 1 = differences trouvees (git diff), pas un echec"
-        if meaning and key is not None and lookups < MAX_SOURCE_LOOKUPS:
-            # ! Le resume ne montre que la fin de la sortie : verifier dans la source qu'aucune erreur reelle ne
-            #   s'affiche avant elle. Source indisponible -> on s'en tient au resume, comme avant.
-            from agentwatch.collector import rollouts as R
-            lookups += 1
-            head = R.read_call_source(cfg, c.evidence.get("source_end"), key, cache)
-            if head and _REAL_ERROR_RE.search(head):
-                c.evidence["exit_status_meaning"] = ("code 1 conserve comme echec : une erreur figure au debut de la sortie, "
-                                                     "hors du resume (relue dans la source)")
+        if meaning:
+            # ! REGLE : l'absence d'erreur dans un EXTRAIT tronque ne requalifie jamais un echec en succes. Il faut
+            #   avoir vu toute la sortie. A defaut, le cas reste indetermine : ni echec confirme, ni succes.
+            full = c.error_summary or ""
+            complete = len(full) < int(cfg.get("max_error_chars", 400)) if cfg else len(full) < 400
+            head: str | None = None
+            if key is not None and not complete and lookups < MAX_SOURCE_LOOKUPS:
+                from agentwatch.collector import rollouts as R
+                lookups += 1
+                head, complete = R.read_call_source(cfg, c.evidence.get("source_end"), key, cache)
+            # * Formes d'erreur reconnues seulement (`rg:`, bloc PowerShell, exception Python, `fatal:`...). Un simple
+            #   mot comme « Error » dans une ligne de code affichee par la recherche n'est pas une erreur : l'appel
+            #   #1567 de la session du 2026-09-20 l'a montre.
+            found = N.classify_error(head)["kind"] if head else "unclassified"
+            if found != "unclassified":
+                c.evidence["exit_status_meaning"] = (f"code 1 conserve comme echec : une erreur ({found}) figure au debut de la "
+                                                     "sortie, hors du resume (relue dans la source)")
+                c.evidence["status_basis"] = "error_found_in_source"
+                meaning = None
+            elif not complete:
+                c.status = S.STATUS_UNKNOWN
+                c.evidence["exit_status_meaning"] = (
+                    "indetermine : la sortie est tronquee et aucune erreur n'y est reconnue. " + meaning
+                    + ", mais l'absence d'erreur dans un extrait ne le demontre pas")
+                c.evidence["status_basis"] = "undetermined_truncated_output"
+                c.error_signature = None
                 meaning = None
         if meaning:
             c.status = S.STATUS_SUCCESS

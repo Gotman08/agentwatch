@@ -182,6 +182,11 @@ def _render_errors(st: dict[str, Any]) -> list[str]:
         out.append("Sortie non classee : seule la fin de la sortie est conservee (400 caracteres, deja masques). Dans une chaine de "
                    "commandes, l'etape en echec peut preceder cette fin : la nature de l'erreur n'est alors pas lisible et reste non "
                    "classee plutot que devinee.")
+    und = err.get("undetermined") or {}
+    if und.get("count"):
+        out.append(f"{und['count']} appel(s) restent **indetermines** : {und['note']}. Ils ne sont comptes ni dans les erreurs "
+                   "ci-dessus, ni dans les succes. Exemples : "
+                   + ", ".join("#" + str(x) for x in und["seqs"]) + (" ..." if und["count"] > len(und["seqs"]) else "") + ".")
     rein = err.get("reinterpreted_as_success") or {}
     if rein.get("count"):
         out.append(f"{rein['count']} autre(s) appel(s) ont un code de sortie non nul sans etre des erreurs, et sont comptes en succes : "

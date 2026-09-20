@@ -277,6 +277,62 @@ class ReportAccuracyTests(unittest.TestCase):
         self.assertEqual(again["failed_calls"], err["failed_calls"])
         self.assertEqual(again["recovered_from_source"], 0)
 
+    def test_truncated_output_never_requalifies_a_failure(self) -> None:
+        """Regle : sans avoir vu toute la sortie, un code 1 de recherche ne devient pas un succes.
+
+        Trois cas dans une meme session : sortie entiere vue et propre (succes), erreur reconnue dans la source
+        (echec), sortie tronquee sans erreur reconnue (indetermine, ni l'un ni l'autre).
+        """
+        b = RolloutBuilder(ROOT).meta().turn("turn-1", "Trois recherches.")
+        # * Remplissage volontairement neutre : la FIN de chaque sortie (le resume conserve) ne doit contenir aucun
+        #   mot d'erreur, sinon l'echec serait garde sans relecture et le chemin teste ne serait pas exerce.
+        filler = "\r\n".join(f"Source/f_{i}.cpp:{i}: resultat de recherche ordinaire" for i in range(90))
+        self.assertGreater(len(filler), 2500)
+        b.exec_("r_short", [b.cmd("i_short", "rg motif Source/a.cpp", "", code=1)])                      # sortie vide
+        b.exec_("r_err", [b.cmd("i_err", "rg motif Source/b.cpp",
+                                "rg: Source/b.cpp: The system cannot find the file specified. (os error 2)\r\n"
+                                + filler, code=1)])
+        # * Reproduit l'appel #1567 du 2026-09-20 : le mot « Error » vient d'une ligne de code affichee par la
+        #   recherche, pas d'un message d'erreur. Sortie tronquee et aucune forme reconnue -> indetermine.
+        b.exec_("r_long", [b.cmd("i_long", "rg motif Source/c.cpp",
+                                 "Source/c.cpp:118: ITEMS_API bool ValidateSnapshot(const FSnapshot& S, FString& Error);\r\n"
+                                 + filler, code=1)])
+        self._write(b)
+        R.import_rollouts(self.store, self.cfg, [str(self.day / f"rollout-2026-09-20T18-00-00-{ROOT}.jsonl")])
+        view = load_session(self.store, *cli._resolve_session(self.store, ROOT, None), self.cfg)
+        def call_for(name: str) -> Any:
+            return next(c for c in view.calls if c.tool_name == "Bash" and name in str(c.params.get("command") or c.target or ""))
+        short, err, long_ = call_for("Source/a.cpp"), call_for("Source/b.cpp"), call_for("Source/c.cpp")
+        # sortie entiere vue et sans erreur : requalification legitime
+        self.assertEqual(short.status, "success")
+        self.assertEqual(short.evidence["status_basis"], "reinterpreted_exit_code")
+        # erreur reconnue au debut de la sortie : l'echec est conserve
+        self.assertEqual(err.status, "error")
+        self.assertEqual(err.evidence["status_basis"], "error_found_in_source")
+        # sortie tronquee sans forme d'erreur reconnue : indetermine, et le mot « Error » d'une ligne de code
+        # affichee par la recherche ne vaut pas erreur
+        self.assertEqual(long_.status, "unknown")
+        self.assertEqual(long_.evidence["status_basis"], "undetermined_truncated_output")
+        self.assertIn("l'absence d'erreur dans un extrait ne le demontre pas", long_.evidence["exit_status_meaning"])
+        st = compute_stats(view, self.cfg)
+        self.assertEqual(st["errors"]["failed_calls"], 1)                 # l'indetermine n'est pas compte en erreur
+        self.assertEqual(st["errors"]["undetermined"]["count"], 1)
+        self.assertIn("indetermine", render_markdown(self._report(view)))
+
+    def test_no_source_and_truncated_output_stays_undetermined(self) -> None:
+        """Sans source relisible, un resume tronque sans erreur laisse le cas indetermine."""
+        from agentwatch.core.correlate import Call
+        from agentwatch.core import schema as S
+        from agentwatch.core.intent import attach_intents
+
+        c = Call(key="k", client="codex", session_id="s", tool_name="Bash", category=S.CAT_SHELL,
+                 status=S.STATUS_ERROR, exit_code=1, target="rg motif x")
+        c.params = {"command": "rg motif x", "shell_heads": ["rg"]}
+        c.error_summary = "x" * int(self.cfg.get("max_error_chars", 400))      # resume a la limite : tronque
+        attach_intents([c], self.cfg)                                          # aucune source_end sur cet appel
+        self.assertEqual(c.status, S.STATUS_UNKNOWN)
+        self.assertEqual(c.evidence["status_basis"], "undetermined_truncated_output")
+
     def test_error_natures_total_matches_failed_calls(self) -> None:
         """Le decompte par nature couvre tous les appels en erreur, meme ceux hors du tableau borne."""
         view = self._session()

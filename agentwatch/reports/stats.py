@@ -178,7 +178,7 @@ def _recover_from_source(cfg: dict[str, Any] | None, unclassified: list[Any]) ->
     out: dict[str, dict[str, Any]] = {}
     for c in unclassified[:MAX_SOURCE_LOOKUPS]:
         src = c.evidence.get("source_end")
-        head = R.read_call_source(cfg, src, key, cache)
+        head, _complete = R.read_call_source(cfg, src, key, cache)
         if not head:
             continue
         k = N.classify_error(head)
@@ -236,6 +236,9 @@ def error_breakdown(view: SessionView, limit: int = 12, cfg: dict[str, Any] | No
     for g in rows:
         g["heads"] = [h for h, _ in g["heads"].most_common(3)]
     reinterpreted = [c for c in view.calls if c.evidence.get("status_basis") == "reinterpreted_exit_code"]
+    # * Cas insuffisamment documentes : code de sortie non nul, sortie tronquee, aucune erreur reconnue. Ni comptes
+    #   en erreurs, ni requalifies en succes : ils se lisent a part.
+    undetermined = [c for c in view.calls if c.evidence.get("status_basis") == "undetermined_truncated_output"]
     # * Decompte par nature sur TOUS les groupes : le tableau est borne, le compte rendu ne doit pas l'etre.
     by_kind: Counter[str] = Counter()
     for g in rows:
@@ -247,6 +250,9 @@ def error_breakdown(view: SessionView, limit: int = 12, cfg: dict[str, Any] | No
         "recovered_from_source": len(recovered),
         "with_exit_code": sum(1 for c in failed if c.exit_code is not None),
         "with_script_result": script_results,
+        "undetermined": {"count": len(undetermined), "seqs": [c.seq for c in undetermined[:8]],
+                         "note": ("code de sortie non nul, sortie tronquee et aucune forme d'erreur reconnue : ni echec "
+                                  "confirme, ni succes ; l'absence d'erreur dans un extrait ne demontre rien")},
         "reinterpreted_as_success": {"count": len(reinterpreted), "seqs": [c.seq for c in reinterpreted[:5]],
                                      "note": ("code de sortie non nul mais resultat normal (recherche sans correspondance, git diff "
                                               "avec differences) : comptes en succes, voir evidence.exit_status_meaning")},
