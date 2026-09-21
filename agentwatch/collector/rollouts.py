@@ -199,6 +199,45 @@ def _norm_ws(text: str) -> str:
     return _WS_RE.sub(" ", text).strip()
 
 
+# * Messages entre agents. Constate le 2026-09-21 (session 01a0bf95, codex-cli 0.155) : le texte est chiffre par le
+#   fournisseur du modele (jeton « gAAAA... ») et le MEME jeton est ecrit a l'envoi (argument `message` de l'appel
+#   de collaboration) et a la reception (`encrypted_content` de la ligne `agent_message`) : 1 139 receptions sur
+#   1 139 retrouvent leur envoi par egalite du jeton. L'ordre, lui, se trompe (107 fois sur 1 139 par file
+#   emetteur -> destinataire, 17 fois en separant les nouvelles taches) : seul le contenu rapproche sans deviner.
+_ENCRYPTED_RE = re.compile(r"^gAAAA[A-Za-z0-9_\-]{40,}={0,2}$")
+_KIND_RE = re.compile(r"^Message Type:[ \t]*([A-Z_]{3,24})[ \t]*$", re.M)
+_PAYLOAD_MARK = "Payload:\n"
+
+
+def payload_facts(text: str, fp: Any) -> dict[str, Any]:
+    """Empreinte et taille du contenu transmis : identiques chez l'emetteur et le destinataire."""
+    norm = _norm_ws(text)
+    if not norm:
+        return {}
+    out: dict[str, Any] = {"payload_fp": fp(norm)[:16], "payload_chars": len(norm)}
+    if _ENCRYPTED_RE.match(norm):
+        out["encrypted"] = True
+    return out
+
+
+def received_payload(content: Any, fp: Any) -> dict[str, Any]:
+    """Ligne `agent_message` : nature du message (MESSAGE, NEW_TASK, FINAL_ANSWER) et contenu transmis, chiffre
+    (`encrypted_content`) ou en clair apres « Payload: »."""
+    out: dict[str, Any] = {}
+    parts = content if isinstance(content, list) else []
+    head = "\n".join(c["text"] for c in parts if isinstance(c, dict) and isinstance(c.get("text"), str))
+    m = _KIND_RE.search(head)
+    if m:
+        out["message_kind"] = m.group(1)
+    enc = [c["encrypted_content"] for c in parts if isinstance(c, dict) and isinstance(c.get("encrypted_content"), str)]
+    if len(enc) == 1:
+        out.update(payload_facts(enc[0], fp))
+        out["encrypted"] = True
+    elif not enc and _PAYLOAD_MARK in head:
+        out.update(payload_facts(head.split(_PAYLOAD_MARK, 1)[1], fp))
+    return out
+
+
 _INJECTED_PREFIXES = ("<", "# agents.md instructions", "# agents.md")
 
 
@@ -864,7 +903,8 @@ class RolloutReader:
             trigger = self.st.pop("trigger_turn", None)
             self._message("agent", text, ns, ("agent_message", p.get("id") or offset),
                           {"message_id": p.get("id"), "author": str(p.get("author") or "")[:120] or None,
-                           "recipient": str(p.get("recipient") or "")[:120] or None, "trigger_turn": trigger})
+                           "recipient": str(p.get("recipient") or "")[:120] or None, "trigger_turn": trigger,
+                           **received_payload(p.get("content"), self.fp)})
             self._note_line_text(text)
         elif pt == "reasoning":
             # * Un bloc par reponse du modele (50 058 fois sur 50 080 suivi de son releve de tokens) : rattache au releve
@@ -925,7 +965,8 @@ class RolloutReader:
 
     def _message_meta(self, role: str, text: str, extra: dict[str, Any]) -> dict[str, Any]:
         sigs: list[str | None] = []
-        with_sig = role in ("user", "agent_instruction", "agent")
+        # * Un contenu chiffre n'a ni paragraphes ni mots : sa signature de similarite ne dirait rien.
+        with_sig = role in ("user", "agent_instruction", "agent") and not extra.get("encrypted")
         if with_sig and self._sig is None:
             self._sig = signature_params(self.key)
         paras, chars, sizes = paragraph_fingerprints(text, self.fp, self._sig if with_sig else None, sigs)
@@ -1227,7 +1268,8 @@ class RolloutReader:
                            "collab_sender": item.get("sender_thread_id"), "collab_status": str(item.get("status") or "")[:40] or None})
         if isinstance(item.get("prompt"), str) and item["prompt"].strip():
             self._message("agent_instruction", item["prompt"], ns, ("instruction", iid, "prompt"),
-                          {"message_id": iid, "tool": tool, "target": ",".join(receivers)[:120] or None})
+                          {"message_id": iid, "tool": tool, "target": ",".join(receivers)[:120] or None,
+                           **payload_facts(item["prompt"], self.fp)})
         if parent is not None and parent in self.st["open_execs"]:
             self.st["open_execs"][parent]["actions"].append([iid, len(resp["output"])])
         elif parent is None:
@@ -1252,7 +1294,8 @@ class RolloutReader:
             for k in MESSAGE_ARGS:
                 if isinstance(args.get(k), str) and args[k].strip():
                     self._message("agent_instruction", args[k], ns, ("instruction", cid, k),
-                                  {"message_id": cid, "tool": tool, "target": str(args.get("target") or args.get("task_name") or "")[:120] or None})
+                                  {"message_id": cid, "tool": tool, "target": str(args.get("target") or args.get("task_name") or "")[:120] or None,
+                                   **payload_facts(args[k], self.fp)})
                     break
 
     def _on_function_output(self, p: dict[str, Any], ns: int | None, extra: dict[str, Any] | None = None) -> None:

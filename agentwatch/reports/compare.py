@@ -155,6 +155,7 @@ def _context_measure(view: SessionView, cfg: dict[str, Any]) -> dict[str, Any] |
     points = (q["last_percent"] - q["first_percent"]) if q else None
     by_status = ac.get("by_status") or {}
     avoidable = [by_status.get(k) or {} for k in ("identical", "no_change_observed")]
+    ex_exact, ex_attr = _exchange_measure(view, cfg)
     return {
         "sessions": 1,
         "exact": {"session_input_tokens": c["session_input_tokens"], "requests": c["responses"],
@@ -168,15 +169,51 @@ def _context_measure(view: SessionView, cfg: dict[str, Any]) -> dict[str, Any] |
                   "truncation_known_sessions": 1 if tr["known"] else 0, "truncated_calls": tr["truncated_calls"],
                   "execs_cut_in_the_middle": tr["execs_cut_in_the_middle"], "tokens_cut_from_execs": tr["tokens_cut_from_execs"],
                   "quota_known_sessions": 1 if q else 0, "quota_points": points if points is not None and points >= 0 else 0,
-                  "turns_cut": lim["turns_cut"]["total"], "turns_cut_by_kind": dict(lim["turns_cut"]["by_kind"])},
+                  "turns_cut": lim["turns_cut"]["total"], "turns_cut_by_kind": dict(lim["turns_cut"]["by_kind"]), **ex_exact},
         "attributed": {"rereads_after_compaction": ac["rereads"], "windows_with_rereads": ac.get("windows_with_rereads", 0),
                        "rereads_added_tokens": ac["added_tokens"], "rereads_reread_tokens": ac["reread_tokens"],
                        "rereads_unchanged": sum(int(v.get("rereads") or 0) for v in avoidable),
                        "rereads_unchanged_added_tokens": sum(int(v.get("added_tokens") or 0) for v in avoidable),
                        "rereads_unchanged_reread_tokens": sum(int(v.get("reread_tokens") or 0) for v in avoidable),
-                       "truncated_calls_added_tokens": tr["added_tokens_of_truncated_calls"],
+                       "truncated_calls_added_tokens": tr["added_tokens_of_truncated_calls"], **ex_attr,
                        "families": {f["family"]: {"calls": f["calls"], "added_tokens": f["added_tokens"],
                                                   "reread_tokens": f["reread_tokens"]} for f in c["families"]}}}
+
+
+def _exchange_measure(view: SessionView, cfg: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Indicateurs entre agents, repris de `reports.exchanges` (aucun calcul refait ici), par nature.
+
+    - releves : messages envoyes, entres, rapproches ; requetes qui n'emettent que des messages et leur entree ; ce
+      qu'emet la premiere reponse apres un message recu ; messages enchaines sans appel d'outil hors messagerie ;
+    - calculs : estimation du contexte conserve, tokens des lectures apres l'ecriture d'un autre agent.
+    # ! L'entree des requetes d'envoi et l'estimation du contexte conserve se recouvrent : deux lignes, jamais une
+    #   somme, jamais un scenario d'economie.
+    """
+    from agentwatch.reports.exchanges import agent_exchanges
+    ex = agent_exchanges(view, cfg)
+    if not ex or not ex.get("messages"):
+        return {}, {}
+    m, rq = ex["messages"], ex.get("message_requests") or {}
+    ch = rq.get("chains") or {}
+    first: dict[str, int] = {}
+    for row in (rq.get("reactions") or {}).values():
+        for k, n in row.items():
+            first[k] = first.get(k, 0) + n
+    known = 1 if m["pairing"]["available"] else 0
+    res = ex.get("resources") or {}
+    est = ex.get("retained_context_estimate") or {}
+    exact = {"exchange_sessions": 1, "pairing_known_sessions": known, "messages_sent": m["sent"], "messages_received": m["received"],
+             "messages_paired": m["pairing"]["paired"], "messages_undelivered": m["pairing"]["undelivered_total"] if known else 0,
+             "messages_slow": m["delivery_delay"]["slow"], "message_only_requests": rq.get("message_only", 0),
+             "message_only_input_tokens": rq.get("message_only_input_tokens", 0),
+             "chain_messages": ch.get("messages", 0), "chains": ch.get("chains", 0),
+             "chain_intermediate_input_tokens": ch.get("intermediate_input_tokens", 0),
+             "first_response_after_message": first, "files_written_by_several_agents": res.get("shared_write_total", 0)}
+    attributed = {"retained_context_estimate_tokens": est.get("tokens", 0), "retained_context_estimate_requests": est.get("requests", 0),
+                  "retained_context_agents": len(est.get("agents") or []),
+                  "handoff_added_tokens": (res.get("handoff") or {}).get("added_tokens", 0),
+                  "shared_reference_added_tokens_by_others": (res.get("shared_reference") or {}).get("added_tokens_by_others", 0)}
+    return exact, attributed
 
 
 def _merge_context(parts: list[dict[str, Any] | None]) -> dict[str, Any] | None:
@@ -423,6 +460,22 @@ _CONTEXT_ROWS: dict[str, list[tuple[str, str, Any]]] = {
         ("requests_per_quota_point", "requetes du modele par point de quota",
          lambda e, a: _ratio(e.get("requests"), e.get("quota_points")) if e.get("quota_known_sessions") else None),
         ("turns_cut", "tours coupes par le client (quota epuise, serveur)", lambda e, a: e.get("turns_cut")),
+        # * Entre agents (sessions a plusieurs agents seulement ; - sinon).
+        ("messages_per_100_requests", "messages envoyes a un autre agent, pour 100 requetes du modele",
+         lambda e, a: _ratio(e.get("messages_sent"), e.get("requests"), 100) if e.get("exchange_sessions") else None),
+        ("message_only_requests", "requetes qui n'emettent que des messages, pour 100 requetes",
+         lambda e, a: _ratio(e.get("message_only_requests"), e.get("requests"), 100) if e.get("exchange_sessions") else None),
+        ("message_only_input_tokens", "entree des requetes qui n'emettent que des messages (tokens)",
+         lambda e, a: e.get("message_only_input_tokens") if e.get("exchange_sessions") else None),
+        ("message_only_input_share", "part de l'entree relue par ces requetes (%)",
+         lambda e, a: _ratio(e.get("message_only_input_tokens"), e.get("session_input_tokens"), 100) if e.get("exchange_sessions") else None),
+        ("chain_messages_share", "messages rapproches enchaines sans appel d'outil hors messagerie entre deux (% ; non rapproche = -)",
+         lambda e, a: _ratio(e.get("chain_messages"), e.get("messages_paired"), 100) if e.get("pairing_known_sessions") else None),
+        ("first_response_messages_only", "premiere reponse apres un message recu qui n'emet que des messages (% ; non rapproche = -)",
+         lambda e, a: _ratio(sum(n for k, n in (e.get("first_response_after_message") or {}).items() if k.startswith("message_to_")),
+                             sum((e.get("first_response_after_message") or {}).values()), 100) if e.get("pairing_known_sessions") else None),
+        ("messages_slow_share", "messages entres chez le destinataire apres le delai de livraison lente (% ; non rapproche = -)",
+         lambda e, a: _ratio(e.get("messages_slow"), e.get("messages_paired"), 100) if e.get("pairing_known_sessions") else None),
     ],
     # * Attributions reconstruites : partage d'une reponse entre ses appels, ressource reconnue d'une fenetre a l'autre.
     "attributed": [
@@ -434,6 +487,16 @@ _CONTEXT_ROWS: dict[str, list[tuple[str, str, Any]]] = {
          lambda e, a: a.get("rereads_unchanged")),
         ("truncated_added", "tokens entres par des sorties de commande que le client a coupees",
          lambda e, a: a.get("truncated_calls_added_tokens") if e.get("truncation_known_sessions") else None),
+        # * ESTIMATION, a ne jamais additionner a l'entree des requetes d'envoi (elles relisent deja ce contexte).
+        ("retained_context_estimate", "estimation du contexte conserve : surplus de debut de fenetre x requetes (tokens)",
+         lambda e, a: a.get("retained_context_estimate_tokens") if e.get("exchange_sessions") else None),
+        ("retained_context_per_request", "cette estimation, par requete des fenetres concernees (tokens)",
+         lambda e, a: _ratio(a.get("retained_context_estimate_tokens"), a.get("retained_context_estimate_requests"))
+         if e.get("exchange_sessions") else None),
+        ("handoff_added", "tokens ajoutes par les lectures apres l'ecriture d'un autre agent",
+         lambda e, a: a.get("handoff_added_tokens") if e.get("exchange_sessions") else None),
+        ("shared_reference_added", "tokens ajoutes par les lectures d'une ressource deja lue par un autre agent, jamais modifiee",
+         lambda e, a: a.get("shared_reference_added_tokens_by_others") if e.get("exchange_sessions") else None),
     ],
 }
 
@@ -507,7 +570,9 @@ def _context_reference_lines(m: dict[str, Any]) -> tuple[list[str], list[str]]:
     out += [f"| {r['label']} | {_num(r['before'])} |" for r in _context_rows(m, m, "exact")]
     out += ["", "## 1 ter. Contexte : attributions reconstruites", "",
             "Calculs d'AgentWatch sur ces releves : partage d'une reponse entre ses appels (prorata des tailles livrees), ressource "
-            "reconnue d'une fenetre a l'autre, etat d'une relecture. A lire, pas a additionner aux releves.", "",
+            "reconnue d'une fenetre a l'autre, etat d'une relecture, estimation du contexte conserve. A lire, pas a additionner aux "
+            "releves : l'estimation du contexte conserve recouvre en partie l'entree des requetes qui n'emettent que des messages "
+            "(elles relisent deja ce contexte) ; ni l'une ni l'autre n'est un gain, et aucun scenario n'en est derive.", "",
             "| Attribution | Valeur |", "|---|---|"]
     out += [f"| {r['label']} | {_num(r['before'])} |" for r in _context_rows(m, m, "attributed")]
     fams = sorted(((m["context"].get("attributed") or {}).get("families") or {}).items(), key=lambda kv: -kv[1]["reread_tokens"])[:8]

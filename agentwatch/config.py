@@ -62,7 +62,10 @@ DEFAULTS: dict[str, Any] = {
     },
     # * `context` : section « Contexte » du rapport (debut de fenetre = N premieres reponses apres une compaction).
     "report": {"max_top_findings": 3, "max_listed_per_rule": 15,
-               "context": {"recovery_responses": 8, "top_outputs": 10, "top_families": 12, "top_resources": 15}},
+               "context": {"recovery_responses": 8, "top_outputs": 10, "top_families": 12, "top_resources": 15},
+               # * `exchanges` : section « Entre agents » (livraison lente = delai envoi -> entree chez le destinataire).
+               "exchanges": {"top_routes": 12, "top_resources": 10, "top_chains": 3, "slow_delivery_seconds": 60,
+                             "retained_min_correlation": 0.95}},
     # --- vue multi-sessions (`agentwatch trends`) ---
     "trends": {"days": 7, "min_sessions": 2, "max_top": 5, "max_examples": 8},
     # --- sante de la collecte (panne silencieuse) : dates de modification seulement ---

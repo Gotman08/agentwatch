@@ -62,7 +62,7 @@ class FollowTests(unittest.TestCase):
 
         def fake_sleep(_s: float) -> None:
             ticks.append(_s)
-            if len(ticks) >= 2:
+            if sum(ticks) >= 4:              # * l'attente se fait par tranches d'une seconde : 2 cycles de 2 s
                 raise KeyboardInterrupt
             real_sleep(0)
 
@@ -81,6 +81,30 @@ class FollowTests(unittest.TestCase):
         self.assertIn("suivi arrete : interruption clavier", log)
         lines = cli._follow_state_lines(self.home)
         self.assertTrue(lines[0].startswith("suivi continu : ARRETE"))
+
+    def test_stop_request_ends_the_follow_cleanly_between_two_cycles(self) -> None:
+        """Sans console, le suivi ne recoit pas d'interruption clavier : une demande ecrite l'arrete apres son cycle."""
+        home = str(self.home)
+        proc = subprocess.Popen([sys.executable, "-m", "agentwatch", "--home", home, "import-rollouts", "--follow", "--interval", "2"],
+                                cwd=str(REPO), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        try:
+            deadline = time.time() + 20
+            while not (F.is_running(home) and F.read_status(home).get("cycles")) and time.time() < deadline:
+                time.sleep(0.1)
+            self.assertTrue(F.is_running(home))
+            self.assertEqual(cli.main(["--home", home, "import-rollouts", "--stop-follow", "--reason", "mise a jour du code"]), 0)
+            self.assertEqual(proc.wait(timeout=20), 0)
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait(timeout=10)
+        st = F.read_status(home)
+        self.assertEqual(st["stopped"]["reason"], "arret demande : mise a jour du code")
+        self.assertFalse(F.is_running(home))                           # * verrou rendu
+        self.assertIsNone(F.stop_requested(home))                      # * demande consommee : le prochain suivi demarre
+        self.assertIn("suivi arrete : arret demande : mise a jour du code", Path(F.log_path(home)).read_text(encoding="utf-8"))
+        self.assertEqual(cli.main(["--home", home, "import-rollouts", "--stop-follow"]), 0)   # * deja arrete : sans effet
+        self.assertIsNone(F.stop_requested(home))
 
     def test_status_without_recorded_stop_says_killed_or_rebooted(self) -> None:
         F.write_status(str(self.home), {"pid": 4242, "started": "2026-09-19T21:30:00Z", "last_tick": "2026-09-19T23:24:04Z",

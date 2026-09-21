@@ -322,6 +322,119 @@ def _render_context(ctx: dict[str, Any] | None, report: dict[str, Any]) -> list[
     return out
 
 
+def _where(src: Any) -> str:
+    return f"{src.get('file')} L{src.get('line')}" if isinstance(src, dict) and src.get("line") else "source inconnue"
+
+
+def _render_exchanges(ex: dict[str, Any] | None, report: dict[str, Any]) -> list[str]:
+    """Section « Entre agents » : messages rapproches, requetes qui n'emettent que des messages, debut de fenetre face
+    aux messages recus, ressources partagees. Libelles observables ; des faits et des mesures, jamais un verdict."""
+    if not ex or not (ex.get("messages") or (ex.get("resources") or {}).get("shared_write_total")
+                      or ((ex.get("resources") or {}).get("handoff") or {}).get("reads")):
+        return []
+    out = ["## Entre agents : messages, requetes qui n'emettent que des messages, ressources partagees", ""]
+    m = ex.get("messages")
+    if m:
+        kinds = ", ".join(f"{k} {n}" for k, n in sorted(m["received_by_kind"].items(), key=lambda kv: -kv[1]))
+        out.append(f"- Messages : {m['sent']} envoyes, {m['received']} entres dans un fil ({kinds}) ; contenu chiffre par le "
+                   f"fournisseur pour {m['encrypted_sent']} envoi(s) : leur texte n'est pas comparable d'un message a l'autre "
+                   f"(une consigne redonnee n'y est pas detectable).")
+        pg = m["pairing"]
+        if pg["available"]:
+            d = m["delivery_delay"]
+            out.append(f"- Rapprochement envoi -> reception ({pg['basis']}) : {pg['paired']} rapproches ; "
+                       f"{pg['undelivered_total']} envoi(s) jamais entre(s) chez le destinataire ; {pg['received_without_send']} "
+                       f"reception(s) sans envoi (reponse finale d'un tour). Delai avant d'entrer chez le destinataire : mediane "
+                       f"{_fmt(d['median_s'])} s, 9e decile {_fmt(d['p90_s'])} s, maximum {_fmt(d['max_s'])} s ; {d['slow']} au-dela de "
+                       f"{d['slow_threshold_s']} s (un message n'entre qu'a la requete suivante du destinataire) ; {m['crossed']} "
+                       f"envoye(s) alors qu'un message du destinataire etait en route.")
+            for u in pg["undelivered"]:
+                out.append(f"  - jamais entre : {_agent(report, u['from'])} -> {_agent(report, u['to'])} a {u['time']} "
+                           f"({u.get('tool')} ; {_where(u.get('source'))})")
+        else:
+            out.append("- Rapprochement envoi -> reception : indisponible (messages importes avant l'ecriture de l'empreinte du "
+                       "contenu transmis ; reimporter la session). L'ordre seul ne rapproche pas sans erreur : rien n'est devine.")
+        out += ["", "| De | Vers | Envoyes | Entres | Rapproches | Caracteres transmis | Delai median (s) | 9e decile (s) |",
+                "|---|---|---|---|---|---|---|---|"]
+        for r in m["routes"]:
+            out.append(f"| {_agent(report, r['from'])} | {_agent(report, r['to'])} | {r['sent']} | {r['received']} | {r['paired']} | "
+                       f"{r['payload_chars']} | {_fmt(r['delay_median_s'])} | {_fmt(r['delay_p90_s'])} |")
+        out.append("")
+    rq = ex.get("message_requests")
+    if rq:
+        out.append(f"- **Requetes qui n'emettent que des messages : {rq['message_only']} sur {rq['responses']}**, soit "
+                   f"{rq['message_only_input_tokens']} tokens d'entree ({_pct(rq.get('share_of_session_input'))} de l'entree de la "
+                   f"session) : chaque message envoye est une requete entiere qui relit tout le contexte de son agent. Par agent : "
+                   + " ; ".join(f"{_agent(report, a)} {r['message_only']} requetes, {_pct(r.get('share_of_agent_input'))} de son entree"
+                                for a, r in sorted(rq["by_agent"].items(), key=lambda kv: kv[0] != "main")) + ".")
+        labels = {"tool_call": "emet un appel d'outil hors messagerie",
+                  "message_to_sender": "n'emet que des messages, dont un a l'emetteur",
+                  "message_to_other_agent": "n'emet que des messages, aucun a l'emetteur", "text_only": "texte seul",
+                  "no_later_response": "aucune reponse ensuite"}
+        if rq.get("reactions"):
+            out.append("- Premiere reponse du destinataire apres l'entree d'un message, par ce qu'elle emet (enchainement dans le "
+                       "temps : ni « repond » ni « relaie le meme contenu » ne sont etablis) : "
+                       + " ; ".join(f"{_agent(report, a)} : " + _counts(r, labels, limit=5)
+                                    for a, r in sorted(rq["reactions"].items(), key=lambda kv: kv[0] != "main")) + ".")
+        ch = rq.get("chains")
+        if ch and ch["chains"]:
+            shapes = " ; ".join(f"{' > '.join(_agent(report, a) for a in s['agents'])} x{s['count']}" for s in ch["shapes"][:4])
+            out.append(f"- Messages enchaines sans appel d'outil hors messagerie entre deux (un message entre, la premiere reponse "
+                       f"du destinataire n'emet que des messages ; cela ne dit pas « sans travail ») : {ch['chains']} chaine(s), "
+                       f"{ch['messages']} messages, {ch['intermediate_input_tokens']} tokens d'entree pour les reponses "
+                       f"intermediaires. Formes les plus frequentes : {shapes}.")
+            for c in ch["longest"][:1]:
+                # * L<n> : ligne de l'envoi dans le rollout de l'emetteur (nom du fichier dans l'export JSON).
+                steps = " ; ".join(f"{s['sent_time'][11:19]} {_agent(report, s['from'])} -> {_agent(report, s['to'])} "
+                                   f"(L{(s.get('sent_source') or {}).get('line')})" for s in c["steps"])
+                out.append(f"  - la plus longue, {c['messages']} messages de {c['start_time']} a {c['end_time']} : {steps}")
+    kept = [r for r in ex.get("resident_messages") or [] if r.get("correlation") is not None]
+    if kept:
+        out.append("- Premiere requete de chaque fenetre apres compaction, face au cumul des messages recus (une pente nette et "
+                   "une correlation proche de 1 sont compatibles avec des messages recus conserves a travers les compactions) : "
+                   + " ; ".join(f"{_agent(report, r['agent'])} {r['first']['input_tokens']} -> {r['last']['input_tokens']} tokens "
+                                f"apres {r['last']['messages']} messages ({r['tokens_per_payload_char']:.3f} token par caractere "
+                                f"transmis, r = {r['correlation']:.3f})" for r in kept) + ".")
+    est = ex.get("retained_context_estimate") or {}
+    if est.get("agents"):
+        out.append(f"- ESTIMATION du contexte conserve ({est['basis']} ; correlation >= {est['min_correlation']}) : "
+                   f"{est['tokens']} tokens relus sur {est['requests']} requetes ("
+                   + ", ".join(_agent(report, a) for a in est["agents"]) + "). Un calcul, pas un releve ; il recouvre en partie "
+                   "l'entree des requetes d'envoi ci-dessus : les deux nombres ne s'additionnent pas et aucun n'est un gain.")
+    res = ex.get("resources") or {}
+    ref, hand = res.get("shared_reference") or {}, res.get("handoff") or {}
+    if ref.get("resources") or hand.get("reads") or res.get("shared_write_total"):
+        out.append(f"- Ressources partagees (tokens ajoutes mesures : {res.get('added_tokens_measured')}) : {ref.get('resources', 0)} "
+                   f"lue(s) par plusieurs agents sans etre modifiee(s) ({ref.get('reads_by_others', 0)} lectures par un autre que le "
+                   f"premier lecteur, {ref.get('added_tokens_by_others', 0)} tokens, {_pct(ref.get('share_of_added'))}) ; "
+                   f"{hand.get('reads', 0)} lecture(s) apres la modification d'un AUTRE agent ({hand.get('added_tokens', 0)} tokens, "
+                   f"{_pct(hand.get('share_of_added'))}) ; {res.get('shared_write_total', 0)} fichier(s) modifie(s) par plusieurs agents.")
+        out.append("")
+        if hand.get("routes"):
+            out += ["| Auteur de la modification | Lecteur | Ressources | Lectures | Tokens ajoutes | Lectures apres un message de l'auteur |",
+                    "|---|---|---|---|---|---|"]
+            for r in hand["routes"][:12]:
+                out.append(f"| {_agent(report, r['author'])} | {_agent(report, r['reader'])} | {r['resources']} | {r['reads']} | "
+                           f"{r['added_tokens']} | {r['reads_after_author_message']} |")
+            out.append("")
+        for w in res.get("shared_write") or []:
+            runs: list[list[Any]] = []                 # * ecritures consecutives d'un meme agent : une seule mention
+            for s in w["sequence"]:
+                if runs and runs[-1][0] == s["agent"]:
+                    runs[-1][2], runs[-1][3] = s["seq"], runs[-1][3] + 1
+                else:
+                    runs.append([s["agent"], s["seq"], s["seq"], 1])
+            seq = ", puis ".join(f"{_agent(report, a)} x{n} (#{lo}" + (f" a #{hi})" if n > 1 else ")") for a, lo, hi, n in runs)
+            out.append(f"- Modifie par plusieurs agents : {_short(w['label'], 90)} : {seq}")
+        for r in (ref.get("top") or [])[:5]:
+            who = ", ".join(f"{_agent(report, a)} {n}" for a, n in sorted(r["reads"].items(), key=lambda kv: -kv[1]))
+            out.append(f"- Lue par plusieurs agents : {_short(r['label'], 90)} ({who} ; {r['added_tokens']} tokens, dont "
+                       f"{r['added_tokens_by_others']} par d'autres que le premier lecteur ; contenus distincts : {_fmt(r['distinct_contents'])})")
+    out.append("- Limites : " + " ; ".join(ex.get("limits") or []) + ".")
+    out.append("")
+    return out
+
+
 def _render_finding(f: Finding, detailed: bool) -> list[str]:
     out = [f"### {f.title}", "",
            f"- Regle : `{f.rule_id}` v{f.rule_version} ({f.kind}) ; identifiant `{f.finding_id}`",
@@ -507,6 +620,7 @@ def render_markdown(report: dict[str, Any]) -> str:
     lines += _render_repetitions(st.get("repetitions") or {}, int(report.get("repetitions_top", 15)), report)
     lines += _render_errors(st)
     lines += _render_context(st.get("context"), report)
+    lines += _render_exchanges(st.get("exchanges"), report)
     if st["largest_outputs"]:
         # * Taille BRUTE produite par l'outil : le modele peut en recevoir beaucoup moins (sortie coupee par le client,
         #   image encodee) ; ce qui entre dans le contexte est dans la section « Contexte ».

@@ -112,19 +112,23 @@ def _resources(c: Call, project: str | None) -> list[tuple[str, str]]:
     return []
 
 
+def _written(c: Call, project: str | None) -> list[str]:
+    """Ressources (cles `file:`) que l'appel a modifiees, d'apres ses chemins observes."""
+    if not c.is_write_like:
+        return []
+    paths = list(c.params.get("patch_paths") or []) if isinstance(c.params.get("patch_paths"), list) else []
+    if not paths and c.target_kind == "path":
+        paths = [c.target]
+    found = (_norm_path(p, c.project_dir or project) for p in paths)
+    return sorted({f"file:{n}" for n in found if n})
+
+
 def _writes(view: SessionView) -> dict[str, list[int]]:
     """chemin -> instants des modifications observees, tous agents confondus."""
     out: dict[str, list[int]] = defaultdict(list)
     for c in view.calls:
-        if not c.is_write_like:
-            continue
-        paths = list(c.params.get("patch_paths") or []) if isinstance(c.params.get("patch_paths"), list) else []
-        if not paths and c.target_kind == "path":
-            paths = [c.target]
-        for p in paths:
-            n = _norm_path(p, c.project_dir or view.project_dir)
-            if n:
-                out[f"file:{n}"].append(c.order_ns)
+        for key in _written(c, view.project_dir):
+            out[key].append(c.order_ns)
     return out
 
 
@@ -153,17 +157,9 @@ def limits(view: SessionView) -> dict[str, Any]:
     return out
 
 
-def context_costs(view: SessionView, cfg: dict[str, Any] | None = None) -> dict[str, Any] | None:
-    """None si la session n'a aucun releve par reponse (hooks seuls, transcript non importe)."""
-    resps = _responses(view)
-    if not resps:
-        return None
-    st = _settings(cfg)
-    incoming: dict[str, list[int]] = defaultdict(list)
-    for m in view.markers:
-        if m.phase == S.PHASE_MESSAGE and m.meta.get("role") in _INCOMING_ROLES:
-            incoming[_agent_of(m.agent_id)].append(m.ns)
-    growth = {a: _growth(L, sorted(incoming.get(a, []))) for a, L in resps.items()}
+def _window_index(resps: dict[str, list[dict[str, Any]]]) -> tuple[dict[tuple[str, int], int], dict[tuple[str, int], int],
+                                                                   dict[tuple[str, int], int]]:
+    """(premier rang de chaque fenetre, dernier rang, fenetre de chaque rang), par agent."""
     last_of: dict[tuple[str, int], int] = {}
     first_of: dict[tuple[str, int], int] = {}
     window_of: dict[tuple[str, int], int] = {}
@@ -172,27 +168,20 @@ def context_costs(view: SessionView, cfg: dict[str, Any] | None = None) -> dict[
             last_of[(a, r["window"])] = r["index"]
             first_of.setdefault((a, r["window"]), r["index"])
             window_of[(a, r["index"])] = r["window"]
-    session_input = sum(r["in"] for L in resps.values() for r in L)
-    # * Socle : ce que relit la premiere requete d'un fil (instructions, outils, skills, consigne) puis la premiere de
-    #   chaque fenetre (socle + resume de compaction). Relu par TOUTES les requetes : le reduire se mesure ici.
-    by_index = {a: {r["index"]: r for r in L} for a, L in resps.items()}
-    # ! Tranche de temps (`report --day`, `compare`) : un fil ou une fenetre commences AVANT la tranche n'y montrent
-    #   pas leur premiere requete. Le socle n'est releve que pour un fil dont la requete de rang 0 est dans la vue, et
-    #   la premiere fenetre visible d'un fil entame (`partial`) est ecartee des mesures de debut de fenetre : sinon une
-    #   requete de milieu de fenetre (130 000 tokens) passait pour un socle.
-    thread_first = {a: L[0]["in"] for a, L in resps.items() if L and L[0]["index"] == 0}
-    partial = {(a, L[0]["window"]) for a, L in resps.items() if L and L[0]["index"] != 0}
-    window_first = sorted(by_index[a][i]["in"] for (a, w), i in first_of.items() if w > 0 and (a, w) not in partial)
-    floor_reread = sum(thread_first[a] * len(resps[a]) for a in thread_first)
-    floor_basis = sum(r["in"] for a in thread_first for r in resps[a])
-    floor = {"thread_first_input": thread_first, "window_first_inputs": window_first,
-             "thread_first_reread_tokens": floor_reread, "thread_first_basis_input_tokens": floor_basis,
-             "threads_started_before_view": len(resps) - len(thread_first),
-             "window_first_input_median": round(median(window_first)) if window_first else None,
-             "thread_first_share_of_session_input": round(floor_reread / floor_basis, 4) if floor_basis else None}
+    return first_of, last_of, window_of
 
-    # * Appels groupes par reponse consommatrice : le gain mesure de la reponse est partage au prorata des parts deja
-    #   calculees a l'import (taille des sorties), a parts egales si elles sont nulles.
+
+def attribute_added(view: SessionView, resps: dict[str, list[dict[str, Any]]] | None = None) -> dict[str, Any]:
+    """Tokens que chaque sortie ajoute au contexte : le gain mesure de la reponse qui la consomme, partage au prorata
+    des parts deja calculees a l'import (taille des sorties), a parts egales si elles sont nulles. Cle d'appel ->
+    tokens (`added`), requetes suivantes de la fenetre (`resid`), rang dans la fenetre (`rank`)."""
+    resps = _responses(view) if resps is None else resps
+    incoming: dict[str, list[int]] = defaultdict(list)
+    for m in view.markers:
+        if m.phase == S.PHASE_MESSAGE and m.meta.get("role") in _INCOMING_ROLES:
+            incoming[_agent_of(m.agent_id)].append(m.ns)
+    growth = {a: _growth(L, sorted(incoming.get(a, []))) for a, L in resps.items()}
+    first_of, last_of, window_of = _window_index(resps)
     by_consumer: dict[tuple[str, int], list[Call]] = defaultdict(list)
     no_usage = 0
     for c in view.calls:
@@ -221,6 +210,41 @@ def context_costs(view: SessionView, cfg: dict[str, Any] | None = None) -> dict[
             if g[1]:
                 mixed_calls += 1
                 mixed_tokens += added[c.key]
+    return {"added": added, "resid": resid, "rank": rank, "unmeasured": unmeasured, "no_usage": no_usage,
+            "mixed_calls": mixed_calls, "mixed_tokens": mixed_tokens}
+
+
+def context_costs(view: SessionView, cfg: dict[str, Any] | None = None) -> dict[str, Any] | None:
+    """None si la session n'a aucun releve par reponse (hooks seuls, transcript non importe)."""
+    resps = _responses(view)
+    if not resps:
+        return None
+    st = _settings(cfg)
+    first_of, _last_of, _window_of = _window_index(resps)
+    session_input = sum(r["in"] for L in resps.values() for r in L)
+    # * Socle : ce que relit la premiere requete d'un fil (instructions, outils, skills, consigne) puis la premiere de
+    #   chaque fenetre (socle + resume de compaction). Relu par TOUTES les requetes : le reduire se mesure ici.
+    by_index = {a: {r["index"]: r for r in L} for a, L in resps.items()}
+    # ! Tranche de temps (`report --day`, `compare`) : un fil ou une fenetre commences AVANT la tranche n'y montrent
+    #   pas leur premiere requete. Le socle n'est releve que pour un fil dont la requete de rang 0 est dans la vue, et
+    #   la premiere fenetre visible d'un fil entame (`partial`) est ecartee des mesures de debut de fenetre : sinon une
+    #   requete de milieu de fenetre (130 000 tokens) passait pour un socle.
+    thread_first = {a: L[0]["in"] for a, L in resps.items() if L and L[0]["index"] == 0}
+    partial = {(a, L[0]["window"]) for a, L in resps.items() if L and L[0]["index"] != 0}
+    window_first = sorted(by_index[a][i]["in"] for (a, w), i in first_of.items() if w > 0 and (a, w) not in partial)
+    floor_reread = sum(thread_first[a] * len(resps[a]) for a in thread_first)
+    floor_basis = sum(r["in"] for a in thread_first for r in resps[a])
+    floor = {"thread_first_input": thread_first, "window_first_inputs": window_first,
+             "thread_first_reread_tokens": floor_reread, "thread_first_basis_input_tokens": floor_basis,
+             "threads_started_before_view": len(resps) - len(thread_first),
+             "window_first_input_median": round(median(window_first)) if window_first else None,
+             "thread_first_share_of_session_input": round(floor_reread / floor_basis, 4) if floor_basis else None}
+
+    # * Appels groupes par reponse consommatrice : voir `attribute_added` (partage aussi utilise entre agents).
+    attr = attribute_added(view, resps)
+    added, resid, rank = attr["added"], attr["resid"], attr["rank"]
+    unmeasured, no_usage = attr["unmeasured"], attr["no_usage"]
+    mixed_calls, mixed_tokens = attr["mixed_calls"], attr["mixed_tokens"]
     measured = [c for c in view.calls if c.key in added]
     total_added = sum(added.values())
     total_reads = sum(added[c.key] * resid[c.key] for c in measured)

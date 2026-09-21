@@ -105,6 +105,40 @@ def now_iso() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
 
+# * Arret propre. Constate le 2026-09-21 : le suivi tourne sans console (`pythonw`), il ne recoit aucune interruption
+#   clavier ; pour une mise a jour du code il fallait tuer le processus, et l'etat disait « aucun arret consigne ».
+#   Une demande ecrite dans un fichier est lue par la boucle entre deux cycles : elle finit son cycle, consigne l'arret
+#   et rend le verrou.
+STOP_FILENAME = "follow.stop"
+
+
+def stop_path(home: str) -> str:
+    return os.path.join(_import_dir(home), STOP_FILENAME)
+
+
+def request_stop(home: str, reason: str) -> None:
+    os.makedirs(longpath(_import_dir(home)), exist_ok=True)
+    atomic_write_json(stop_path(home), {"time": now_iso(), "reason": str(reason)[:200], "by_pid": os.getpid()})
+
+
+def stop_requested(home: str) -> dict[str, Any] | None:
+    try:
+        with open(longpath(stop_path(home)), encoding="utf-8") as fh:
+            data = json.load(fh)
+        return data if isinstance(data, dict) else {"reason": "demande illisible"}
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError):
+        return {"reason": "demande illisible"}
+
+
+def clear_stop(home: str) -> None:
+    try:
+        os.remove(longpath(stop_path(home)))
+    except OSError:
+        pass
+
+
 def append_log(home: str, line: str) -> None:
     """Une ligne datee (heure locale) ; ne leve jamais : un journal illisible n'arrete pas la collecte."""
     path = log_path(home)

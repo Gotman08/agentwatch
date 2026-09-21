@@ -428,6 +428,55 @@ porte une erreur du client (`usage_limit_exceeded`...). Cout mesure sur la meme 
 de 3 passes) : import 7,43 s -> 7,52 s, +328 evenements (+1,2 %), stockage 50 -> 51 Mo ; section calculee en 0,05 s,
 rapport 0,94 s -> 0,98 s.
 
+## Entre agents : messages, requetes qui n'emettent que des messages, ressources partagees (section du rapport, sans verdict)
+
+Pas un detecteur : aucune regle, aucun signalement. Les detecteurs raisonnent agent par agent ; cette section decrit ce
+qui se passe ENTRE les agents d'une session (`stats.exchanges` dans l'export JSON). Absente pour une session a un seul
+agent. Constate sur la session Codex `01a0bf95` (4 agents, 1 141 messages, 4 548 requetes) : 1 140 requetes (25,4 % de
+l'entree) n'emettent qu'un message ; 517 messages s'enchainent sans appel d'outil hors messagerie entre deux ; la
+premiere requete d'une fenetre d'un sous-agent passe de 40 000 a 76 000 tokens a mesure qu'il recoit des messages
+(r = 0,997), pas celle du fil principal (r = 0,92, pente 20 fois plus faible).
+
+Libelles strictement observables. Le texte des messages est chiffre par le fournisseur : il reste semantiquement
+indetermine, et AgentWatch ne cherche pas a le lire. « N'emet que des messages » ne dit pas « ne travaille pas » (le
+modele raisonne aussi dans ces requetes) ; « message adresse a un autre agent apres une reception » ne dit pas que le
+meme contenu est relaye ; « message adresse a l'emetteur » ne dit pas qu'il lui repond.
+
+| Nombre | Nature | Definition |
+|---|---|---|
+| Rapprochement envoi -> reception | FAIT | meme `payload_fp` des deux cotes (le jeton chiffre ecrit a l'envoi est celui ecrit a la reception : 1 139 sur 1 139). Jamais par l'ordre : par file emetteur -> destinataire il se trompe 107 fois sur 1 139, et encore 17 fois en separant les nouvelles taches des messages. Sans empreinte des deux cotes (import anterieur), rien n'est rapproche et le rapport le dit |
+| Envoi jamais entre | FAIT | envoi sans reception de meme empreinte (fin de session, destinataire arrete) |
+| Reception sans envoi | FAIT | reponse finale d'un tour (`FINAL_ANSWER`) : le client la remet au parent, aucun appel d'envoi n'existe |
+| Delai d'entree | MESURE | instant de la ligne `agent_message` chez le destinataire - instant de l'appel d'envoi ; un message n'entre qu'a la requete suivante du destinataire (une commande longue le retarde). `report.exchanges.slow_delivery_seconds` (60) |
+| Croisement | FAIT | A ecrit a B alors qu'un message de B pour A est parti et n'est pas encore entre chez A |
+| Requete qui n'emet que des messages | MESURE | reponse du modele dont TOUS les appels emis portent un message a un autre agent ; son entree est lue dans son releve : c'est tout le contexte de l'agent, relu pour un seul message |
+| Premiere reponse apres l'entree d'un message | FAIT (temps) | par ce qu'elle EMET : `tool_call` (au moins un appel d'outil hors messagerie), `message_to_sender` (que des messages, dont un a l'emetteur), `message_to_other_agent` (que des messages, aucun a l'emetteur), `text_only`, `no_later_response` ; un enchainement dans le temps, pas un lien de sens |
+| Chaine | FAIT (temps) | messages rapproches enchaines ou la premiere reponse de chaque destinataire n'emet que des messages ; tokens d'entree des reponses intermediaires. « Sans appel d'outil hors messagerie », pas « sans travail » |
+| Debut de fenetre face aux messages recus | MESURE + CALCUL | entree de la premiere requete de chaque fenetre apres compaction, face au cumul des caracteres transmis recus jusque-la : pente (token par caractere) et correlation, a partir de 3 fenetres. Pente nette et r proche de 1 : compatible avec des messages recus conserves a travers les compactions de cet agent |
+| Estimation du contexte conserve | ESTIMATION | surplus de la premiere requete de chaque fenetre par rapport a la premiere fenetre apres compaction, multiplie par les requetes de la fenetre ; somme des seuls agents dont la correlation ci-dessus atteint `report.exchanges.retained_min_correlation` (0,95). Session citee : 47,3 M tokens (3 sous-agents). Recouvre en partie l'entree des requetes qui n'emettent que des messages (elles relisent deja ce contexte) : les deux nombres ne s'additionnent jamais, aucun n'est un gain, et aucun scenario d'economie n'en est derive |
+| Reference commune | FAIT + MESURE | ressource lue par au moins 2 agents et jamais modifiee dans la session ; tokens ajoutes par les lecteurs autres que le premier |
+| Passation | FAIT + MESURE | lecture par un agent d'une ressource dont la DERNIERE modification observee est d'un autre agent ; tokens ajoutes ; la lecture suit-elle un message de l'auteur au lecteur entre entre l'ecriture et la lecture ? |
+| Ecriture partagee | FAIT | fichier modifie par au moins 2 agents, avec l'ordre des ecritures |
+
+Les ressources sont celles de la section « Contexte » (chemins d'une lecture shell, cible d'une lecture, outil MCP de
+lecture et ses parametres ; chemins d'un patch). Les tokens d'un appel qui lit plusieurs ressources sont partages a
+parts egales entre elles. Limites, dites dans le rapport : le texte des messages est chiffre par le fournisseur (ou
+garde en empreinte), donc leur objet n'est pas connu et une consigne redonnee d'un message a l'autre n'y est pas
+detectable ; une lecture apres l'ecriture d'un autre agent ne dit pas si elle etait necessaire (relire le travail d'un
+autre avant de l'executer est souvent voulu) ; aucune de ces lignes n'est un jugement.
+
+Dans `compare` (reference et avant/apres), memes calculs, jamais refaits, ranges par nature : **releves exacts**
+(messages pour 100 requetes, requetes qui n'emettent que des messages pour 100 requetes, leur entree en tokens et en
+part de l'entree, part des messages enchaines, part des premieres reponses qui n'emettent que des messages, part des
+livraisons lentes ; `-` quand le rapprochement n'est pas disponible) ; **attributions reconstruites** (estimation du
+contexte conserve, en tokens et par requete des fenetres concernees ; tokens des lectures apres l'ecriture d'un autre
+agent ; tokens des lectures d'une reference commune par un autre que le premier lecteur). Aucun scenario d'economie.
+
+Cout mesure sur la meme session (261 Mo de rollouts, mediane de 3 passes) : import 7,67 s -> 7,39 s, meme nombre
+d'evenements (27 577), stockage 52,85 -> 52,70 Mo (un contenu chiffre ne porte plus de signature de similarite) ;
+statistiques du rapport 0,16 s -> 0,33 s. Une session importee avant ce releve doit etre reimportee pour le
+rapprochement ; le reste de la section (requetes d'echange, ressources partagees) se calcule sans reimport.
+
 ## Vue multi-sessions : `agentwatch trends`
 
 Un signalement isole dans une session ne justifie rien : un `Read` en double ne merite pas

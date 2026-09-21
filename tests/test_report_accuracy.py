@@ -557,12 +557,13 @@ class ReportAccuracyTests(unittest.TestCase):
         self.assertEqual(wt["idle_median_s"], 55.0)
 
     def test_cross_agent_absence_is_stated(self) -> None:
-        """Le rapport dit qu'aucune comparaison entre agents n'est faite."""
+        """Le rapport dit qu'aucun signalement ne compare deux agents, et ou ce qui se passe entre eux est decrit."""
         view = self._session()
         cross = compute_stats(view, self.cfg)["cross_agent"]
         self.assertGreater(cross["agents"], 1)
         self.assertFalse(cross["performed"])
-        self.assertIn("non effectuees", render_markdown(self._report(view)))
+        self.assertTrue(cross["described"])
+        self.assertIn("aucun signalement ne compare deux agents", render_markdown(self._report(view)))
 
     # ------------------------------------------------------------------ tokens
     def test_token_kinds_are_separated(self) -> None:

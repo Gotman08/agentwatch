@@ -142,6 +142,7 @@ def compute_stats(view: SessionView, cfg: dict[str, Any] | None = None) -> dict[
         "work_units": work_units(view),
         "repetitions": _repetitions(view, cfg),
         "context": _context(view, cfg),
+        "exchanges": _exchanges(view, cfg),
     }
 
 
@@ -266,12 +267,17 @@ def cross_agent_note(view: SessionView) -> dict[str, Any]:
     """Dit en clair ce qui n'est PAS compare : chaque detecteur raisonne agent par agent."""
     n = len(view.agents)
     if n > 1:
-        note = ("comparaisons entre agents : non effectuees. Les detecteurs raisonnent agent par agent ; un meme travail fait "
-                "par plusieurs agents (meme fichier lu, meme fiche relue) n'est ni signale ni chiffre. Les tableaux qui "
-                "additionnent plusieurs agents sont descriptifs.")
+        note = ("les detecteurs raisonnent agent par agent : aucun signalement ne compare deux agents. Ce qui se passe entre "
+                "eux (messages rapproches de leur reception, requetes qui n'emettent que des messages, ressources lues ou ecrites "
+                "par plusieurs) est decrit et chiffre, sans verdict, dans la section « Entre agents ».")
     else:
         note = "un seul agent dans la session : aucune comparaison entre agents a faire"
-    return {"agents": n, "performed": False, "note": note}
+    return {"agents": n, "performed": False, "described": n > 1, "note": note}
+
+
+def _exchanges(view: SessionView, cfg: dict[str, Any] | None) -> dict[str, Any] | None:
+    from agentwatch.reports.exchanges import agent_exchanges
+    return agent_exchanges(view, cfg)
 
 
 def _context(view: SessionView, cfg: dict[str, Any] | None) -> dict[str, Any] | None:

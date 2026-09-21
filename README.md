@@ -80,6 +80,12 @@ chaque sortie d'outil ajoute au contexte, combien de requetes la relisent avant 
 chaque compaction, ce que le client a coupe avant de le donner au modele, le quota consomme et les tours coupes par
 le client. Descriptive, sans verdict : voir `docs/detectors.md`.
 
+Ce qui se passe entre les agents d'une session : la section « Entre agents » rapproche chaque message envoye de sa
+reception (par l'empreinte du contenu transmis, jamais par l'ordre), compte les requetes qui n'emettent que des
+messages et ce qu'elles relisent, met la premiere requete de chaque fenetre face aux messages recus, et decrit les
+ressources lues ou modifiees par plusieurs agents (reference commune, passation, ecriture partagee). Libelles
+observables, sans verdict : le texte des messages, chiffre, reste indetermine.
+
 Cout reel en tokens (Claude Code) : lu dans les transcripts du client, nombres et
 identifiants seulement, jamais le texte ; les rapports classent alors par tokens mesures et
 non par octets. `transcripts.auto_import: true` dans `config.json` pour le faire a chaque rapport.

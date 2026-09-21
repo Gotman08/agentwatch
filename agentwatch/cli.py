@@ -739,6 +739,8 @@ def cmd_import_rollouts(args: argparse.Namespace) -> int:
             _err(f"  ! {e}")
 
     from agentwatch.collector import follow as F
+    if getattr(args, "stop_follow", False):
+        return _stop_follow(home, args.reason or "demande de l'operateur")
     lock = F.FollowLock(str(home))
     if not lock.acquire():
         # * Un collecteur tient deja le verrou (suivi continu) : ni second suivi, ni import concurrent du meme etat.
@@ -756,6 +758,26 @@ def cmd_import_rollouts(args: argparse.Namespace) -> int:
         return _follow(home, args, once, show, digest)
     finally:
         lock.release()
+
+
+def _stop_follow(home: Path, reason: str, timeout: float = 90.0) -> int:
+    """Demande au suivi continu de s'arreter apres son cycle, et attend qu'il ait rendu le verrou. 0 : arrete (ou deja
+    arrete) ; 4 : toujours en marche apres le delai (suivi anterieur a cette demande : il ne la lit pas)."""
+    from agentwatch.collector import follow as F
+    if not F.is_running(str(home)):
+        _out("suivi continu : deja arrete, rien a faire")
+        return 0
+    F.request_stop(str(home), reason)
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if not F.is_running(str(home)):
+            st = F.read_status(str(home)).get("stopped") or {}
+            _out(f"suivi continu : arrete ({st.get('reason') or 'arret non consigne'})")
+            return 0
+        time.sleep(0.5)
+    F.clear_stop(str(home))
+    _err(f"suivi continu : toujours en marche apres {timeout:g} s (un suivi anterieur a cette commande ne lit pas la demande)")
+    return 4
 
 
 def _follow(home: Path, args: argparse.Namespace, once: Any, show: Any, digest: Any) -> int:
@@ -786,12 +808,22 @@ def _follow(home: Path, args: argparse.Namespace, once: Any, show: Any, digest: 
         digest.reset()
         F.write_status(str(home), status)
 
+    F.clear_stop(str(home))          # * une demande restee d'un suivi precedent ne doit pas arreter celui-ci
     F.append_log(str(home), f"suivi demarre (pid {os.getpid()}, toutes les {interval:g} s, depot {status['repo']}, AgentWatch {__version__})")
     reason = "interruption clavier"
     try:
         while True:
             cycle()
-            time.sleep(interval)
+            waited = 0.0
+            while waited < interval:                     # * la demande d'arret est lue entre deux cycles, a la seconde
+                asked = F.stop_requested(str(home))
+                if asked is not None:
+                    reason = f"arret demande : {asked.get('reason') or 'sans motif'}"
+                    F.clear_stop(str(home))
+                    return 0
+                step = min(1.0, interval - waited)
+                time.sleep(step)
+                waited += step
     except KeyboardInterrupt:
         return 0
     except BaseException as exc:      # noqa: BLE001 - la cause de l'arret doit etre dans le journal, puis relancee
@@ -1129,6 +1161,9 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--thread", help="un fil (identifiant ou prefixe) et ses sous-agents")
     s.add_argument("--follow", action="store_true", help="suivre en direct : relire les lignes nouvelles toutes les --interval secondes")
     s.add_argument("--interval", type=float, default=30.0, help="periode du suivi en secondes (defaut 30, minimum 2)")
+    s.add_argument("--stop-follow", action="store_true",
+                   help="demander au suivi continu de s'arreter apres son cycle (arret consigne, verrou rendu) ; ne lit rien")
+    s.add_argument("--reason", help="motif de l'arret demande, ecrit dans l'etat et le journal")
     s.set_defaults(func=cmd_import_rollouts)
 
     s = sub.add_parser("self-test", help="scenarios synthetiques + hook reel en sous-processus")
