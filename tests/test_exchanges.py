@@ -105,6 +105,30 @@ class ExchangesTests(unittest.TestCase):
         route = next(r for r in m["routes"] if (r["from"], r["to"]) == ("main", CHILD))
         self.assertEqual((route["sent"], route["received"], route["paired"], route["payload_chars"]), (3, 2, 2, 277))
 
+    def test_a_refused_send_is_not_reported_as_a_lost_message(self) -> None:
+        """Constate le 2026-09-21 (session 01a0bb58) : « 1 envoi jamais entre chez le destinataire » pour un appel que le
+        client avait refuse (« collab tool failed: agent thread limit reached ») : rien n'avait ete envoye."""
+        main = RolloutBuilder(ROOT).meta().turn("turn-1", "SECRET demande")
+        main.fn("call_t1", "collaboration", "followup_task", {"target": "tache", "message": token("a", 127)},
+                "collab tool failed: agent thread limit reached")
+        send(main, "call_m2", "tache", token("b", 150))                       # * envoye et entre
+        send(main, "call_m3", "tache", token("c", 140))                       # * envoye, jamais entre (fin de session)
+        main.usage(900, 800, 10)
+        child = RolloutBuilder(CHILD, parent=ROOT, nickname="Sagan").meta().turn("turn-c")
+        receive(child, "/root", CHILD_PATH, token("b", 150), ms=5_000)
+        child.end_turn("turn-c")
+        v = self._view(main, child)
+        pg = agent_exchanges(v, self.cfg)["messages"]["pairing"]
+        self.assertEqual((pg["undelivered_total"], pg["undelivered_failed_calls"]), (2, 1))       # * avant : 2 « jamais entres », sans distinction
+        by_tool = {u["tool"]: u for u in pg["undelivered"]}
+        self.assertEqual(by_tool["collaboration.followup_task"]["call_status"], "error")
+        self.assertIn("agent thread limit reached", by_tool["collaboration.followup_task"]["call_error"])
+        self.assertIsNone(by_tool["collaboration.send_message"]["call_error"])
+        from agentwatch.reports.markdown import _render_exchanges
+        text = "\n".join(_render_exchanges(agent_exchanges(v, self.cfg), {"agent_labels": {"main": "principal", CHILD: "Sagan"}}))
+        self.assertIn("dont 1 appel(s) d'envoi en echec : rien n'a ete envoye", text)
+        self.assertIn("appel d'envoi en echec : `collab tool failed: agent thread limit reached`", text)
+
     def test_encrypted_content_has_no_similarity_signature_and_is_never_stored(self) -> None:
         v = self._view(*self._out_of_order())
         sent = [m for m in v.markers if m.phase == "message" and m.meta.get("role") == "agent_instruction"]
@@ -175,13 +199,23 @@ class ExchangesTests(unittest.TestCase):
             send(main, f"call_m{window}", "tache", token(chr(96 + window), 1_000))
             receive(child, "/root", CHILD_PATH, token(chr(96 + window), 1_000), ms=2_000)
             child.usage(90_000, 80_000, 500)
-            child.add("compacted", {"message": "SECRET SUMMARY", "window_number": window, "replacement_history": []})
+            # * la compaction d'un sous-agent garde tels quels les messages d'agents recus (forme relevee le 2026-09-21)
+            child.add("compacted", {"message": "SECRET SUMMARY", "window_number": window,
+                                    "replacement_history": [{"type": "message", "role": "developer"}, {"type": "compaction"}]
+                                    + [{"type": "agent_message", "content": [{"type": "encrypted_content", "encrypted_content": "SECRET"}]}] * window})
             child.usage(40_000 + 190 * window, 30_000, 100)
         main.usage(900, 800, 10)                                              # * la reponse qui consomme le dernier envoi
         v = self._view(main, child)
         ex = agent_exchanges(v, self.cfg)
         est = ex["retained_context_estimate"]
         self.assertEqual((est["nature"], est["agents"], est["tokens"]), ("estimation", [CHILD], 190 * 2 + 380))
+        self.assertEqual(est["agent_basis"], {CHILD: "fait releve a la compaction"})
+        row = next(r for r in ex["resident_messages"] if r["agent"] == CHILD)
+        self.assertEqual(row["compactions"], [{"kept_agent_messages": n, "received_before": n} for n in (1, 2, 3)])
+        self.assertEqual((row["compactions_observed"], row["compactions_with_fact"]), (3, 3))
+        # * le RELEVE (des comptes de messages) reste a part de l'ESTIMATION (des tokens)
+        self.assertEqual(est["kept_messages_fact"], {"agents_with_fact": 1, "agents_without_fact": 0, "kept_at_last_compaction": 3,
+                                                     "received_before_last_compaction": 3})
         self.assertEqual(est["not_additive_with"], "message_requests.message_only_input_tokens")
         # * compare : le releve et l'estimation sont dans deux natures differentes, et aucun scenario n'en est derive
         from agentwatch.reports import compare as C
@@ -189,13 +223,84 @@ class ExchangesTests(unittest.TestCase):
         self.assertEqual((ctx["exact"]["message_only_requests"], ctx["exact"]["message_only_input_tokens"]), (3, 2_400))
         self.assertEqual(ctx["attributed"]["retained_context_estimate_tokens"], 190 * 2 + 380)
         self.assertNotIn("retained_context_estimate_tokens", ctx["exact"])
+        self.assertEqual((ctx["exact"]["kept_fact_known_sessions"], ctx["exact"]["kept_agent_messages_at_last_compaction"],
+                          ctx["exact"]["received_before_last_compaction"]), (1, 3, 3))
+        self.assertEqual(ctx["attributed"]["retained_context_agents_by_basis"], {"fait releve a la compaction": 1})
         m = C.merge([C.measure(v, self.cfg)])
         rows = {r["key"]: r["before"] for nature in ("exact", "attributed") for r in C._context_rows(m, m, nature)}
         self.assertEqual(rows["message_only_input_tokens"], 2_400)
         self.assertEqual(rows["retained_context_estimate"], 190 * 2 + 380)
+        self.assertEqual((rows["kept_agent_messages_share"], rows["retained_basis_fact_agents"], rows["retained_basis_correlation_agents"]),
+                         (100.0, 1, 0))
+        # * une mesure enregistree AVANT ces champs (la reference du 2026-09-21) : « - », jamais zero
+        old = json.loads(json.dumps(m))
+        for k in ("kept_fact_known_sessions", "kept_fact_agents", "kept_fact_agents_missing", "kept_agent_messages_at_last_compaction",
+                  "received_before_last_compaction"):
+            old["context"]["exact"].pop(k)
+        old["context"]["attributed"].pop("retained_context_agents_by_basis")
+        old_rows = {r["key"]: r["before"] for nature in ("exact", "attributed") for r in C._context_rows(old, old, nature)}
+        self.assertEqual((old_rows["kept_agent_messages_share"], old_rows["retained_basis_fact_agents"],
+                          old_rows["retained_basis_correlation_agents"]), (None, None, None))
+        self.assertEqual(old_rows["retained_context_estimate"], 190 * 2 + 380)                # * l'estimation, elle, reste lisible
         self.assertFalse([s for s in C._scenarios(m) if "message" in s["key"] or "retained" in s["key"]])
         text = "\n".join(C._context_reference_lines(m)[0])
         self.assertIn("ni l'une ni l'autre n'est un gain", text)
+
+    def test_three_windows_are_not_enough_for_a_correlation_to_enter_the_estimate(self) -> None:
+        """Constate le 2026-09-21 (session 01a0bb58, import sans le fait de compaction) : un agent retenu dans l'estimation
+        sur r = 0,999 avec 3 fenetres. Sans le fait releve, il faut assez de fenetres ; avec lui, le fait decide."""
+        def build(windows: int) -> Any:
+            main = RolloutBuilder(ROOT).meta().turn("turn-1", "SECRET demande")
+            child = RolloutBuilder(CHILD, parent=ROOT, nickname="Sagan").meta().turn("turn-c")
+            for window in range(1, windows + 1):
+                send(main, f"call_m{window}", "tache", token(chr(96 + window), 1_000))
+                receive(child, "/root", CHILD_PATH, token(chr(96 + window), 1_000), ms=2_000)
+                child.usage(90_000, 80_000, 500)
+                child.add("compacted", {"message": "SECRET SUMMARY", "window_number": window, "replacement_history": []})
+                child.usage(40_000 + 190 * window, 30_000, 100)
+            main.usage(900, 800, 10)
+            v = self._view(main, child)
+            for m in v.markers:                                               # * import anterieur : le fait n'a pas ete ecrit
+                m.meta.pop("replacement_agent_messages", None)
+            self.last_view = v
+            return agent_exchanges(v, self.cfg)
+        ex = build(3)
+        est = ex["retained_context_estimate"]
+        self.assertEqual((est["agents"], est["tokens"], est["agents_with_too_few_windows"]), ([], 0, [CHILD]))   # * avant : [CHILD], 760
+        # * un champ non importe n'est pas un zero : None, et le rapport dit quelle methode reste disponible
+        row = next(r for r in ex["resident_messages"] if r["agent"] == CHILD)
+        self.assertEqual((row["compactions"], row["compactions_observed"], row["compactions_with_fact"]), (None, 3, 0))
+        self.assertEqual(est["kept_messages_fact"], {"agents_with_fact": 0, "agents_without_fact": 1, "kept_at_last_compaction": None,
+                                                     "received_before_last_compaction": None})
+        from agentwatch.reports import compare as C
+        from agentwatch.reports.markdown import _render_exchanges
+        text = "\n".join(_render_exchanges(ex, {"agent_labels": {"main": "principal", CHILD: "Sagan"}}))
+        self.assertIn("NON RELEVES pour Sagan", text)
+        self.assertIn("ce n'est pas un zero", text)
+        m = C.merge([C.measure(self.last_view, self.cfg)])
+        self.assertEqual(m["context"]["exact"]["kept_fact_known_sessions"], 0)
+        rows = {r["key"]: r["before"] for r in C._context_rows(m, m, "exact")}
+        self.assertIsNone(rows["kept_agent_messages_share"])
+        est = build(5)["retained_context_estimate"]
+        self.assertEqual((est["agents"], est["agent_basis"]), ([CHILD], {CHILD: "correlation"}))
+
+    def test_a_thread_whose_compaction_keeps_no_agent_message_is_out_of_the_estimate(self) -> None:
+        """Le fil principal recoit des messages et sa compaction n'en garde aucun (0 sur 95 releve) : hors estimation,
+        quelle que soit la correlation."""
+        main = RolloutBuilder(ROOT).meta().turn("turn-1", "SECRET demande")
+        child = RolloutBuilder(CHILD, parent=ROOT, nickname="Sagan").meta().turn("turn-c")
+        for window in range(1, 7):
+            send(child, f"call_c{window}", "/root", token(chr(96 + window), 1_000))
+            receive(main, CHILD_PATH, "/root", token(chr(96 + window), 1_000), ms=3_000)
+            main.usage(90_000, 80_000, 500)
+            main.add("compacted", {"message": "SECRET SUMMARY", "window_number": window,
+                                   "replacement_history": [{"type": "message", "role": "developer"}, {"type": "compaction"}]})
+            main.usage(40_000 + 190 * window, 30_000, 100)
+        child.usage(900, 800, 10)
+        ex = agent_exchanges(self._view(main, child), self.cfg)
+        row = next(r for r in ex["resident_messages"] if r["agent"] == "main")
+        self.assertEqual((row["correlation"], row["compactions"][-1]), (1.0, {"kept_agent_messages": 0, "received_before": 6}))
+        self.assertEqual(ex["retained_context_estimate"]["agents"], [])
 
     # ------------------------------------------------------------------ ressources partagees
     def test_shared_resources_tell_reference_handoff_and_shared_write(self) -> None:
@@ -226,7 +331,29 @@ class ExchangesTests(unittest.TestCase):
         self.assertTrue(hand["top"][0]["message_between"])
         self.assertTrue(hand["top"][0]["read"]["source"]["line"])             # * preuve : ligne du rollout du lecteur
         self.assertEqual(res["shared_write_total"], 1)
-        self.assertEqual([s["agent"] for s in res["shared_write"][0]["sequence"]], ["main", CHILD])
+        self.assertEqual([(r["agent"], r["writes"]) for r in res["shared_write"][0]["runs"]], [("main", 1), (CHILD, 1)])
+
+    def test_shared_write_shows_every_writer_even_after_many_writes_by_the_first(self) -> None:
+        """Constate le 2026-09-21 (session 01a0bb58) : « Modifie par plusieurs agents : playerprofile.md : Leibniz x12 ».
+        La sequence, coupee aux 12 premieres ecritures, ne montrait qu'un agent pour un fichier modifie par deux."""
+        def patch(i: str) -> dict[str, Any]:
+            return {"type": "FileChange", "id": f"patch-{i}", "status": "completed",
+                    "changes": {"C:\\proj\\Docs\\profil.md": {"type": "update", "unified_diff": "@@ SECRET"}}}
+        main = RolloutBuilder(ROOT).meta().turn("turn-1", "SECRET demande")
+        for i in range(13):
+            main.exec_(f"call_p{i}", [patch(f"m{i}")], usage=(20_000 + i, 19_000, 100))
+        child = RolloutBuilder(CHILD, parent=ROOT, nickname="Sagan").meta().turn("turn-c")
+        child.add("turn_context", {"turn_id": "turn-c", "cwd": "C:\\proj", "model": "gpt-synth"}, ms=60_000)   # * apres le principal
+        child.exec_("call_pc", [patch("c")], usage=(10_000, 9_000, 100))
+        child.usage(10_200, 10_000, 50)
+        v = self._view(main, child)
+        w = agent_exchanges(v, self.cfg)["resources"]["shared_write"][0]
+        self.assertEqual(w["writes"], {"main": 13, CHILD: 1})
+        self.assertEqual([(r["agent"], r["writes"]) for r in w["runs"]], [("main", 13), (CHILD, 1)])      # * avant : main seul
+        from agentwatch.reports.markdown import _render_exchanges
+        text = "\n".join(_render_exchanges(agent_exchanges(v, self.cfg), {"agent_labels": {"main": "principal", CHILD: "Sagan"}}))
+        self.assertIn("principal x13 (#", text)
+        self.assertIn("puis Sagan x1 (#", text)
 
     def test_single_agent_has_no_section(self) -> None:
         main = RolloutBuilder(ROOT).meta().turn("turn-1", "SECRET demande")

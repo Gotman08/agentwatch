@@ -202,15 +202,24 @@ def _exchange_measure(view: SessionView, cfg: dict[str, Any]) -> tuple[dict[str,
     known = 1 if m["pairing"]["available"] else 0
     res = ex.get("resources") or {}
     est = ex.get("retained_context_estimate") or {}
+    fact = est.get("kept_messages_fact") or {}
     exact = {"exchange_sessions": 1, "pairing_known_sessions": known, "messages_sent": m["sent"], "messages_received": m["received"],
              "messages_paired": m["pairing"]["paired"], "messages_undelivered": m["pairing"]["undelivered_total"] if known else 0,
              "messages_slow": m["delivery_delay"]["slow"], "message_only_requests": rq.get("message_only", 0),
              "message_only_input_tokens": rq.get("message_only_input_tokens", 0),
              "chain_messages": ch.get("messages", 0), "chains": ch.get("chains", 0),
              "chain_intermediate_input_tokens": ch.get("intermediate_input_tokens", 0),
-             "first_response_after_message": first, "files_written_by_several_agents": res.get("shared_write_total", 0)}
+             "first_response_after_message": first, "files_written_by_several_agents": res.get("shared_write_total", 0),
+             # ! RELEVE des messages gardes par la compaction : des comptes, tenus a part de l'estimation en tokens. Une
+             #   session importee sans ce fait ne compte pas dans `kept_fact_known_sessions` : absent n'est pas zero.
+             "kept_fact_known_sessions": 1 if fact.get("agents_with_fact") else 0,
+             "kept_fact_agents": fact.get("agents_with_fact", 0), "kept_fact_agents_missing": fact.get("agents_without_fact", 0),
+             # * sommes de sessions : 0 ici ne se lit qu'avec `kept_fact_known_sessions` (la ligne affiche « - » sinon)
+             "kept_agent_messages_at_last_compaction": fact.get("kept_at_last_compaction") or 0,
+             "received_before_last_compaction": fact.get("received_before_last_compaction") or 0}
     attributed = {"retained_context_estimate_tokens": est.get("tokens", 0), "retained_context_estimate_requests": est.get("requests", 0),
                   "retained_context_agents": len(est.get("agents") or []),
+                  "retained_context_agents_by_basis": dict(est.get("agents_by_basis") or {}),
                   "handoff_added_tokens": (res.get("handoff") or {}).get("added_tokens", 0),
                   "shared_reference_added_tokens_by_others": (res.get("shared_reference") or {}).get("added_tokens_by_others", 0)}
     return exact, attributed
@@ -476,6 +485,9 @@ _CONTEXT_ROWS: dict[str, list[tuple[str, str, Any]]] = {
                              sum((e.get("first_response_after_message") or {}).values()), 100) if e.get("pairing_known_sessions") else None),
         ("messages_slow_share", "messages entres chez le destinataire apres le delai de livraison lente (% ; non rapproche = -)",
          lambda e, a: _ratio(e.get("messages_slow"), e.get("messages_paired"), 100) if e.get("pairing_known_sessions") else None),
+        ("kept_agent_messages_share", "messages d'agents gardes a la derniere compaction, sur 100 recus jusque-la (fait non importe = -)",
+         lambda e, a: _ratio(e.get("kept_agent_messages_at_last_compaction"), e.get("received_before_last_compaction"), 100)
+         if e.get("kept_fact_known_sessions") else None),
     ],
     # * Attributions reconstruites : partage d'une reponse entre ses appels, ressource reconnue d'une fenetre a l'autre.
     "attributed": [
@@ -490,6 +502,12 @@ _CONTEXT_ROWS: dict[str, list[tuple[str, str, Any]]] = {
         # * ESTIMATION, a ne jamais additionner a l'entree des requetes d'envoi (elles relisent deja ce contexte).
         ("retained_context_estimate", "estimation du contexte conserve : surplus de debut de fenetre x requetes (tokens)",
          lambda e, a: a.get("retained_context_estimate_tokens") if e.get("exchange_sessions") else None),
+        ("retained_basis_fact_agents", "agents de cette estimation retenus sur le fait releve a la compaction (mesure anterieure = -)",
+         lambda e, a: (a.get("retained_context_agents_by_basis") or {}).get("fait releve a la compaction", 0)
+         if "retained_context_agents_by_basis" in a else None),
+        ("retained_basis_correlation_agents", "agents de cette estimation retenus sur la correlation, faute du fait (mesure anterieure = -)",
+         lambda e, a: (a.get("retained_context_agents_by_basis") or {}).get("correlation", 0)
+         if "retained_context_agents_by_basis" in a else None),
         ("retained_context_per_request", "cette estimation, par requete des fenetres concernees (tokens)",
          lambda e, a: _ratio(a.get("retained_context_estimate_tokens"), a.get("retained_context_estimate_requests"))
          if e.get("exchange_sessions") else None),

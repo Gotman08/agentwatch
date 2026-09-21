@@ -343,14 +343,17 @@ def _render_exchanges(ex: dict[str, Any] | None, report: dict[str, Any]) -> list
         if pg["available"]:
             d = m["delivery_delay"]
             out.append(f"- Rapprochement envoi -> reception ({pg['basis']}) : {pg['paired']} rapproches ; "
-                       f"{pg['undelivered_total']} envoi(s) jamais entre(s) chez le destinataire ; {pg['received_without_send']} "
+                       f"{pg['undelivered_total']} envoi(s) jamais entre(s) chez le destinataire"
+                       + (f" (dont {pg['undelivered_failed_calls']} appel(s) d'envoi en echec : rien n'a ete envoye)"
+                          if pg.get("undelivered_failed_calls") else "") + f" ; {pg['received_without_send']} "
                        f"reception(s) sans envoi (reponse finale d'un tour). Delai avant d'entrer chez le destinataire : mediane "
                        f"{_fmt(d['median_s'])} s, 9e decile {_fmt(d['p90_s'])} s, maximum {_fmt(d['max_s'])} s ; {d['slow']} au-dela de "
                        f"{d['slow_threshold_s']} s (un message n'entre qu'a la requete suivante du destinataire) ; {m['crossed']} "
                        f"envoye(s) alors qu'un message du destinataire etait en route.")
             for u in pg["undelivered"]:
+                why = f" ; appel d'envoi en echec : {_short(u['call_error'], 80)}" if u.get("call_error") else ""
                 out.append(f"  - jamais entre : {_agent(report, u['from'])} -> {_agent(report, u['to'])} a {u['time']} "
-                           f"({u.get('tool')} ; {_where(u.get('source'))})")
+                           f"({u.get('tool')} ; {_where(u.get('source'))}{why})")
         else:
             out.append("- Rapprochement envoi -> reception : indisponible (messages importes avant l'ecriture de l'empreinte du "
                        "contenu transmis ; reimporter la session). L'ordre seul ne rapproche pas sans erreur : rien n'est devine.")
@@ -394,13 +397,31 @@ def _render_exchanges(ex: dict[str, Any] | None, report: dict[str, Any]) -> list
                    "une correlation proche de 1 sont compatibles avec des messages recus conserves a travers les compactions) : "
                    + " ; ".join(f"{_agent(report, r['agent'])} {r['first']['input_tokens']} -> {r['last']['input_tokens']} tokens "
                                 f"apres {r['last']['messages']} messages ({r['tokens_per_payload_char']:.3f} token par caractere "
-                                f"transmis, r = {r['correlation']:.3f})" for r in kept) + ".")
+                                f"transmis, r = {r['correlation']:.3f} sur {r['windows_after_compaction']} fenetres)" for r in kept)
+                   + ". Sur peu de fenetres, une correlation ne dit rien.")
+    facts = [r for r in ex.get("resident_messages") or [] if r.get("compactions")]
+    if facts:
+        out.append("- RELEVE dans les lignes de compaction, a la derniere de chaque agent (messages d'autres agents gardes tels quels / "
+                   "recus jusque-la) : " + " ; ".join(f"{_agent(report, r['agent'])} {r['compactions'][-1]['kept_agent_messages']} / "
+                                                     f"{r['compactions'][-1]['received_before']} (fait releve pour "
+                                                     f"{r['compactions_with_fact']} compaction(s) sur {r['compactions_observed']})"
+                                                     for r in facts) + ". Des comptes de messages, pas des tokens.")
+    unread = [r for r in ex.get("resident_messages") or [] if r.get("compactions_observed") and not r.get("compactions")]
+    if unread:
+        out.append("- Messages gardes par la compaction : NON RELEVES pour " + ", ".join(_agent(report, r["agent"]) for r in unread)
+                   + " (import anterieur a ce releve : ce n'est pas un zero). Methode disponible pour ces agents : la correlation "
+                   "ci-dessus entre debut de fenetre et messages recus, qui ne prouve rien sur peu de fenetres ; le fait se lit "
+                   "dans les lignes `compacted` du rollout, et un reimport cible de la session le releve.")
     est = ex.get("retained_context_estimate") or {}
     if est.get("agents"):
-        out.append(f"- ESTIMATION du contexte conserve ({est['basis']} ; correlation >= {est['min_correlation']}) : "
-                   f"{est['tokens']} tokens relus sur {est['requests']} requetes ("
-                   + ", ".join(_agent(report, a) for a in est["agents"]) + "). Un calcul, pas un releve ; il recouvre en partie "
-                   "l'entree des requetes d'envoi ci-dessus : les deux nombres ne s'additionnent pas et aucun n'est un gain.")
+        out.append(f"- ESTIMATION du contexte conserve ({est['basis']} ; sans ce fait : correlation >= {est['min_correlation']} sur au "
+                   f"moins {est.get('min_windows')} fenetres) : {est['tokens']} tokens relus sur {est['requests']} requetes ("
+                   + ", ".join(f"{_agent(report, a)} [{(est.get('agent_basis') or {}).get(a, 'correlation')}]" for a in est["agents"])
+                   + "). Un calcul, pas un releve ; il recouvre en partie l'entree des requetes d'envoi ci-dessus : les deux nombres "
+                   "ne s'additionnent pas et aucun n'est un gain.")
+    if est.get("agents_with_too_few_windows"):
+        out.append("- Hors estimation, trop peu de fenetres pour qu'une correlation dise quelque chose : "
+                   + ", ".join(_agent(report, a) for a in est["agents_with_too_few_windows"]) + ".")
     res = ex.get("resources") or {}
     ref, hand = res.get("shared_reference") or {}, res.get("handoff") or {}
     if ref.get("resources") or hand.get("reads") or res.get("shared_write_total"):
@@ -418,14 +439,10 @@ def _render_exchanges(ex: dict[str, Any] | None, report: dict[str, Any]) -> list
                            f"{r['added_tokens']} | {r['reads_after_author_message']} |")
             out.append("")
         for w in res.get("shared_write") or []:
-            runs: list[list[Any]] = []                 # * ecritures consecutives d'un meme agent : une seule mention
-            for s in w["sequence"]:
-                if runs and runs[-1][0] == s["agent"]:
-                    runs[-1][2], runs[-1][3] = s["seq"], runs[-1][3] + 1
-                else:
-                    runs.append([s["agent"], s["seq"], s["seq"], 1])
-            seq = ", puis ".join(f"{_agent(report, a)} x{n} (#{lo}" + (f" a #{hi})" if n > 1 else ")") for a, lo, hi, n in runs)
-            out.append(f"- Modifie par plusieurs agents : {_short(w['label'], 90)} : {seq}")
+            seq = ", puis ".join(f"{_agent(report, r['agent'])} x{r['writes']} (#{r['first_seq']}"
+                                 + (f" a #{r['last_seq']})" if r["writes"] > 1 else ")") for r in w["runs"])
+            more = f", puis {w['runs_total'] - len(w['runs'])} autre(s) suite(s)" if w["runs_total"] > len(w["runs"]) else ""
+            out.append(f"- Modifie par plusieurs agents : {_short(w['label'], 90)} : {seq}{more}")
         for r in (ref.get("top") or [])[:5]:
             who = ", ".join(f"{_agent(report, a)} {n}" for a, n in sorted(r["reads"].items(), key=lambda kv: -kv[1]))
             out.append(f"- Lue par plusieurs agents : {_short(r['label'], 90)} ({who} ; {r['added_tokens']} tokens, dont "

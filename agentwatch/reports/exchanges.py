@@ -31,6 +31,10 @@ from agentwatch.reports.context import _agent_of, _ref, _resources, _responses, 
 
 DEFAULTS = {"top_routes": 12, "top_resources": 10, "top_chains": 3, "slow_delivery_seconds": 60}
 RETAINED_MIN_CORRELATION = 0.95     # * `report.exchanges.retained_min_correlation` : agents retenus dans l'estimation
+# * Une correlation sur 3 points ne prouve rien (au hasard, |r| >= 0,95 une fois sur cinq ; une fois sur 80 avec 5 points).
+#   Constate le 2026-09-21 (session 01a0bb58) : un agent retenu sur r = 0,999 avec 3 fenetres. Sans le fait releve a la
+#   compaction, l'estimation exige ce nombre de fenetres (`report.exchanges.retained_min_windows`).
+RETAINED_MIN_WINDOWS = 5
 _ROOT = "/root"
 
 
@@ -123,6 +127,16 @@ def _messages(view: SessionView, pm: dict[str, Any], st: dict[str, int]) -> dict
     for p in pairs:
         flights[(p["from"], p["to"])].append((p["sent_ns"], p["received_ns"]))
     crossed = sum(1 for p in pairs if any(a < p["sent_ns"] < b for a, b in flights.get((p["to"], p["from"]), [])))
+    # * Un envoi jamais entre peut etre un appel que le client a REFUSE (« agent thread limit reached ») : le statut de
+    #   l'appel d'envoi, deja releve, le dit ; sans lui on lisait un message perdu la ou rien n'avait ete envoye.
+    by_call = {str(c.call_id): c for c in view.calls if c.call_id}
+    lost = []
+    for s in pm["undelivered"]:
+        c = by_call.get(str(s.meta.get("message_id")))
+        failed = c is not None and c.status in (S.STATUS_ERROR, S.STATUS_TIMEOUT, S.STATUS_DENIED)
+        lost.append({"from": _agent_of(s.agent_id), "to": pm["target_of"](s), "time": s.time, "tool": s.meta.get("tool"),
+                     "source": _src(s), "call_status": c.status if c is not None else None,
+                     "call_error": (c.error_summary or c.error_signature) if failed else None})
     rows = [{"from": k[0], "to": k[1], "sent": v["sent"], "received": v["received"], "paired": v["paired"],
              "payload_chars": v["chars"], "delay_median_s": _quantile(sorted(v["delays"]), 0.5),
              "delay_p90_s": _quantile(sorted(v["delays"]), 0.9)}
@@ -134,9 +148,8 @@ def _messages(view: SessionView, pm: dict[str, Any], st: dict[str, int]) -> dict
             "pairing": {"basis": "empreinte du contenu transmis, identique a l'envoi et a la reception",
                         "available": pm["with_fingerprint"] > 0, "paired": len(pairs),
                         "received_with_fingerprint": pm["with_fingerprint"],
-                        "undelivered": [{"from": _agent_of(s.agent_id), "to": pm["target_of"](s), "time": s.time,
-                                         "tool": s.meta.get("tool"), "source": _src(s)} for s in pm["undelivered"]][:10],
-                        "undelivered_total": len(pm["undelivered"]),
+                        "undelivered": lost[:10], "undelivered_total": len(lost),
+                        "undelivered_failed_calls": sum(1 for x in lost if x["call_error"]),
                         "received_without_send": len(pm["unpaired_received"])},
             "delivery_delay": {"median_s": _quantile(delays, 0.5), "p90_s": _quantile(delays, 0.9),
                                "max_s": round(delays[-1], 1) if delays else None,
@@ -269,10 +282,19 @@ def _resident(view: SessionView, pm: dict[str, Any]) -> list[dict[str, Any]]:
     """Premiere requete de chaque fenetre de contexte, face au cumul des messages recus jusque-la : pente et
     correlation (a partir de 3 fenetres). `window_start_surplus_tokens` : surplus de la premiere requete de chaque
     fenetre par rapport a la premiere fenetre apres compaction, multiplie par les requetes de la fenetre. Un CALCUL
-    sur des releves, qui ne dit pas la cause du surplus : c'est la correlation qui le rapproche des messages recus."""
+    sur des releves, qui ne dit pas la cause du surplus. `compactions` : le FAIT releve dans chaque ligne de compaction
+    (messages d'agents gardes, face aux messages recus jusque-la), quand l'import l'a ecrit ; il prime sur la correlation."""
     got: dict[str, list[tuple[int, int]]] = defaultdict(list)
     for r in pm["received"]:
         got[_agent_of(r.agent_id)].append((r.ns, int(r.meta.get("payload_chars") or 0)))
+    kept_facts: dict[str, list[tuple[int, int]]] = defaultdict(list)       # agent -> (instant, messages d'agents gardes)
+    compactions_seen: Counter[str] = Counter()                             # ! toutes, y compris celles importees sans ce fait
+    for m in view.markers:
+        if m.phase != S.PHASE_COMPACT_END:
+            continue
+        compactions_seen[_agent_of(m.agent_id)] += 1
+        if isinstance(m.meta.get("replacement_agent_messages"), int):
+            kept_facts[_agent_of(m.agent_id)].append((m.ns, m.meta["replacement_agent_messages"]))
     out = []
     for agent, L in _responses(view).items():
         recs = sorted(got.get(agent, []))
@@ -294,6 +316,11 @@ def _resident(view: SessionView, pm: dict[str, Any]) -> list[dict[str, Any]]:
                                "received_payload_chars": sum(x[1] for x in recs),
                                "first": pts[0] if pts else None, "last": pts[-1] if pts else None,
                                "tokens_per_payload_char": None, "correlation": None,
+                               # ! None = fait NON IMPORTE (import anterieur au releve), jamais « zero message garde »
+                               "compactions": [{"kept_agent_messages": k, "received_before": bisect.bisect_right(times, ns)}
+                                               for ns, k in sorted(kept_facts.get(agent, []))] or None,
+                               "compactions_observed": compactions_seen.get(agent, 0),
+                               "compactions_with_fact": len(kept_facts.get(agent, [])),
                                "requests_in_these_windows": sum(per_window[p["window"]] for p in pts),
                                "window_start_surplus_tokens": sum(max(0, p["input_tokens"] - base) * per_window[p["window"]]
                                                                   for p in pts)}
@@ -309,17 +336,43 @@ def _resident(view: SessionView, pm: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def _retained_estimate(rows: list[dict[str, Any]], cfg: dict[str, Any] | None) -> dict[str, Any]:
-    """ESTIMATION du contexte conserve : somme des surplus de debut de fenetre des seuls agents dont la premiere
-    requete de fenetre suit le cumul des messages recus (correlation >= seuil). Jamais additionnee a l'entree des
-    requetes d'envoi, jamais convertie en gain."""
+    """ESTIMATION du contexte conserve : somme des surplus de debut de fenetre des agents dont la compaction GARDE les
+    messages recus. Base, par agent : le fait releve dans ses lignes de compaction (au moins un message d'agent garde)
+    quand l'import l'a ecrit ; sinon, la correlation entre debut de fenetre et messages recus, avec assez de fenetres
+    pour qu'elle dise quelque chose. Jamais additionnee a l'entree des requetes d'envoi, jamais convertie en gain."""
     user = ((cfg or {}).get("report") or {}).get("exchanges") or {}
     threshold = float(user.get("retained_min_correlation", RETAINED_MIN_CORRELATION))
-    kept = [r for r in rows if isinstance(r.get("correlation"), (int, float)) and r["correlation"] >= threshold]
-    return {"nature": "estimation", "min_correlation": threshold, "agents": [r["agent"] for r in kept],
+    min_windows = int(user.get("retained_min_windows", RETAINED_MIN_WINDOWS))
+    kept, basis_of, too_few = [], {}, []
+    for r in rows:
+        facts = r.get("compactions")
+        if facts is not None:
+            if any(f["kept_agent_messages"] > 0 for f in facts):
+                kept.append(r)
+                basis_of[r["agent"]] = "fait releve a la compaction"
+        elif isinstance(r.get("correlation"), (int, float)) and r["correlation"] >= threshold:
+            if r["windows_after_compaction"] >= min_windows:
+                kept.append(r)
+                basis_of[r["agent"]] = "correlation"
+            else:
+                too_few.append(r["agent"])
+    # * Ce qui est RELEVE (messages gardes, comptes) reste a part de ce qui est ESTIME (tokens associes a leur conservation).
+    with_fact = [r for r in rows if r.get("compactions")]
+    return {"nature": "estimation", "min_correlation": threshold, "min_windows": min_windows, "agents": [r["agent"] for r in kept],
+            "agent_basis": basis_of, "agents_with_too_few_windows": too_few,
+            "agents_by_basis": dict(Counter(basis_of.values())),
+            "kept_messages_fact": {"agents_with_fact": len(with_fact),
+                                   "agents_without_fact": sum(1 for r in rows if r.get("compactions_observed") and not r.get("compactions")),
+                                   # ! None quand aucun agent n'a ce fait : non importe, pas « zero message garde »
+                                   "kept_at_last_compaction": (sum(r["compactions"][-1]["kept_agent_messages"] for r in with_fact)
+                                                               if with_fact else None),
+                                   "received_before_last_compaction": (sum(r["compactions"][-1]["received_before"] for r in with_fact)
+                                                                       if with_fact else None)},
             "tokens": sum(int(r["window_start_surplus_tokens"]) for r in kept),
             "requests": sum(int(r["requests_in_these_windows"]) for r in kept),
             "basis": "surplus de la premiere requete de chaque fenetre par rapport a la premiere fenetre apres compaction, "
-                     "multiplie par les requetes de la fenetre ; agents dont ce debut de fenetre suit le cumul des messages recus",
+                     "multiplie par les requetes de la fenetre ; agents dont la compaction garde les messages recus (fait releve) "
+                     "ou, a defaut, dont ce debut de fenetre suit le cumul des messages recus",
             "not_additive_with": "message_requests.message_only_input_tokens"}
 
 
@@ -384,10 +437,18 @@ def _shared_resources(view: SessionView, pm: dict[str, Any], st: dict[str, int])
         agents = Counter(c.agent_key for c in W)
         if len(agents) >= 2:
             W.sort(key=lambda c: c.order_ns)
+            # * Suites d'ecritures consecutives d'un meme agent, sur TOUTES les ecritures : couper la liste des ecritures
+            #   montrait un seul agent pour un fichier modifie par plusieurs (12 ecritures du premier, puis l'autre).
+            runs: list[dict[str, Any]] = []
+            for c in W:
+                if runs and runs[-1]["agent"] == c.agent_key:
+                    runs[-1].update({"last_seq": c.seq, "last_time": c.start_time, "writes": runs[-1]["writes"] + 1})
+                else:
+                    runs.append({"agent": c.agent_key, "first_seq": c.seq, "last_seq": c.seq, "first_time": c.start_time,
+                                 "last_time": c.start_time, "writes": 1})
             shared_write.append({"label": labels[key], "writes": dict(agents),
                                  "reads": dict(Counter(c.agent_key for c, _t in reads.get(key, []))),
-                                 "sequence": [{"agent": c.agent_key, "seq": c.seq, "time": c.start_time, "status": c.status}
-                                              for c in W[:12]]})
+                                 "runs": runs[:12], "runs_total": len(runs)})
     reference.sort(key=lambda r: -r["added_tokens_by_others"])
     handoffs.sort(key=lambda r: -r["added_tokens"])
     total_added = sum(added.values())

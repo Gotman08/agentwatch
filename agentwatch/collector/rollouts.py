@@ -743,6 +743,11 @@ class RolloutReader:
                          {"compact_type": "codex", "window": self.st["window"], "response_index": self.st["responses"],
                           "input_tokens_before": self.st.get("last_input"),
                           "replacement_items": len(p["replacement_history"]) if isinstance(p.get("replacement_history"), list) else None,
+                          # * messages d'autres agents que la compaction GARDE tels quels (constate le 2026-09-21 : un
+                          #   sous-agent les garde tous, 24 sur 24 ; le fil principal aucun, 0 sur 95) : un fait, pas une correlation
+                          "replacement_agent_messages": (sum(1 for h in p["replacement_history"]
+                                                             if isinstance(h, dict) and h.get("type") == "agent_message")
+                                                         if isinstance(p.get("replacement_history"), list) else None),
                           "compaction_response_id": p.get("compaction_response_id") if isinstance(p.get("compaction_response_id"), str) else None})
         elif t == "world_state":
             self._on_world_state(p, ns, offset)
