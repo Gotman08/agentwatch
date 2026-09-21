@@ -141,6 +141,7 @@ def compute_stats(view: SessionView, cfg: dict[str, Any] | None = None) -> dict[
         "usage": _usage_summary(view),
         "work_units": work_units(view),
         "repetitions": _repetitions(view, cfg),
+        "context": _context(view, cfg),
     }
 
 
@@ -271,6 +272,11 @@ def cross_agent_note(view: SessionView) -> dict[str, Any]:
     else:
         note = "un seul agent dans la session : aucune comparaison entre agents a faire"
     return {"agents": n, "performed": False, "note": note}
+
+
+def _context(view: SessionView, cfg: dict[str, Any] | None) -> dict[str, Any] | None:
+    from agentwatch.reports.context import context_costs
+    return context_costs(view, cfg)
 
 
 def _repetitions(view: SessionView, cfg: dict[str, Any] | None) -> dict[str, Any]:

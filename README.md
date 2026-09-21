@@ -75,6 +75,11 @@ python -m agentwatch trends --days 7
 Top des gaspillages recurrents, puis le detail par projet, par client et par session
 (`--project <texte>`, `--client codex`, `--min-sessions 3`, `--format json`, `--days 0` = tout).
 
+Ou part l'entree d'une longue session (Codex) : le rapport de session a une section « Contexte » qui mesure ce que
+chaque sortie d'outil ajoute au contexte, combien de requetes la relisent avant la compaction, ce qui est relu apres
+chaque compaction, ce que le client a coupe avant de le donner au modele, le quota consomme et les tours coupes par
+le client. Descriptive, sans verdict : voir `docs/detectors.md`.
+
 Cout reel en tokens (Claude Code) : lu dans les transcripts du client, nombres et
 identifiants seulement, jamais le texte ; les rapports classent alors par tokens mesures et
 non par octets. `transcripts.auto_import: true` dans `config.json` pour le faire a chaque rapport.

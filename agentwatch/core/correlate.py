@@ -614,7 +614,8 @@ def _apply_tool_event(ev: dict[str, Any], phase: str, ns: int, agent: str, epoch
                   "spawned_agent_duration_ms", "spawned_agent_tool_calls", "spawned_agent_tool_stats",
                   "state_fp", "result_phase", "timed_out", "exec_call_id", "read_only_hint",
                   "rollout_item", "item_status", "web_action", "extension_action", "result_tools", "image_chars",
-                  "collab_receivers", "collab_sender", "collab_status"):
+                  "collab_receivers", "collab_sender", "collab_status",
+                  "delivered_chars", "original_token_count", "image_parts", "text_chars"):
             if k in (ev.get("evidence") or {}):
                 call.evidence[k] = ev["evidence"][k]
         if src:
@@ -633,9 +634,11 @@ def _apply_tool_event(ev: dict[str, Any], phase: str, ns: int, agent: str, epoch
         if isinstance(cf, dict) and cf.get("value") and call.content_fingerprint is None:
             call.content_fingerprint = cf["value"]     # * ex. image vue : contenu lu dans la sortie de l'exec (rollout)
         evd = ev.get("evidence") or {}
-        for k in ("collab_receivers", "collab_sender", "collab_status", "web_action", "web_results"):
+        for k in ("collab_receivers", "collab_sender", "collab_status", "web_action", "web_results",
+                  "exec_delivered_chars", "exec_images", "exec_truncated_tokens"):
             if k in evd and k not in call.evidence:
-                call.evidence[k] = evd[k]              # * element CollabAgentToolCall ou WebSearch : complete l'appel de fonction
+                call.evidence[k] = evd[k]              # * element CollabAgentToolCall ou WebSearch : complete l'appel de fonction ;
+                #                                          livraison de l'exec entier (taille, images, coupe) : partagee par ses actions
         if src:
             obs = call.evidence.setdefault("source_observations", [])
             if len(obs) < 5:

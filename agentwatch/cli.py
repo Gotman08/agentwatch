@@ -24,11 +24,13 @@ from agentwatch.config import home_dir, load_config, write_default_config
 
 # ---------------------------------------------------------------------------- utilitaires
 def _out(msg: str = "") -> None:
-    print(msg)
+    if sys.stdout is not None:        # * `pythonw` (suivi lance a l'ouverture de session) : pas de sortie standard
+        print(msg)
 
 
 def _err(msg: str) -> None:
-    print(msg, file=sys.stderr)
+    if sys.stderr is not None:
+        print(msg, file=sys.stderr)
 
 
 def _under_appdata(path: Path) -> bool:
@@ -170,11 +172,41 @@ def _rollout_state_lines(cfg: dict[str, Any], rstate: dict[str, Any]) -> list[st
     return lines
 
 
+def _follow_state_lines(home: Path) -> list[str]:
+    """Suivi continu : en marche (verrou tenu) ou arrete, dernier passage, journal et etat a verifier."""
+    from agentwatch.collector import follow as F
+    st = F.describe(str(home))
+    if st["running"]:
+        age = st.get("last_tick_age_s")
+        late = isinstance(age, (int, float)) and isinstance(st.get("interval_s"), (int, float)) and age > 4 * st["interval_s"] + 60
+        return [f"suivi continu : EN MARCHE, un seul collecteur (pid {st.get('pid')}, demarre {st.get('started')}, "
+                f"{st.get('cycles')} cycle(s), dernier passage {st.get('last_tick')}"
+                + (f", il y a {age:.0f} s" if isinstance(age, (int, float)) else "") + ")"
+                + (" ; ! dernier passage ancien : collecteur bloque ?" if late else ""),
+                f"suivi continu : etat {st['status_file']} ; journal {st['log']}"]
+    stopped = st.get("stopped") or {}
+    if st.get("started"):
+        return [f"suivi continu : ARRETE (dernier demarrage {st.get('started')}, dernier passage {st.get('last_tick')}"
+                + (f", arret consigne {stopped.get('time')} : {stopped.get('reason')}" if stopped else
+                   ", aucun arret consigne : processus tue ou machine redemarree") + ") ; la lecture automatique avant "
+                "sessions, report et trends rattrape ; relance : python -m agentwatch import-rollouts --follow"]
+    return ["suivi continu : jamais lance avec cet etat (python -m agentwatch import-rollouts --follow)"]
+
+
 def _auto_import_rollouts(home: Path, cfg: dict[str, Any], store: Any) -> None:
     """Avant `sessions`, `report`, `trends` : rollouts Codex modifies depuis le dernier import (defaut actif)."""
     if not _rollouts_cfg(cfg).get("auto_import", True):
         return
-    out = _import_rollouts(home, cfg, store)
+    from agentwatch.collector import follow as F
+    lock = F.FollowLock(str(home))
+    if not lock.acquire():
+        # * Un seul lecteur a la fois : le suivi continu (ou un autre import) tient le verrou et lit deja ; un import
+        #   concurrent reecrirait le meme etat. Le retard eventuel est celui d'un cycle du suivi (30 s par defaut).
+        return
+    try:
+        out = _import_rollouts(home, cfg, store)
+    finally:
+        lock.release()
     if out["files"]:
         _err(f"(rollouts Codex : {out['files']} fichier(s) mis a jour, {out['events']} evenement(s) importe(s))")
     for e in out["errors"][:3]:
@@ -706,23 +738,72 @@ def cmd_import_rollouts(args: argparse.Namespace) -> int:
         for e in out["errors"]:
             _err(f"  ! {e}")
 
-    out = once()
-    show(out, args.follow)
-    digest.reset()
-    if not args.follow:
-        _out("rien d'autre que des nombres, des identifiants et des empreintes n'a ete extrait ; les rollouts ne sont jamais modifies")
-        return 0 if not out["errors"] else 1
+    from agentwatch.collector import follow as F
+    lock = F.FollowLock(str(home))
+    if not lock.acquire():
+        # * Un collecteur tient deja le verrou (suivi continu) : ni second suivi, ni import concurrent du meme etat.
+        st = F.describe(str(home))
+        who = (f"le suivi continu lit deja les rollouts (pid {st.get('pid')}, demarre {st.get('started')}, dernier passage "
+               f"{st.get('last_tick')})" if st.get("pid") else "un autre import AgentWatch lit deja les rollouts")
+        _err(f"{who} : rien n'est lance, un seul collecteur a la fois. Etat : {st['status_file']} ; journal : {st['log']}")
+        return 3
+    try:
+        if not args.follow:
+            out = once()
+            show(out, False)
+            _out("rien d'autre que des nombres, des identifiants et des empreintes n'a ete extrait ; les rollouts ne sont jamais modifies")
+            return 0 if not out["errors"] else 1
+        return _follow(home, args, once, show, digest)
+    finally:
+        lock.release()
+
+
+def _follow(home: Path, args: argparse.Namespace, once: Any, show: Any, digest: Any) -> int:
+    """Boucle du suivi continu : etat reecrit a chaque cycle, journal date, arret propre consigne."""
+    from agentwatch import __version__
+    from agentwatch.collector import follow as F
+    interval = max(2.0, float(args.interval))
+    status: dict[str, Any] = {"pid": os.getpid(), "started": F.now_iso(), "interval_s": interval, "cycles": 0,
+                              "repo": str(Path(__file__).resolve().parent.parent), "version": __version__,
+                              "thread": args.thread, "last_import": None, "errors": [], "stopped": None}
+
+    def cycle() -> None:
+        out = once()
+        status["cycles"] += 1
+        status["last_tick"], status["last_tick_epoch"] = F.now_iso(), time.time()
+        if out["events"]:
+            status["last_import"] = {"time": status["last_tick"], "files": out["files"], "events": out["events"]}
+        if digest.active():
+            line = digest.line()
+            _out(time.strftime("%H:%M:%S ") + line)
+            F.append_log(str(home), line)
+        elif status["cycles"] == 1:
+            show(out, True)
+        for e in out["errors"]:
+            _err(f"  ! {e}")
+            F.append_log(str(home), f"! {e}")
+            status["errors"] = ([{"time": status["last_tick"], "error": str(e)[:300]}] + status["errors"])[:20]
+        digest.reset()
+        F.write_status(str(home), status)
+
+    F.append_log(str(home), f"suivi demarre (pid {os.getpid()}, toutes les {interval:g} s, depot {status['repo']}, AgentWatch {__version__})")
+    reason = "interruption clavier"
     try:
         while True:
-            time.sleep(max(2.0, float(args.interval)))
-            out = once()
-            if digest.active():
-                _out(time.strftime("%H:%M:%S ") + digest.line())
-            for e in out["errors"]:
-                _err(f"  ! {e}")
-            digest.reset()
+            cycle()
+            time.sleep(interval)
     except KeyboardInterrupt:
         return 0
+    except BaseException as exc:      # noqa: BLE001 - la cause de l'arret doit etre dans le journal, puis relancee
+        reason = f"{type(exc).__name__}: {exc}"
+        raise
+    finally:
+        status["stopped"] = {"time": F.now_iso(), "reason": reason}
+        F.append_log(str(home), f"suivi arrete : {reason}")
+        try:
+            F.write_status(str(home), status)
+        except OSError:
+            pass
 
 
 def cmd_self_test(args: argparse.Namespace) -> int:
@@ -870,6 +951,8 @@ def cmd_doctor(args: argparse.Namespace) -> int:
                      f"{lr.get('files_read')} lu(s), {lr.get('events')} evenement(s), {lr.get('errors')} erreur(s)"
                      + (f" ; dernier import d'evenements : {li.get('time')} ({li.get('events')} evenement(s))" if li else ""))
             for line in _rollout_state_lines(cfg, rstate):
+                _out(f"    {line}")
+            for line in _follow_state_lines(home):
                 _out(f"    {line}")
             for e in (rstate.get("errors") or [])[:3]:
                 _out(f"    ! erreur de collecte du {e.get('time')} : {e.get('error')}")

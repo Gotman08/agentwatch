@@ -386,6 +386,48 @@ jusqu'a l'appel suivant. Reglages : `detectors.repeated_calls` (`min_calls`, `ep
 `min_avoidable_calls`, `cooldowns_s`, `min_tolerated_delay_s`, `tolerated_delay_ratio`, `rhythm_top`,
 `report_top`).
 
+## Contexte : sorties relues, reprises apres compaction, quota (section du rapport, sans verdict)
+
+Pas un detecteur : aucune regle, aucun signalement, aucune confiance. Une section descriptive du rapport de session
+(`stats.context` dans l'export JSON), calculee a partir des releves par reponse deja importes (`usage` de portee
+`response`) et des parts par appel (`usage` de portee `call`). Rien a reimporter pour l'essentiel ; seuls les faits de
+coupe, le quota et les tours coupes demandent des lignes lues par l'import qui les releve (2026-09-21).
+
+Pourquoi : chaque requete du modele relit tout son contexte. Le cout d'une sortie n'est pas sa taille, c'est sa taille
+multipliee par le nombre de requetes qui la relisent avant la compaction. Constate sur la session Codex `01a0bf95`
+(646 M tokens d'entree, 4 548 requetes, 71 compactions) : 47,8 % de l'entree est la relecture de sorties d'outils
+encore en contexte ; `Get-Content` 15,5 %, `codegraph_explore` 13,2 %, `rg` 5,8 %.
+
+| Nombre | Nature | Definition |
+|---|---|---|
+| Socle | MESURE | entree de la premiere requete de chaque fil (instructions, outils, skills, consigne), relue par toutes ses requetes ; et entree de la premiere requete d'une fenetre apres compaction (socle + resume). Session citee : 34 500 tokens par fil, 24,4 % de l'entree ; 53 335 tokens (mediane) apres compaction |
+| Tokens ajoutes par une sortie | MESURE (releves du client) | entree(reponse qui consomme la sortie) - entree(reponse precedente) - sortie(reponse precedente), meme agent, meme fenetre de contexte. Verifie sur 262 sorties de moins de 120 caracteres : ecart median de 24 tokens |
+| Part d'un appel dans ce gain | CALCUL | quand une reponse consomme plusieurs sorties : prorata des parts deja calculees a l'import (taille livree) |
+| Requetes suivantes de la fenetre | MESURE | rang de la derniere reponse de la fenetre (demande de compaction comprise : elle relit tout) - rang de la reponse consommatrice |
+| Relus ensuite (fois-tokens) | CALCUL | tokens ajoutes x requetes suivantes ; en cache pour l'essentiel, mais compte dans l'entree et dans le quota |
+| Debut de fenetre | MESURE + seuil | tokens ajoutes par les sorties consommees dans les `report.context.recovery_responses` (8) premieres reponses apres une compaction |
+| Relecture apres compaction | FAIT | meme agent, meme ressource (chaque chemin d'une lecture shell `Get-Content`/`cat`/`type`..., cible d'une lecture, outil MCP de lecture et ses parametres), deja lue dans une fenetre ANTERIEURE |
+
+Etat d'une relecture : `modifie entre-temps` (une ecriture du chemin, par n'importe quel agent, observee entre les deux
+lectures) ; `contenu identique` (les deux appels ne lisent que cette ressource et ont la meme empreinte de contenu) ;
+`contenu different ou autre extrait` (memes conditions, empreintes differentes : `-Tail 160` puis `-TotalCount 88`) ;
+`aucune modification observee` (le reste : une commande qui lit plusieurs fichiers n'a qu'une empreinte ; ne prouve
+pas un contenu identique).
+
+Limites, dites dans le rapport : un message (utilisateur, autre agent) entre entre les deux reponses est compte avec la
+sortie (`mixed` : 1 126 appels et 1,7 M tokens sur 9,0 M dans la session citee) ; la premiere reponse d'une fenetre
+n'a pas de reponse precedente comparable ; les relectures entre agents ne sont pas comparees (chaque agent a son
+contexte). Relire apres une compaction est attendu : la section dit ce que cela coute et ce qui revient a chaque
+fenetre (le brief colle par l'utilisateur relu a l'identique 15 fois, un document de module jamais modifie relu 41
+fois par 4 agents), pour decider quoi rendre durable ou plus court. Elle ne dit pas qu'une relecture etait inutile.
+
+Dans `compare` (reference et avant/apres), les memes calculs, jamais refaits, ranges par NATURE dans trois blocs separes : **releves exacts** (releves du client et comptes de faits : entree par requete, socle, premiere requete apres compaction, tokens ajoutes et relus au total, debut de fenetre, execs coupes, points de quota, tours coupes ; les totaux ajoutes et relus ne dependent pas du partage entre appels), **attributions reconstruites** (partage d'une reponse entre ses appels, ressource reconnue d'une fenetre a l'autre, etat d'une relecture, familles d'outils) et **scenarios d'economie** (hypotheses en bornes hautes, derivees des attributions, jamais des gains). Deux lignes sont testees avec intervalle de confiance : relectures apres compaction pour 1 000 reponses (grappes : fenetres concernees) et execs coupes pour 1 000 appels (seulement si les coupes sont relevees sur toute la periode : sinon un faux zero). Sur une tranche de temps, le socle n'est releve que pour un fil dont la premiere requete est dans la tranche, et la premiere fenetre visible d'un fil entame est ecartee des mesures de debut de fenetre. Un gain ne se lit que dans les releves exacts de deux periodes de travail comparable.
+
+Quota et tours coupes : premier et dernier pourcentage du quota ecrit par le client, et tours dont la ligne de fin
+porte une erreur du client (`usage_limit_exceeded`...). Cout mesure sur la meme session (261 Mo de rollouts, mediane
+de 3 passes) : import 7,43 s -> 7,52 s, +328 evenements (+1,2 %), stockage 50 -> 51 Mo ; section calculee en 0,05 s,
+rapport 0,94 s -> 0,98 s.
+
 ## Vue multi-sessions : `agentwatch trends`
 
 Un signalement isole dans une session ne justifie rien : un `Read` en double ne merite pas

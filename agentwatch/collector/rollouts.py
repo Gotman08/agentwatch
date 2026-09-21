@@ -240,6 +240,51 @@ def _usage_numbers(u: Any) -> dict[str, int]:
     return {k: int(u.get(k) or 0) for k in keys} if isinstance(u, dict) else {k: 0 for k in keys}
 
 
+# * Ce que le modele RECOIT n'est pas ce que l'outil a produit. Constate le 2026-09-21 (session 01a0bf95) : Codex
+#   coupe la sortie d'une commande (`formatted_output` commence par cet avertissement, avec le compte de tokens
+#   d'origine), puis coupe au milieu la sortie entiere d'un exec au-dela de 12 000 tokens ("…N tokens truncated…") ;
+#   une image rendue par un outil MCP pese 1 Mo dans le rollout et 1 088 a 2 265 tokens dans le contexte (4 mesures).
+_CMD_TRUNC_RE = re.compile(r"\AWarning: truncated output \(original token count: (\d+)\)")
+_EXEC_TRUNC_RE = re.compile(r"…(\d+) tokens truncated…")
+IMAGE_WEIGHT_CHARS = 6000      # * poids nominal d'une image dans le partage des tokens d'une reponse (pas une mesure)
+
+
+def command_delivery(item: dict[str, Any]) -> tuple[int | None, int | None]:
+    """(caracteres rendus au script par exec_command, tokens d'origine si Codex a coupe la sortie) d'une commande."""
+    fo = item.get("formatted_output")
+    if not isinstance(fo, str):
+        return None, None
+    m = _CMD_TRUNC_RE.match(fo)
+    return len(fo), int(m.group(1)) if m else None
+
+
+def mcp_delivery(content: Any) -> tuple[int, int]:
+    """(caracteres de texte, images) d'un resultat MCP. Une image encodee, directe ou dans le JSON d'un bloc de
+    texte (connecteurs qui enveloppent leur resultat), n'entre pas dans le contexte comme du texte."""
+    chars = images = 0
+    stack = list(content) if isinstance(content, list) else []
+    while stack:
+        part = stack.pop()
+        if not isinstance(part, dict):
+            continue
+        if part.get("type") == "image":
+            images += 1
+            continue
+        text = part.get("text")
+        if not isinstance(text, str):
+            continue
+        if text.startswith("{") and ('"type":"image"' in text or '"type": "image"' in text):
+            try:
+                inner = json.loads(text)
+            except ValueError:
+                inner = None
+            if isinstance(inner, dict) and isinstance(inner.get("content"), list):
+                stack.extend(inner["content"])
+                continue
+        chars += len(text)
+    return chars, images
+
+
 # --------------------------------------------------------------------------- decouverte
 def sessions_dir(cfg: dict[str, Any]) -> str:
     from agentwatch.collector.health import codex_sessions_dir
@@ -717,8 +762,14 @@ class RolloutReader:
                          {"model_context_window": p.get("model_context_window"), "mode": p.get("collaboration_mode_kind")})
         elif pt == "task_complete":
             self._reasoning_rest(ns, offset)
-            self._marker(S.PHASE_TURN_END, ns, ("turn_end", p.get("turn_id"), offset),
-                         {"duration_ms": p.get("duration_ms"), "time_to_first_token_ms": p.get("time_to_first_token_ms")})
+            meta = {"duration_ms": p.get("duration_ms"), "time_to_first_token_ms": p.get("time_to_first_token_ms")}
+            err = p.get("error")
+            if isinstance(err, dict):
+                # ! Un tour coupe par Codex (quota epuise, serveur sature...) porte aussi `task_complete` : ce n'est pas
+                #   un travail termine. Seule la categorie ecrite par Codex est gardee, jamais le message.
+                kind = err.get("codex_error_info")
+                meta["error_kind"] = (kind if isinstance(kind, str) else "other")[:60]
+            self._marker(S.PHASE_TURN_END, ns, ("turn_end", p.get("turn_id"), offset), meta)
         elif pt == "turn_aborted":
             self._reasoning_rest(ns, offset)
             self._marker(S.PHASE_INTERRUPT, ns, ("abort", p.get("turn_id"), offset),
@@ -776,10 +827,18 @@ class RolloutReader:
         elif pt == "custom_tool_call_output":
             cid = p.get("call_id")
             ex = self.st["open_execs"].pop(cid, None) if isinstance(cid, str) else None
-            size = len(_content_text(p.get("output")))
+            text = _content_text(p.get("output"))
+            size = len(text)
             if ex is not None:
                 if not ex["actions"]:
                     self.st["execs_without_actions"] += 1
+                # * Ce que le modele recoit de l'exec entier : taille livree, images, et coupe au milieu par Codex.
+                out = p.get("output")
+                cut = _EXEC_TRUNC_RE.search(text)
+                ex["delivery"] = {"exec_delivered_chars": size,
+                                  "exec_images": sum(1 for c in out if isinstance(c, dict) and c.get("type") == "input_image")
+                                  if isinstance(out, list) else 0,
+                                  "exec_truncated_tokens": int(cut.group(1)) if cut else None}
                 self._image_fingerprints(ex, p.get("output"), ns)
                 self.st["done_execs"][cid] = ex
                 self.st["to_consume"].append([cid, size, "exec"])
@@ -1035,9 +1094,19 @@ class RolloutReader:
                 resp["duration_ms"] = dur
             if isinstance(cmd, list) and cmd:
                 evidence["shell"] = os.path.basename(str(cmd[0]))[:40]
-            size = len(output)
-            self._tool_events(iid, "Bash", {"command": script if isinstance(script, str) else None, "workdir": cwd},
-                              resp, start_ns, end_ns, cwd, evidence, with_start=fn is None)
+            # * Partage des tokens au prorata de ce qui est RENDU (sortie coupee par Codex), pas de la sortie brute :
+            #   828 Ko bruts coupes a 40 000 caracteres pesaient 20 fois trop face aux autres actions du meme exec.
+            delivered, original_tokens = command_delivery(item)
+            size = delivered if delivered is not None else len(output)
+            if delivered is not None:
+                evidence["delivered_chars"] = delivered
+            if original_tokens is not None:
+                evidence["original_token_count"] = original_tokens
+            end_ev = self._tool_events(iid, "Bash", {"command": script if isinstance(script, str) else None, "workdir": cwd},
+                                       resp, start_ns, end_ns, cwd, evidence, with_start=fn is None)
+            if end_ev is not None and delivered is not None:
+                # ! Hors de `resp` : l'empreinte du resultat reste celle des imports precedents.
+                end_ev["output_truncated"] = original_tokens is not None
         elif ty == "McpToolCall":
             server, tool = str(item.get("server") or "?"), str(item.get("tool") or "?")
             result = item.get("result")
@@ -1050,7 +1119,13 @@ class RolloutReader:
             if dur is not None:
                 resp["duration_ms"] = dur
             evidence["read_only_hint"] = item.get("readOnlyHint")
-            size = len(json.dumps(resp.get("content"), ensure_ascii=False)) if resp.get("content") is not None else 0
+            text_chars, images = mcp_delivery(resp.get("content"))
+            if images:
+                # * Une image n'entre pas dans le contexte au poids de son encodage : poids nominal, texte a part.
+                evidence["image_parts"], evidence["text_chars"] = images, text_chars
+                size = text_chars + images * IMAGE_WEIGHT_CHARS
+            else:
+                size = len(json.dumps(resp.get("content"), ensure_ascii=False)) if resp.get("content") is not None else 0
             self._tool_events(iid, f"mcp__{server}__{tool}", item.get("arguments"), resp, start_ns, end_ns, cwd, evidence, with_start=fn is None)
         elif ty == "FileChange":
             changes = item.get("changes") if isinstance(item.get("changes"), dict) else {}
@@ -1077,6 +1152,7 @@ class RolloutReader:
                     ev["params"]["patch_fp"] = self.fp(diff_text)[:10] if diff_text else None
         elif ty == "ImageView":
             resp = {"output": "", "exit_code": 0}
+            size = IMAGE_WEIGHT_CHARS
             self._tool_events(iid, "view_image", {"path": clean_path(item.get("path"))}, resp, start_ns, end_ns, cwd, evidence,
                               with_start=fn is None, synthetic=True)
             if parent is not None and parent in self.st["open_execs"]:
@@ -1208,13 +1284,15 @@ class RolloutReader:
     def _on_token_count(self, p: dict[str, Any], ns: int | None) -> None:
         """Releve `token_count` : seule mesure des tokens dans les anciens rollouts (juin a aout). Quand le fil a des
         `token_usage_record` (qui viennent toujours en premier : 189 fichiers sur 189), c'est la meme mesure : doublon.
-        Un releve dont le cumul n'a pas bouge (limites de debit seulement) n'est pas une reponse nouvelle."""
+        Un releve dont le cumul n'a pas bouge (quota seulement) n'est pas une reponse nouvelle. Le quota du compte
+        est lu sur chaque releve, doublon ou non (`_on_quota`)."""
         info = p.get("info") if isinstance(p.get("info"), dict) else {}
+        self._on_quota(p.get("rate_limits"), ns)
         if not isinstance(info.get("last_token_usage"), dict):
-            self._dup("token_count sans usage (limites de debit seulement, non importees)")
+            self._dup("token_count sans usage (quota seulement)")
             return
         if self.st.get("record_seen"):
-            self._dup("token_count (meme mesure que token_usage_record ; limites de debit non importees)")
+            self._dup("token_count (meme mesure que token_usage_record)")
             return
         total = _usage_numbers(info.get("total_token_usage"))
         key = [total[k] for k in ("input_tokens", "cached_input_tokens", "output_tokens")]
@@ -1224,6 +1302,21 @@ class RolloutReader:
         self.st["tc_last_total"] = key
         self.st["usage_format"] = "token_count"
         self._on_usage({"usage": info.get("last_token_usage"), "response_id": f"tc-{self.st['responses']}"}, ns, fmt="token_count")
+
+    def _on_quota(self, limits: Any, ns: int | None) -> None:
+        """Quota du compte ecrit par Codex a chaque reponse (`rate_limits.primary`) : un marqueur quand le pourcentage
+        consomme change d'au moins un point. Des nombres seulement ; c'est la contrainte reelle d'un forfait (constate
+        le 2026-09-21 : une session de 12 h 27 a porte le quota hebdomadaire de 19 a 100 %, puis Codex l'a coupee)."""
+        primary = limits.get("primary") if isinstance(limits, dict) else None
+        used = primary.get("used_percent") if isinstance(primary, dict) else None
+        if not isinstance(used, (int, float)) or isinstance(used, bool):
+            return
+        if self.st.get("quota_used") is not None and abs(used - self.st["quota_used"]) < 1:
+            return
+        self.st["quota_used"] = used
+        self._activity(ns, ("quota", int(used), primary.get("resets_at")), "quota",
+                       {"used_percent": used, "window_minutes": primary.get("window_minutes"),
+                        "resets_at": primary.get("resets_at"), "limit_id": str(limits.get("limit_id") or "")[:40] or None})
 
     def _on_usage(self, p: dict[str, Any], ns: int | None, fmt: str = "token_usage_record") -> None:
         if fmt == "token_usage_record":
@@ -1268,7 +1361,8 @@ class RolloutReader:
                 in_parts = split_exact(share, aw)
                 out_parts = split_exact(out_tok, aw) if isinstance(out_tok, int) else [None] * len(acts)
                 for (iid, _s), a_in, a_out in zip(acts, in_parts, out_parts):
-                    self._usage_obs(iid, a_in, a_out, ex.get("emitter"), rid, idx, ns, len(acts), ex.get("in_tokens"))
+                    self._usage_obs(iid, a_in, a_out, ex.get("emitter"), rid, idx, ns, len(acts), ex.get("in_tokens"),
+                                    ex.get("delivery"))
             else:
                 self._usage_obs(cid, share, self.st["emit_tokens"].pop(cid, None), self.st["emitters"].pop(cid, None),
                                 rid, idx, ns, 1, self.st.setdefault("emit_input", {}).pop(cid, None))
@@ -1287,9 +1381,13 @@ class RolloutReader:
         self.st["pending_emit"] = []
 
     def _usage_obs(self, call_id: str, uncached: int, out_tok: int | None, emitter: str | None, consumer: str, idx: int,
-                   ns: int | None, siblings: int, emit_in: list[int] | None = None) -> None:
+                   ns: int | None, siblings: int, emit_in: list[int] | None = None,
+                   delivery: dict[str, Any] | None = None) -> None:
         emit_in = emit_in if isinstance(emit_in, list) and len(emit_in) == 2 else [None, None]
         ev = S.empty_event()
+        if isinstance(delivery, dict):
+            # * Faits de l'exec entier (partages par ses actions) : a lire une fois par `exec_call_id`.
+            ev["evidence"].update({k: v for k, v in delivery.items() if v is not None})
         ev.update({"client": CLIENT_CODEX, "phase": S.PHASE_OBSERVATION, "session_id": self.session_id, "call_id": call_id,
                    "hook_event_name": "rollout_usage", "model": self.st.get("model"),
                    "usage": {"scope": "call", "source": SOURCE, "uncached_input_tokens": uncached, "output_tokens": out_tok,

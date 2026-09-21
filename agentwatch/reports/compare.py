@@ -96,19 +96,32 @@ def measure(view: SessionView, cfg: dict[str, Any]) -> dict[str, Any]:
                              and G._WAIT_NAME.search(c.mcp_tool or c.tool_name or ""))
     clusters["erreurs"] = counts["erreurs"]          # * un appel en erreur n'est pas groupe : grappe = appel
     # * Taches : un tour du fil principal (demande de l'utilisateur) ou d'un sous-agent (tache confiee) ; termine
-    #   (task_complete, avec sa duree) ou interrompu (turn_aborted).
-    tasks: dict[str, Any] = {"main_done": 0, "main_aborted": 0, "sub_done": 0, "sub_aborted": 0,
+    #   (task_complete, avec sa duree), interrompu (turn_aborted) ou coupe par le client (task_complete portant une
+    #   erreur : quota epuise, serveur sature). Un tour coupe est une INTERRUPTION, par le client et non par
+    #   l'utilisateur : compte a part et nomme, il reste dans le denominateur du taux de taches terminees. Ni tache
+    #   terminee, ni ligne qui disparait du bilan.
+    #   Constate le 2026-09-21 : les 4 fils de la session 01a0bf95 finissent sur `usage_limit_exceeded` ; le seul
+    #   « tour termine » du fil principal etait cette coupure.
+    tasks: dict[str, Any] = {"main_done": 0, "main_aborted": 0, "main_cut": 0, "sub_done": 0, "sub_aborted": 0, "sub_cut": 0,
                              "main_durations_ms": [], "sub_durations_ms": []}
     for m in view.markers:
         who = "sub" if m.agent_id else "main"
-        if m.phase == S.PHASE_TURN_END:
+        if m.phase == S.PHASE_TURN_END and m.meta.get("error_kind"):
+            tasks[f"{who}_cut"] += 1
+        elif m.phase == S.PHASE_TURN_END:
             tasks[f"{who}_done"] += 1
             d = m.meta.get("duration_ms")
             if isinstance(d, (int, float)) and not isinstance(d, bool):
                 tasks[f"{who}_durations_ms"].append(int(d))
         elif m.phase == S.PHASE_INTERRUPT:
             tasks[f"{who}_aborted"] += 1
-    return {"calls": len(view.calls), "responses": len(responses),
+    context = _context_measure(view, cfg)
+    if context and context["exact"]["truncation_known_sessions"]:
+        counts["C.execs_coupes"] = clusters["C.execs_coupes"] = context["exact"]["execs_cut_in_the_middle"]
+    if context:
+        counts["C.relectures_apres_compaction"] = context["attributed"]["rereads_after_compaction"]
+        clusters["C.relectures_apres_compaction"] = context["attributed"]["windows_with_rereads"]
+    return {"context": context, "calls": len(view.calls), "responses": len(responses),
             "input_tokens": sum(int(u.get("input_tokens") or 0) for u in responses),
             "cached_input_tokens": sum(int(u.get("cached_input_tokens") or 0) for u in responses),
             "output_tokens": sum(int(u.get("output_tokens") or 0) for u in responses),
@@ -121,6 +134,78 @@ def measure(view: SessionView, cfg: dict[str, Any]) -> dict[str, Any]:
             "first_time": view.first_time, "last_time": view.last_time}
 
 
+def _context_measure(view: SessionView, cfg: dict[str, Any]) -> dict[str, Any] | None:
+    """Indicateurs de contexte d'une vue, repris de `reports.context` (aucun calcul refait ici), en quantites qui
+    s'additionnent d'une session a l'autre et rangees par NATURE, jamais melangees :
+
+    - `exact` : releves du client et comptes de faits (entrees par reponse, differences d'entree entre deux reponses,
+      lignes `compacted`, avertissements de coupe, quota, fins de tour en erreur). Le total des tokens ajoutes par les
+      sorties et celui des tokens relus sont exacts : ils ne dependent pas du partage entre appels ;
+    - `attributed` : attributions reconstruites par AgentWatch (partage d'une reponse entre ses appels, ressource
+      reconnue d'une fenetre a l'autre, etat d'une relecture) ;
+    - les scenarios d'economie ne sont pas mesures : ils sont derives a l'affichage, comme hypotheses.
+    """
+    from agentwatch.reports.context import context_costs
+    c = context_costs(view, cfg)
+    if not c:
+        return None
+    ac, tr, floor = c["after_compaction"], c["truncation"], c["floor"]
+    lim = c["limits"]
+    q = lim.get("quota") or {}
+    points = (q["last_percent"] - q["first_percent"]) if q else None
+    by_status = ac.get("by_status") or {}
+    avoidable = [by_status.get(k) or {} for k in ("identical", "no_change_observed")]
+    return {
+        "sessions": 1,
+        "exact": {"session_input_tokens": c["session_input_tokens"], "requests": c["responses"],
+                  "threads": len(floor["thread_first_input"]), "thread_first_input_sum": sum(floor["thread_first_input"].values()),
+                  "thread_first_reread_tokens": floor["thread_first_reread_tokens"],
+                  "thread_first_basis_input_tokens": floor["thread_first_basis_input_tokens"],
+                  "windows_after_compaction": c["windows_after_compaction"], "window_first_inputs": list(floor["window_first_inputs"]),
+                  "added_tokens": c["added_tokens"], "reread_tokens": c["reread_tokens"],
+                  "mixed_added_tokens": c["mixed"]["added_tokens"],
+                  "window_start_added_tokens": list(ac["window_start"].get("added_tokens_by_window") or []),
+                  "truncation_known_sessions": 1 if tr["known"] else 0, "truncated_calls": tr["truncated_calls"],
+                  "execs_cut_in_the_middle": tr["execs_cut_in_the_middle"], "tokens_cut_from_execs": tr["tokens_cut_from_execs"],
+                  "quota_known_sessions": 1 if q else 0, "quota_points": points if points is not None and points >= 0 else 0,
+                  "turns_cut": lim["turns_cut"]["total"], "turns_cut_by_kind": dict(lim["turns_cut"]["by_kind"])},
+        "attributed": {"rereads_after_compaction": ac["rereads"], "windows_with_rereads": ac.get("windows_with_rereads", 0),
+                       "rereads_added_tokens": ac["added_tokens"], "rereads_reread_tokens": ac["reread_tokens"],
+                       "rereads_unchanged": sum(int(v.get("rereads") or 0) for v in avoidable),
+                       "rereads_unchanged_added_tokens": sum(int(v.get("added_tokens") or 0) for v in avoidable),
+                       "rereads_unchanged_reread_tokens": sum(int(v.get("reread_tokens") or 0) for v in avoidable),
+                       "truncated_calls_added_tokens": tr["added_tokens_of_truncated_calls"],
+                       "families": {f["family"]: {"calls": f["calls"], "added_tokens": f["added_tokens"],
+                                                  "reread_tokens": f["reread_tokens"]} for f in c["families"]}}}
+
+
+def _merge_context(parts: list[dict[str, Any] | None]) -> dict[str, Any] | None:
+    parts = [p for p in parts if p]
+    if not parts:
+        return None
+    out: dict[str, Any] = {"sessions": 0, "exact": {}, "attributed": {"families": {}}}
+    for p in parts:
+        out["sessions"] += int(p.get("sessions") or 0)
+        for nature in ("exact", "attributed"):
+            for k, v in (p.get(nature) or {}).items():
+                cur = out[nature].get(k)
+                if k == "families":
+                    for fam, row in v.items():
+                        tgt = out["attributed"]["families"].setdefault(fam, {"calls": 0, "added_tokens": 0, "reread_tokens": 0})
+                        for f in tgt:
+                            tgt[f] += int(row.get(f) or 0)
+                elif isinstance(v, list):
+                    out[nature][k] = (cur or []) + v
+                elif isinstance(v, dict):
+                    merged = dict(cur or {})
+                    for kk, n in v.items():
+                        merged[kk] = merged.get(kk, 0) + n
+                    out[nature][k] = merged
+                else:
+                    out[nature][k] = (cur or 0) + (v or 0)
+    return out
+
+
 _SUMS = ("calls", "responses", "input_tokens", "cached_input_tokens", "output_tokens", "reasoning_output_tokens", "sessions")
 
 
@@ -129,8 +214,10 @@ def merge(measures: list[dict[str, Any]]) -> dict[str, Any]:
                            "first_time": None, "last_time": None,
                            "nogain_cost": {"G.sans_apport": Counter(), "G.sans_apport_attente": Counter()},
                            "compaction": Counter(),
-                           "session_ids": [], "tasks": {"main_done": 0, "main_aborted": 0, "sub_done": 0, "sub_aborted": 0,
+                           "session_ids": [], "tasks": {"main_done": 0, "main_aborted": 0, "main_cut": 0, "sub_done": 0,
+                                                        "sub_aborted": 0, "sub_cut": 0,
                                                         "main_durations_ms": [], "sub_durations_ms": []}}
+    out["context"] = _merge_context([m.get("context") for m in measures])
     for m in measures:
         for k in _SUMS:
             out[k] += m.get(k, 0)
@@ -190,6 +277,8 @@ _LABELS = {
     "B.echecs_en_boucle": "echecs en boucle (B)",
     "E.service_a_la_main": "commandes a la main vers un service (E)",
     "erreurs": "appels en erreur",
+    "C.relectures_apres_compaction": "relectures d'une ressource deja lue, apres une compaction (grappes : fenetres concernees)",
+    "C.execs_coupes": "execs dont la sortie a ete coupee au milieu par le client",
 }
 
 
@@ -198,12 +287,18 @@ def compare(before: dict[str, Any], after: dict[str, Any], top_habits: int = 8) 
     rows: list[dict[str, Any]] = []
     keys = ["G.sans_apport", "G.sans_apport_attente", "G.ameliorable", "A.relectures", "B.echecs_en_boucle",
             "E.service_a_la_main", "erreurs"]
+    cb, ca = before.get("context") or {}, after.get("context") or {}
+    if cb and ca:
+        keys.append("C.relectures_apres_compaction")
+        full = all((c["exact"].get("truncation_known_sessions") or 0) >= (c.get("sessions") or 0) for c in (cb, ca))
+        if full:     # * une periode importee avant le releve des coupes donnerait un faux zero
+            keys.append("C.execs_coupes")
     habits = Counter({k: before["counts"].get(k, 0) + after["counts"].get(k, 0) for k in
                       set(before["counts"]) | set(after["counts"]) if k.startswith("G.") and "|" in k})
     keys += [k for k, n in habits.most_common(top_habits) if n >= MIN_EVENTS // 2]
     for k in keys:
         # * Unite de la reference (avant) : une periode vide ou sans releve par reponse n'en change pas.
-        per_response = k.startswith("G.") and bool(before["responses"])
+        per_response = (k.startswith("G.") or k == "C.relectures_apres_compaction") and bool(before["responses"])
         n1, n2 = (before["responses"], after["responses"]) if per_response else (before["calls"], after["calls"])
         k1, k2 = int(before["counts"].get(k, 0)), int(after["counts"].get(k, 0))
         c1 = int((before.get("clusters") or before["counts"]).get(k, 0))
@@ -219,6 +314,8 @@ def compare(before: dict[str, Any], after: dict[str, Any], top_habits: int = 8) 
                      "ratio": rr, "conclusion": _conclusion(k1, n1, k2, n2, rr, loss=True, clusters=c1 + c2)})
     rows += _task_rows(before, after)
     return {"compare_version": COMPARE_VERSION, "rows": rows, "descriptive": _descriptive(before, after),
+            "context": {"exact": _context_rows(before, after, "exact"), "attributed": _context_rows(before, after, "attributed"),
+                        "scenarios": [_scenarios(before), _scenarios(after)]},
             "method": ("taux rapportes a l'activite (G : pour 1 000 reponses du modele ; autres : pour 1 000 appels) ; "
                        "rapport apres/avant avec intervalle de confiance a 95 % (loi de Poisson, methode du logarithme), "
                        "incertitude calculee sur les grappes (groupes d'appels repetes, signalements) et non sur les evenements, "
@@ -245,19 +342,21 @@ def _proportions(k1: int, n1: int, k2: int, n2: int) -> tuple[dict[str, Any] | N
 
 def _task_rows(before: dict[str, Any], after: dict[str, Any]) -> list[dict[str, Any]]:
     rows = []
-    for who, label in (("main", "taches du fil principal terminees (sur terminees + interrompues)"),
-                       ("sub", "taches des sous-agents terminees (sur terminees + interrompues)")):
+    for who, label in (("main", "taches du fil principal terminees (sur terminees + interrompues + coupees par le client)"),
+                       ("sub", "taches des sous-agents terminees (sur terminees + interrompues + coupees par le client)")):
         tb, ta = before["tasks"], after["tasks"]
-        k1, n1 = tb[f"{who}_done"], tb[f"{who}_done"] + tb[f"{who}_aborted"]
-        k2, n2 = ta[f"{who}_done"], ta[f"{who}_done"] + ta[f"{who}_aborted"]
+        k1, n1 = tb[f"{who}_done"], tb[f"{who}_done"] + tb[f"{who}_aborted"] + tb.get(f"{who}_cut", 0)
+        k2, n2 = ta[f"{who}_done"], ta[f"{who}_done"] + ta[f"{who}_aborted"] + ta.get(f"{who}_cut", 0)
         ci, concl = _proportions(k1, n1, k2, n2)
         if concl.startswith("hausse"):
             concl += " : amelioration"
         elif concl.startswith("baisse"):
             concl += " : degradation"
         rows.append({"key": f"taches.{who}", "label": label, "unit": "part des taches",
-                     "before": {"count": k1, "activity": n1, "rate": 100 * k1 / n1 if n1 else None},
-                     "after": {"count": k2, "activity": n2, "rate": 100 * k2 / n2 if n2 else None},
+                     "before": {"count": k1, "activity": n1, "rate": 100 * k1 / n1 if n1 else None,
+                                "aborted": tb[f"{who}_aborted"], "cut": tb.get(f"{who}_cut", 0)},
+                     "after": {"count": k2, "activity": n2, "rate": 100 * k2 / n2 if n2 else None,
+                               "aborted": ta[f"{who}_aborted"], "cut": ta.get(f"{who}_cut", 0)},
                      "ratio": None, "difference": ci, "conclusion": concl, "percent": True})
     return rows
 
@@ -294,6 +393,79 @@ def _descriptive(before: dict[str, Any], after: dict[str, Any]) -> list[dict[str
     return out
 
 
+def _ratio(a: Any, b: Any, scale: float = 1.0) -> float | None:
+    return scale * a / b if isinstance(a, (int, float)) and isinstance(b, (int, float)) and b else None
+
+
+_CONTEXT_ROWS: dict[str, list[tuple[str, str, Any]]] = {
+    # * Releves du client et comptes de faits : rien n'est partage ni reconnu par AgentWatch.
+    "exact": [
+        ("input_per_request", "entree par requete du modele, demandes de compaction comprises (tokens)",
+         lambda e, a: _ratio(e.get("session_input_tokens"), e.get("requests"))),
+        ("thread_first_input", "socle : entree de la premiere requete d'un fil (tokens, moyenne)",
+         lambda e, a: _ratio(e.get("thread_first_input_sum"), e.get("threads"))),
+        ("floor_share", "part de l'entree due au socle relu par chaque requete (%), fils commences dans la periode",
+         lambda e, a: _ratio(e.get("thread_first_reread_tokens"), e.get("thread_first_basis_input_tokens"), 100)),
+        ("window_first_input", "premiere requete apres une compaction (tokens, mediane)",
+         lambda e, a: _median(e.get("window_first_inputs") or [])),
+        ("requests_per_window", "requetes par fenetre de contexte",
+         lambda e, a: _ratio(e.get("requests"), (e.get("windows_after_compaction") or 0) + (e.get("threads") or 0))),
+        ("added_per_request", "tokens ajoutes au contexte par les sorties d'outils, par requete",
+         lambda e, a: _ratio(e.get("added_tokens"), e.get("requests"))),
+        ("reread_share", "part de l'entree qui est la relecture de sorties d'outils (%)",
+         lambda e, a: _ratio(e.get("reread_tokens"), e.get("session_input_tokens"), 100)),
+        ("window_start", "tokens ajoutes par les sorties en debut de fenetre apres compaction (mediane)",
+         lambda e, a: _median(e.get("window_start_added_tokens") or [])),
+        ("execs_cut", "execs dont la sortie a ete coupee au milieu par le client (non releve = -)",
+         lambda e, a: e.get("execs_cut_in_the_middle") if e.get("truncation_known_sessions") else None),
+        ("quota_points", "points de quota consommes pendant les sessions (non releve = -)",
+         lambda e, a: e.get("quota_points") if e.get("quota_known_sessions") else None),
+        ("requests_per_quota_point", "requetes du modele par point de quota",
+         lambda e, a: _ratio(e.get("requests"), e.get("quota_points")) if e.get("quota_known_sessions") else None),
+        ("turns_cut", "tours coupes par le client (quota epuise, serveur)", lambda e, a: e.get("turns_cut")),
+    ],
+    # * Attributions reconstruites : partage d'une reponse entre ses appels, ressource reconnue d'une fenetre a l'autre.
+    "attributed": [
+        ("rereads_per_window", "relectures apres compaction, par fenetre",
+         lambda e, a: _ratio(a.get("rereads_after_compaction"), e.get("windows_after_compaction"))),
+        ("rereads_added_share", "part des tokens ajoutes qui vient de relectures apres compaction (%)",
+         lambda e, a: _ratio(a.get("rereads_added_tokens"), e.get("added_tokens"), 100)),
+        ("rereads_unchanged", "dont relectures d'une ressource identique ou sans modification observee",
+         lambda e, a: a.get("rereads_unchanged")),
+        ("truncated_added", "tokens entres par des sorties de commande que le client a coupees",
+         lambda e, a: a.get("truncated_calls_added_tokens") if e.get("truncation_known_sessions") else None),
+    ],
+}
+
+
+def _context_rows(before: dict[str, Any], after: dict[str, Any], nature: str) -> list[dict[str, Any]]:
+    """Indicateurs de contexte d'une nature (`exact` ou `attributed`), sans test : a lire, pas a conclure."""
+    def val(m: dict[str, Any], fn: Any) -> float | None:
+        c = m.get("context") or {}
+        return fn(c.get("exact") or {}, c.get("attributed") or {}) if c else None
+    return [{"key": k, "label": label, "before": val(before, fn), "after": val(after, fn)} for k, label, fn in _CONTEXT_ROWS[nature]]
+
+
+def _scenarios(m: dict[str, Any]) -> list[dict[str, Any]]:
+    """Scenarios d'economie d'une periode : des HYPOTHESES derivees des attributions, en bornes hautes. Jamais un gain :
+    un gain ne se constate que sur les releves exacts de deux periodes de travail comparable."""
+    c = m.get("context") or {}
+    e, a = c.get("exact") or {}, c.get("attributed") or {}
+    if not c:
+        return []
+    total = e.get("session_input_tokens") or 0
+    out = [{"key": "unchanged_rereads", "label": "si les relectures apres compaction d'une ressource identique ou sans modification "
+            "observee etaient evitees (etat durable et court)", "added_tokens": a.get("rereads_unchanged_added_tokens"),
+            "reread_tokens": a.get("rereads_unchanged_reread_tokens"),
+            "share_of_input": _ratio(a.get("rereads_unchanged_reread_tokens"), total, 100),
+            "caveat": "borne haute : une partie de ces relectures est necessaire ; « sans modification observee » ne prouve pas un contenu identique"}]
+    if e.get("truncation_known_sessions"):
+        out.append({"key": "truncated_outputs", "label": "si les sorties de commande coupees par le client avaient ete lues par extrait",
+                    "added_tokens": a.get("truncated_calls_added_tokens"), "reread_tokens": None, "share_of_input": None,
+                    "caveat": "borne haute : un extrait coute aussi des tokens ; la relecture evitee n'est pas chiffree"})
+    return out
+
+
 def agents_md_versions(views: list[SessionView]) -> list[dict[str, Any]]:
     """Versions d'AGENTS.md vues par Codex (empreinte du texte injecte), dans l'ordre d'apparition."""
     seen: dict[str, dict[str, Any]] = {}
@@ -317,6 +489,38 @@ def agents_md_versions(views: list[SessionView]) -> list[dict[str, Any]]:
 
 def _n(v: Any) -> str:
     return f"{int(v):,}".replace(",", " ") if isinstance(v, (int, float)) else "-"
+
+
+def _num(v: Any) -> str:
+    if v is None:
+        return "-"
+    return _n(v) if isinstance(v, int) or (isinstance(v, float) and abs(v) >= 1000) else _fmt(float(v))
+
+
+def _context_reference_lines(m: dict[str, Any]) -> tuple[list[str], list[str]]:
+    """(lignes de mesures, lignes de scenarios) des indicateurs de contexte d'une reference, natures separees."""
+    if not m.get("context"):
+        return [], []
+    out = ["## 1 bis. Contexte : releves exacts", "",
+           "Releves du client et comptes de faits : rien n'y est partage ni reconnu par AgentWatch.", "",
+           "| Releve | Valeur |", "|---|---|"]
+    out += [f"| {r['label']} | {_num(r['before'])} |" for r in _context_rows(m, m, "exact")]
+    out += ["", "## 1 ter. Contexte : attributions reconstruites", "",
+            "Calculs d'AgentWatch sur ces releves : partage d'une reponse entre ses appels (prorata des tailles livrees), ressource "
+            "reconnue d'une fenetre a l'autre, etat d'une relecture. A lire, pas a additionner aux releves.", "",
+            "| Attribution | Valeur |", "|---|---|"]
+    out += [f"| {r['label']} | {_num(r['before'])} |" for r in _context_rows(m, m, "attributed")]
+    fams = sorted(((m["context"].get("attributed") or {}).get("families") or {}).items(), key=lambda kv: -kv[1]["reread_tokens"])[:8]
+    if fams:
+        total = (m["context"].get("exact") or {}).get("session_input_tokens") or 0
+        out += ["", "| Famille d'outil (attribution) | Appels | Tokens ajoutes | Relus ensuite | Part de l'entree |", "|---|---|---|---|---|"]
+        out += [f"| {k} | {_n(v['calls'])} | {_n(v['added_tokens'])} | {_n(v['reread_tokens'])} | "
+                f"{_fmt(100 * v['reread_tokens'] / total if total else None)} % |" for k, v in fams]
+    out.append("")
+    sc = [f"- {x['label']} : {_n(x.get('added_tokens'))} tokens ajoutes"
+          + (f", {_n(x['reread_tokens'])} relus ensuite ({_fmt(x.get('share_of_input'))} % de l'entree)" if x.get("reread_tokens") else "")
+          + f". {x['caveat'][0].upper()}{x['caveat'][1:]}." for x in _scenarios(m)]
+    return out, sc
 
 
 def render_reference(ref: dict[str, Any]) -> str:
@@ -358,24 +562,30 @@ def render_reference(ref: dict[str, Any]) -> str:
              f"{_n(nga.get('input_tokens'))} (dont cache {_n(nga.get('cached_input_tokens'))}), sortie {_n(nga.get('output_tokens'))} |",
              f"| Cout mesure de toutes les reponses sans apport | {_n(ng.get('responses'))} reponses : entree "
              f"{_n(ng.get('input_tokens'))} (dont cache {_n(ng.get('cached_input_tokens'))}), sortie {_n(ng.get('output_tokens'))} |",
-             f"| Taches du fil principal | {t['main_done']} terminees, {t['main_aborted']} interrompues ; duree mediane "
+             f"| Taches du fil principal | {t['main_done']} terminees, {t['main_aborted']} interrompues, "
+             f"{t.get('main_cut', 0)} coupees par le client (quota epuise, serveur : des interruptions, jamais des taches "
+             f"terminees) ; duree mediane des terminees "
              f"{_fmt((_median(t['main_durations_ms']) or 0) / 1000 if t['main_durations_ms'] else None)} s |",
-             f"| Taches des sous-agents | {t['sub_done']} terminees, {t['sub_aborted']} interrompues ; duree mediane "
+             f"| Taches des sous-agents | {t['sub_done']} terminees, {t['sub_aborted']} interrompues, "
+             f"{t.get('sub_cut', 0)} coupees par le client ; duree mediane des terminees "
              f"{_fmt((_median(t['sub_durations_ms']) or 0) / 1000 if t['sub_durations_ms'] else None)} s |",
              f"| Appels en erreur | {_n(m['counts'].get('erreurs', 0))} |", ""]
+    ctx_lines, ctx_scenarios = _context_reference_lines(m)
     if habits:
         lines += ["Reprises par habitude (G, allers-retours du modele) :", ""]
         lines += [f"- {k[2:].replace('|', ' : ')} : {_n(v)} ({_fmt(1000 * v / m['responses'] if m['responses'] else None)} pour 1 000 reponses)"
                   for k, v in habits]
         lines.append("")
+    lines += ctx_lines
     lines += ["## 2. Economies estimees (hypotheses, pas des gains)", "",
               f"- Si chaque reprise d'attente sans apport etait evitee, la borne haute de l'economie serait de "
               f"{_n(nga.get('responses'))} reponses du modele, soit {_n(nga.get('input_tokens'))} tokens d'entree relus (dont "
               f"{_n(nga.get('cached_input_tokens'))} en cache) et {_n(nga.get('output_tokens'))} de sortie, sur la periode.",
               "- C'est une borne haute : une attente plus longue coute encore une reponse par evenement attendu, et une partie "
               "des reprises peut rester necessaire (verification utile, coordination).",
-              "- Hypothese de l'ajout a AGENTS.md : moins de reprises sans apport pendant les attentes, a reussite des taches egale.",
-              "", "## 3. Gains constates", "",
+              "- Hypothese de l'ajout a AGENTS.md : moins de reprises sans apport pendant les attentes, a reussite des taches egale."]
+    lines += ctx_scenarios
+    lines += ["", "## 3. Gains constates", "",
               "Aucun a ce jour. Un gain ne sera constate qu'apres comparaison des sessions suivantes avec cette reference "
               "(`agentwatch compare --reference ...`), et seulement si l'intervalle de confiance exclut l'absence d'effet.", ""]
     return "\n".join(lines)
@@ -417,12 +627,35 @@ def render_markdown(result: dict[str, Any]) -> str:
         cl = r.get("clusters")
         cb = f", {cl[0]} grappe(s)" if cl and not r.get("percent") and r["key"] != "erreurs" else ""
         ca = f", {cl[1]} grappe(s)" if cl and not r.get("percent") and r["key"] != "erreurs" else ""
+        if r["key"].startswith("taches."):
+            # * Interruptions nommees : par l'utilisateur (turn_aborted) et par le client (quota epuise, serveur).
+            cb = f" sur {r['before']['activity']} ; {r['before'].get('aborted', 0)} interrompue(s), {r['before'].get('cut', 0)} coupee(s) par le client"
+            ca = f" sur {r['after']['activity']} ; {r['after'].get('aborted', 0)} interrompue(s), {r['after'].get('cut', 0)} coupee(s) par le client"
         lines.append(f"| {r['label']} | {unit} | {_fmt(r['before']['rate'])}{' %' if r.get('percent') else ''} ({r['before']['count']}{cb}) | "
                      f"{_fmt(r['after']['rate'])}{' %' if r.get('percent') else ''} ({r['after']['count']}{ca}) | {ratio} | **{r['conclusion']}** |")
     lines += ["", "## Mesures descriptives (sans test : a lire, pas a conclure)", "",
               "| Mesure | Avant | Apres |", "|---|---|---|"]
     for d in result["comparison"]["descriptive"]:
         lines.append(f"| {d['label']} | {_fmt(d['before'])} | {_fmt(d['after'])} |")
+    ctx = result["comparison"].get("context") or {}
+    if any(r["before"] is not None or r["after"] is not None for r in ctx.get("exact") or []):
+        lines += ["", "## Contexte : releves exacts (sans test : a lire, pas a conclure)", "",
+                  "Releves du client et comptes de faits. Un tour coupe par le client est une interruption : il figure ici et dans le "
+                  "denominateur des taches, jamais parmi les taches terminees.", "",
+                  "| Releve | Avant | Apres |", "|---|---|---|"]
+        lines += [f"| {r['label']} | {_num(r['before'])} | {_num(r['after'])} |" for r in ctx["exact"]]
+        lines += ["", "## Contexte : attributions reconstruites (calculs d'AgentWatch, sans test)", "",
+                  "| Attribution | Avant | Apres |", "|---|---|---|"]
+        lines += [f"| {r['label']} | {_num(r['before'])} | {_num(r['after'])} |" for r in ctx["attributed"]]
+        lines += ["", "## Scenarios d'economie (hypotheses, bornes hautes : jamais des gains)", ""]
+        for name, sc in zip(("Avant", "Apres"), ctx.get("scenarios") or []):
+            for x in sc:
+                lines.append(f"- {name} : {x['label']} : {_n(x.get('added_tokens'))} tokens ajoutes"
+                             + (f", {_n(x['reread_tokens'])} relus ensuite ({_fmt(x.get('share_of_input'))} % de l'entree)"
+                                if x.get("reread_tokens") else "") + f" ({x['caveat']})")
+        lines.append("")
+        lines.append("Un gain ne se lit que dans les releves exacts des deux periodes, a travail comparable ; une attribution ou un "
+                     "scenario qui baisse n'en est pas un.")
     lines += ["", "Contexte relu pour decider les reprises ameliorables (tokens, en grande partie en cache) : avant "
               f"{_fmt((b['ctx'].get('G.ameliorable') or 0) / 1e6, 1)} M, apres {_fmt((a['ctx'].get('G.ameliorable') or 0) / 1e6, 1)} M.",
               "", result["comparison"]["caveat"], ""]

@@ -218,6 +218,110 @@ def _render_errors(st: dict[str, Any]) -> list[str]:
     return out
 
 
+def _pct(v: Any) -> str:
+    return "inconnu" if v is None else f"{100 * float(v):.1f} %"
+
+
+_REREAD_STATUS = {"identical": "contenu identique (empreinte)", "no_change_observed": "aucune modification observee",
+                  "different_or_other_excerpt": "contenu different ou autre extrait", "modified_between": "modifie entre-temps"}
+
+
+def _render_context(ctx: dict[str, Any] | None, report: dict[str, Any]) -> list[str]:
+    """Section « Contexte » : ce que les sorties ajoutent, combien de requetes les relisent, ce qui revient apres chaque
+    compaction, quota et tours coupes. Descriptive : des mesures et un partage calcule, jamais un verdict."""
+    if not ctx:
+        return []
+    out = ["## Contexte : sorties relues, reprises apres compaction, quota", ""]
+    lim = ctx.get("limits") or {}
+    cut = lim.get("turns_cut") or {}
+    if cut.get("total"):
+        kinds = ", ".join(f"{k} {n}" for k, n in sorted(cut["by_kind"].items()))
+        out.append(f"- **Tours coupes par le client : {cut['total']}** ({kinds} ; agents : "
+                   f"{', '.join(_agent(report, a) for a in cut['agents'])} ; dernier a {cut.get('last_time')}). Un tour coupe "
+                   f"porte la meme ligne de fin qu'un tour termine : il n'est pas compte comme un travail termine.")
+    q = lim.get("quota")
+    if q:
+        window = (f"fenetre de {int(q['window_minutes']) // 1440} j" if isinstance(q.get("window_minutes"), (int, float))
+                  else "fenetre inconnue")
+        out.append(f"- Quota du compte ecrit par le client ({window}) : {_fmt(q['first_percent'])} % a {q['first_time']} -> "
+                   f"{_fmt(q['last_percent'])} % a {q['last_time']} (maximum {_fmt(q['max_percent'])} % ; {q['readings']} releves).")
+    out.append(f"- Entree de la session : {ctx['session_input_tokens']} tokens sur {ctx['responses']} requetes. Chaque requete relit "
+               f"tout son contexte : une sortie d'outil est relue par chaque requete suivante de sa fenetre, jusqu'a la compaction.")
+    floor = ctx.get("floor") or {}
+    if floor.get("thread_first_input"):
+        firsts = ", ".join(f"{_agent(report, a)} {n}" for a, n in sorted(floor["thread_first_input"].items(), key=lambda kv: kv[0] != "main"))
+        out.append(f"- Socle relu par chaque requete (entree de la premiere requete de chaque fil : instructions, outils, skills, "
+                   f"consigne) : {firsts} ; multiplie par les requetes de chaque fil, soit "
+                   f"{_pct(floor.get('thread_first_share_of_session_input'))} de l'entree de ces fils"
+                   + (f" ({floor['threads_started_before_view']} fil(s) commence(s) avant la tranche : socle non releve)"
+                      if floor.get("threads_started_before_view") else "") + ". Premiere requete d'une fenetre "
+                   f"apres compaction (socle + resume) : {_fmt(floor.get('window_first_input_median'))} tokens (mediane).")
+    out.append(f"- Tokens ajoutes au contexte par les sorties d'outils (mesure : {ctx['basis']}) : {ctx['added_tokens']} sur "
+               f"{ctx['calls_measured']} appels ; relus ensuite {ctx['reread_tokens']} fois-tokens, soit "
+               f"{_pct(ctx.get('reread_share_of_session_input'))} de l'entree de la session (en cache pour l'essentiel, mais compte "
+               f"dans l'entree et le quota).")
+    mixed = ctx.get("mixed") or {}
+    out.append(f"- Limites : {ctx['calls_unmeasured']} appel(s) sans reponse precedente comparable (debut de fenetre), "
+               f"{ctx['calls_without_usage']} sans releve ; {mixed.get('calls', 0)} appel(s) ({mixed.get('added_tokens', 0)} tokens) ou un "
+               f"message est aussi entre entre les deux reponses : leur part est surestimee d'autant. Le partage entre les sorties "
+               f"d'une meme reponse est un calcul (prorata des tailles), pas une mesure.")
+    tr = ctx.get("truncation") or {}
+    if tr.get("known"):
+        out.append(f"- Sorties coupees par le client avant d'atteindre le modele : {tr['truncated_calls']} commande(s) "
+                   f"({tr['original_tokens_of_truncated_calls']} tokens d'origine, {tr['added_tokens_of_truncated_calls']} tokens "
+                   f"entres quand meme) ; {tr['execs_cut_in_the_middle']} exec coupe(s) au milieu ({tr['tokens_cut_from_execs']} tokens "
+                   f"retires : la fin d'une sortie et le debut de la suivante sont perdus).")
+    else:
+        out.append("- Sorties coupees par le client : non relevees pour cette session (import anterieur a ce releve ; "
+                   "`import-rollouts` les releve pour les lignes lues depuis).")
+    out.append("")
+    fams = ctx.get("families") or []
+    if fams:
+        out += ["| Famille d'outil | Appels | Tokens ajoutes | Relus ensuite (fois-tokens) | Part de l'entree de la session | Sorties coupees |",
+                "|---|---|---|---|---|---|"]
+        for f in fams:
+            out.append(f"| {_cell(f['family'])} | {f['calls']} | {f['added_tokens']} | {f['reread_tokens']} | "
+                       f"{_pct(f.get('share_of_session_input'))} | {f['truncated_calls'] if tr.get('known') else '-'} |")
+        out.append("")
+    tops = ctx.get("top_outputs") or []
+    if tops:
+        out.append("Sorties qui ont pese le plus (tokens ajoutes x requetes suivantes de la fenetre) :")
+        for o in tops:
+            src = o.get("source") or {}
+            where = f" ; source {src.get('file')} L{src.get('line')}" if src.get("line") else ""
+            cutnote = f" ; coupee (origine {o['original_token_count']} tokens)" if o.get("truncated") else ""
+            out.append(f"- #{o['seq']} {_agent(report, o['agent'])}, fenetre {o['window']} : {o['tool']} {_short(o.get('label'), 90)} : "
+                       f"{o['added_tokens']} tokens x {o['later_requests_in_window']} requetes = {o['reread_tokens']}{cutnote}{where}")
+        out.append("")
+    ac = ctx.get("after_compaction") or {}
+    ws = ac.get("window_start") or {}
+    if ws.get("windows"):
+        out.append(f"Reprises apres compaction ({ws['windows']} fenetre(s)) : dans les {ac['recovery_responses']} premieres reponses d'une "
+                   f"fenetre, les sorties ajoutent {_fmt(ws['added_tokens_median'])} tokens (mediane ; 9e decile {_fmt(ws['added_tokens_p90'])}), "
+                   f"soit {ws['added_tokens_total']} au total et {_pct(ws.get('share_of_added_tokens'))} des tokens ajoutes par les sorties.")
+        by_status = sorted((ac.get("by_status") or {}).items(), key=lambda kv: -kv[1]["rereads"])
+        out.append(f"Relectures d'une ressource deja lue par le meme agent dans une fenetre anterieure : {ac['rereads']} "
+                   f"({ac['added_tokens']} tokens ajoutes, {ac['reread_tokens']} relus ensuite), dont {(ac.get('early') or {}).get('rereads', 0)} "
+                   f"en debut de fenetre. Par etat : "
+                   + " ; ".join(f"{_REREAD_STATUS.get(k, k)} {v['rereads']} ({v['added_tokens']} tokens)" for k, v in by_status) + ".")
+        out.append("")
+        res = ac.get("resources") or []
+        if res:
+            out += ["| Ressource relue apres compaction | Relectures | Agents | Fenetres | Tokens ajoutes | Relus ensuite | Etat des relectures | Exemples |",
+                    "|---|---|---|---|---|---|---|---|"]
+            for r in res:
+                status = ", ".join(f"{_REREAD_STATUS.get(k, k)} {n}" for k, n in sorted(r["status"].items(), key=lambda kv: -kv[1]))
+                refs = ", ".join(f"#{x['seq']}" for x in r["refs"][:3])
+                out.append(f"| {_cell(r['resource'], 90)} | {r['rereads']} | {len(r['agents'])} | {r['windows']} | {r['added_tokens']} | "
+                           f"{r['reread_tokens']} | {status} | {refs} |")
+            out.append("")
+        out.append("Relire apres une compaction est attendu : le contexte a ete remplace. Ce tableau dit ce que cela coute et ce qui "
+                   "revient a chaque fenetre ; « aucune modification observee » ne prouve pas un contenu identique (une modification "
+                   "hors session n'est pas observable, et une commande qui lit plusieurs fichiers n'a qu'une empreinte).")
+        out.append("")
+    return out
+
+
 def _render_finding(f: Finding, detailed: bool) -> list[str]:
     out = [f"### {f.title}", "",
            f"- Regle : `{f.rule_id}` v{f.rule_version} ({f.kind}) ; identifiant `{f.finding_id}`",
@@ -368,7 +472,7 @@ def render_markdown(report: dict[str, Any]) -> str:
                     else "Duree reconstruite mediane (n)")
     client_header = "Duree ecrite par le client, mediane (n)" if rollout_only else "Duree client mediane (n)"
     lines += [
-              f"| Outil | Appels | Erreurs | Statut inconnu | Ouverts | Sortie (octets, mesures) | {client_header} | {recon_header} |",
+              f"| Outil | Appels | Erreurs | Statut inconnu | Ouverts | Sortie brute de l'outil (octets, mesures) | {client_header} | {recon_header} |",
               "|---|---|---|---|---|---|---|---|"]
     shown_tools = st["tools"][:15]
     for t in shown_tools:
@@ -402,8 +506,12 @@ def render_markdown(report: dict[str, Any]) -> str:
         lines.append("")
     lines += _render_repetitions(st.get("repetitions") or {}, int(report.get("repetitions_top", 15)), report)
     lines += _render_errors(st)
+    lines += _render_context(st.get("context"), report)
     if st["largest_outputs"]:
-        lines.append("Sorties les plus volumineuses (une sortie volumineuse n'est pas, seule, un gaspillage) :")
+        # * Taille BRUTE produite par l'outil : le modele peut en recevoir beaucoup moins (sortie coupee par le client,
+        #   image encodee) ; ce qui entre dans le contexte est dans la section « Contexte ».
+        lines.append("Sorties brutes les plus volumineuses, telles que produites par l'outil (le modele peut en recevoir moins : "
+                     "sortie coupee par le client, image encodee ; voir « Contexte ») :")
         lines += [f"- #{c['seq']} {c['tool']} {_short(c.get('label') or c['target'])} : {c['output_size_bytes']} octets"
                   for c in st["largest_outputs"]]
         lines.append("")

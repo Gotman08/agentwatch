@@ -188,7 +188,7 @@ class RolloutItemsTests(unittest.TestCase):
         self.assertEqual(st["duplicates"].get("element UserMessage (meme texte qu'une ligne response_item)"), 1)
         self.assertEqual(st["duplicates"].get("element AgentMessage (meme texte qu'une ligne response_item)"), 1)
         self.assertEqual(st["duplicates"].get("element AgentMessage (texte inclus dans un message deja importe)"), 1)
-        self.assertEqual(st["duplicates"].get("token_count (meme mesure que token_usage_record ; limites de debit non importees)"), 1)
+        self.assertEqual(st["duplicates"].get("token_count (meme mesure que token_usage_record)"), 1)
         self.assertEqual(st["pending_items"], [])
 
     def test_one_call_per_web_search_whatever_its_forms(self) -> None:
@@ -308,7 +308,7 @@ class RolloutItemsTests(unittest.TestCase):
         thread = next(m.meta["usage"] for m in v.markers if m.phase == "usage" and m.meta["usage"].get("scope") == "thread")
         self.assertEqual(thread["format"], "token_count")
         self.assertEqual(st["duplicates"].get("token_count repete (cumul inchange)"), 1)
-        self.assertEqual(st["duplicates"].get("token_count sans usage (limites de debit seulement, non importees)"), 1)
+        self.assertEqual(st["duplicates"].get("token_count sans usage (quota seulement)"), 1)
         # * l'export compte de meme : un releve repete n'est ni une reponse, ni des tokens de plus
         import io
         from agentwatch.reports import inspect as INS
