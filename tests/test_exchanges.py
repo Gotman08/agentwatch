@@ -240,7 +240,7 @@ class ExchangesTests(unittest.TestCase):
         old["context"]["attributed"].pop("retained_context_agents_by_basis")
         old_rows = {r["key"]: r["before"] for nature in ("exact", "attributed") for r in C._context_rows(old, old, nature)}
         self.assertEqual((old_rows["kept_agent_messages_share"], old_rows["retained_basis_fact_agents"],
-                          old_rows["retained_basis_correlation_agents"]), (None, None, None))
+                          old_rows["retained_basis_correlation_agents"]), (C.MISSING, C.MISSING, C.MISSING))
         self.assertEqual(old_rows["retained_context_estimate"], 190 * 2 + 380)                # * l'estimation, elle, reste lisible
         self.assertFalse([s for s in C._scenarios(m) if "message" in s["key"] or "retained" in s["key"]])
         text = "\n".join(C._context_reference_lines(m)[0])
@@ -280,7 +280,7 @@ class ExchangesTests(unittest.TestCase):
         m = C.merge([C.measure(self.last_view, self.cfg)])
         self.assertEqual(m["context"]["exact"]["kept_fact_known_sessions"], 0)
         rows = {r["key"]: r["before"] for r in C._context_rows(m, m, "exact")}
-        self.assertIsNone(rows["kept_agent_messages_share"])
+        self.assertEqual(rows["kept_agent_messages_share"], C.MISSING)       # * compactions vues, fait non importe
         est = build(5)["retained_context_estimate"]
         self.assertEqual((est["agents"], est["agent_basis"]), ([CHILD], {CHILD: "correlation"}))
 
@@ -354,6 +354,57 @@ class ExchangesTests(unittest.TestCase):
         text = "\n".join(_render_exchanges(agent_exchanges(v, self.cfg), {"agent_labels": {"main": "principal", CHILD: "Sagan"}}))
         self.assertIn("principal x13 (#", text)
         self.assertIn("puis Sagan x1 (#", text)
+
+    def test_slice_with_one_active_thread_keeps_received_messages_and_observed_zeros(self) -> None:
+        """Constate le 2026-09-21 (reprise de 01a0bf95, tranche apres 16:25:02Z) : un seul fil travaille, 4 messages d'autres
+        agents y entrent, aucun n'est envoye. La section disparaissait et `compare` affichait « - » partout."""
+        from agentwatch.core.timeslice import slice_view
+        from agentwatch.reports import compare as C
+        main = RolloutBuilder(ROOT).meta().turn("turn-1", "SECRET demande")
+        send(main, "call_m1", "tache", token("a", 127))
+        main.usage(900, 800, 10)
+        child = RolloutBuilder(CHILD, parent=ROOT, nickname="Sagan").meta().turn("turn-c")
+        receive(child, "/root", CHILD_PATH, token("a", 127), ms=5_000)
+        send(child, "call_c1", "/root", token("z", 133))
+        child.usage(900, 800, 10)
+        # * plus tard, le principal reprend seul : deux receptions, aucun envoi, du travail
+        receive(main, CHILD_PATH, "/root", token("z", 133), ms=3_600_000)
+        receive(main, CHILD_PATH, "/root", "SECRET REPONSE FINALE.", kind="FINAL_ANSWER", encrypted=False)
+        main.exec_("call_w", [main.cmd("exec-w", "rg foo Source", "match")], usage=(30_000, 29_000, 50))
+        main.usage(30_400, 30_000, 40)
+        full = self._view(main, child)
+        cut = min(m.ns for m in full.markers if m.phase == "message" and m.meta.get("role") == "agent" and not m.agent_id) - 1
+        after = slice_view(full, cut, None)
+        ex = agent_exchanges(after, self.cfg)
+        self.assertIsNotNone(ex)                                              # * avant : None, les receptions etaient perdues
+        self.assertEqual((ex["messages"]["sent"], ex["messages"]["received"], ex["messages"]["received_by_kind"]),
+                         (0, 2, {"MESSAGE": 1, "FINAL_ANSWER": 1}))
+        self.assertEqual((ex["message_requests"]["message_only"], ex["message_requests"]["message_only_input_tokens"]), (0, 0))
+        m = C.merge([C.measure(after, self.cfg)])
+        rows = {r["key"]: r["before"] for n in ("exact", "attributed") for r in C._context_rows(m, m, n)}
+        self.assertEqual((rows["messages_sent"], rows["messages_received"], rows["message_only_requests"],
+                          rows["message_only_input_tokens"]), (0, 2, 0.0, 0))          # * zeros OBSERVES, receptions gardees
+        self.assertEqual((rows["chain_messages_share"], rows["messages_slow_share"]), (C.NOT_APPLICABLE, C.NOT_APPLICABLE))
+        self.assertEqual(rows["kept_agent_messages_share"], C.NOT_APPLICABLE)          # * aucune compaction dans la tranche
+        self.assertEqual(rows["retained_context_estimate"], 0)
+
+    def test_compare_tells_zero_from_missing_from_not_applicable(self) -> None:
+        from agentwatch.reports import compare as C
+        alone = RolloutBuilder(ROOT).meta().turn("turn-1", "SECRET demande")
+        alone.exec_("call_w", [alone.cmd("exec-w", "rg foo Source", "match")], usage=(30_000, 29_000, 50))
+        alone.usage(30_400, 30_000, 40)
+        m = C.merge([C.measure(self._view(alone), self.cfg)])
+        rows = {r["key"]: r["before"] for n in ("exact", "attributed") for r in C._context_rows(m, m, n)}
+        # * un seul agent, aucun message : les indicateurs d'echange n'ont pas d'objet (ce n'est ni zero, ni manquant)
+        self.assertEqual({rows[k] for k in ("messages_sent", "message_only_requests", "chain_messages_share", "retained_context_estimate",
+                                            "handoff_added")}, {C.NOT_APPLICABLE})
+        # * une mesure enregistree AVANT ces indicateurs : la cle est absente, la donnee est manquante
+        for k in [k for k in m["context"]["exact"] if k.startswith(("exchange_", "message", "chain", "pairing_", "kept_", "first_response"))]:
+            m["context"]["exact"].pop(k)
+        rows = {r["key"]: r["before"] for n in ("exact", "attributed") for r in C._context_rows(m, m, n)}
+        self.assertEqual({rows[k] for k in ("messages_sent", "message_only_requests", "chain_messages_share", "kept_agent_messages_share",
+                                            "retained_context_estimate")}, {C.MISSING})
+        self.assertEqual((C._num(C.MISSING), C._num(C.NOT_APPLICABLE), C._num(0)), ("non releve", "sans objet", "0"))
 
     def test_single_agent_has_no_section(self) -> None:
         main = RolloutBuilder(ROOT).meta().turn("turn-1", "SECRET demande")

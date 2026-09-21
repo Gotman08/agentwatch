@@ -594,9 +594,28 @@ def _apply_tool_event(ev: dict[str, Any], phase: str, ns: int, agent: str, epoch
         call.status = ev.get("status") or S.STATUS_UNKNOWN
         call.exit_code = ev.get("exit_code")
         call.error_summary = ev.get("error_summary")
-        # * Signature recalculee a l'analyse depuis le resume masque : les evenements anciens
-        #   beneficient des ameliorations de normalisation sans etre re-ingeres.
-        call.error_signature = (N.make_error_signature(call.error_summary) if call.error_summary else None) or ev.get("error_signature")
+        kept, removed = N.strip_report_trailer(call.error_summary) if call.error_summary else ("", 0)
+        if removed and kept.strip():
+            # ! Import anterieur : la fin stockee portait aussi une ligne de compte rendu entiere. Elle est retiree ; ce
+            #   qui reste est la fin PARTIELLE de la vraie sortie (le magasin n'en gardait que quelques centaines de
+            #   caracteres) : le diagnostic complet ne se retrouve que dans le rollout.
+            call.error_summary = kept
+            call.evidence["error_trailer_lines_removed"] = removed
+            call.evidence["error_cause"] = "partial: stored summary shared its tail with a post-processing report line (reimport to recover)"
+            call.warnings.append("error diagnosis partly hidden by a post-processing report line")
+        if N.is_report_trailer_fragment(call.error_summary) or (removed and not kept.strip()):
+            # ! Import anterieur : le resume stocke n'est que la fin d'une ligne de compte rendu ajoutee apres coup. Le
+            #   diagnostic n'est pas dans le magasin : la cause reste INCONNUE (un reimport cible la retrouve dans le
+            #   rollout), plutot que de presenter cette ligne comme l'erreur.
+            call.error_summary = None
+            call.error_signature = None
+            call.evidence["error_cause"] = "unknown: stored summary was a post-processing report line (reimport to recover)"
+            call.warnings.append("error diagnosis hidden by a post-processing report line")
+        else:
+            # * Signature recalculee a l'analyse depuis le resume masque : les evenements anciens
+            #   beneficient des ameliorations de normalisation sans etre re-ingeres.
+            call.error_signature = ((N.make_error_signature(call.error_summary) if call.error_summary else None)
+                                    or ev.get("error_signature"))
         call.output_size_bytes = ev.get("output_size_bytes")
         call.output_size_source = ev.get("output_size_source")
         call.output_truncated = ev.get("output_truncated")
@@ -615,7 +634,8 @@ def _apply_tool_event(ev: dict[str, Any], phase: str, ns: int, agent: str, epoch
                   "state_fp", "result_phase", "timed_out", "exec_call_id", "read_only_hint",
                   "rollout_item", "item_status", "web_action", "extension_action", "result_tools", "image_chars",
                   "collab_receivers", "collab_sender", "collab_status",
-                  "delivered_chars", "original_token_count", "image_parts", "text_chars"):
+                  "delivered_chars", "original_token_count", "image_parts", "text_chars",
+                  "error_trailer_lines_removed", "error_cause"):
             if k in (ev.get("evidence") or {}):
                 call.evidence[k] = ev["evidence"][k]
         if src:

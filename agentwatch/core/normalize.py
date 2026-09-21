@@ -288,6 +288,37 @@ _ERROR_LINE_RE = re.compile(r"(?i)\b(error|erreur|exception|traceback|no such fi
                             r"unexpected|invalid|refused|timed? ?out|introuvable|impossible)\b")
 
 
+# * Lignes de COMPTE RENDU qu'un post-traitement ajoute a la fin de la sortie d'un lanceur, apres le diagnostic du
+#   lanceur lui-meme. Constate le 2026-09-21 (appels #6101 et #6140 de la session Codex 01a0bf95) : le resume d'erreur,
+#   pris sur la fin de la sortie, n'etait plus que la ligne `{"resumes_ecrits": ...}` ; la cause (`"ExitCode": 6`) etait
+#   juste au-dessus. Ces lignes ne sont jamais un diagnostic : elles sont retirees AVANT de prendre la fin de la sortie.
+REPORT_TRAILER_PATTERNS = (r'^\{"resumes_ecrits"\s*:', r"^Etat courant regenere\b", r"^Etat courant\s*:")
+# * Fragments reconnaissables d'un resume DEJA STOCKE qui n'est que la fin d'une telle ligne (import anterieur).
+_TRAILER_FRAGMENTS = ('"resumes_ecrits"', "le resume d'abord ; un detail : python Scripts/Agent/agent_peek.py", "Etat courant regenere")
+
+
+def strip_report_trailer(text: str | None, patterns: list[str] | tuple[str, ...] | None = None) -> tuple[str, int]:
+    """(sortie sans ses lignes de compte rendu finales, nombre de lignes retirees). Seules les lignes de la FIN sont
+    retirees, tant qu'elles correspondent a un motif connu : rien d'autre n'est touche."""
+    if not text:
+        return "", 0
+    regs = [re.compile(p) for p in (patterns or REPORT_TRAILER_PATTERNS)]
+    lines = text.rstrip().splitlines()
+    removed = 0
+    while lines and (not lines[-1].strip() or any(r.search(lines[-1].strip()) for r in regs)):
+        removed += 1 if lines[-1].strip() else 0
+        lines.pop()
+    return "\n".join(lines), removed
+
+
+def is_report_trailer_fragment(summary: str | None) -> bool:
+    """Le resume stocke n'est-il que la fin d'une ligne de compte rendu (une seule ligne, fragment connu) ?"""
+    if not summary:
+        return False
+    lines = [c for c in summary.strip().splitlines() if c.strip()]
+    return len(lines) == 1 and any(f in lines[0] for f in _TRAILER_FRAGMENTS)
+
+
 def make_error_signature(text: str | None, limit: int = 160) -> str | None:
     """Signature d'erreur : premiere ligne significative, nombres/hex/chemins remplaces."""
     if not text:

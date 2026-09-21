@@ -350,5 +350,100 @@ class RolloutItemsTests(unittest.TestCase):
         self.assertIn("reconnues sans nouvel evenement", text)
 
 
+class ReportTrailerTests(unittest.TestCase):
+    """Constate le 2026-09-21 (appels #6101 et #6140 de la session 01a0bf95) : pour un lanceur en echec, le resume d'erreur
+    (fin de la sortie) n'etait plus que la ligne `{"resumes_ecrits": ...}` ajoutee apres coup ; la cause etait juste au-dessus."""
+
+    TRAILER = ('{"resumes_ecrits":[{"resultat":"Saved/Wave/Build20/inputs.json","octets":93538,"resume":"Saved/Wave/Build20/'
+               'inputs.summary.json","caracteres":5899}],"lire":"le resume d\'abord ; un detail : python Scripts/Agent/agent_peek.py '
+               '<resultat> --pointer <pointeur> ; le resultat complet est inchange"}')
+
+    def setUp(self) -> None:
+        import tempfile
+        self.tmp = tempfile.TemporaryDirectory()
+        root = Path(self.tmp.name)
+        self.home, sessions = root / "home", root / "sessions"
+        self.day = sessions / "2026" / "09" / "21"
+        self.day.mkdir(parents=True)
+        self.home.mkdir()
+        (self.home / "config.json").write_text(json.dumps({"health": {"codex_sessions_dir": str(sessions)},
+                                                           "rollouts": {"background_priority": False}}), encoding="utf-8")
+        self.cfg = load_config(self.home)
+        self.store = EventStore(self.home, self.cfg)
+
+    def tearDown(self) -> None:
+        self.tmp.cleanup()
+
+    def _calls(self, outputs: dict[str, str]) -> dict[str, Any]:
+        b = RolloutBuilder(ROOT).meta().turn("turn-1", "SECRET demande")
+        for i, (item_id, out) in enumerate(outputs.items()):
+            b.exec_(f"call_{i}", [RolloutBuilder.cmd(item_id, "& './Scripts/Delivery/build_extended_checkpoint.ps1' -Checkpoint Build20", out, code=1)])
+        b.usage(1200, 1100, 30)
+        path = self.day / f"rollout-2026-09-21T10-00-00-{ROOT}.jsonl"
+        path.write_text(b.text(), encoding="utf-8", newline="\n")
+        self.assertEqual(R.import_rollouts(self.store, self.cfg, [str(path)])["errors"], [])
+        view = load_session(self.store, "codex", ROOT, self.cfg)
+        return {c.call_id: c for c in view.calls}
+
+    def test_report_trailer_never_replaces_the_failure_diagnosis(self) -> None:
+        from agentwatch.core.normalize import classify_error
+        build = 'Build failed.\n{\n  "ExitCode": 6,\n  "Target": "ItemsEditor Win64 Development"\n}\n'
+        calls = self._calls({"exec-a": build + self.TRAILER + "\n", "exec-b": self.TRAILER + "\n",
+                             "exec-c": build + "Etat courant regenere : Docs/PlayerLoop/ETAT_COURANT.md (13647 caracteres)\n" + self.TRAILER,
+                             "exec-d": 'Traceback\n{"ExitCode": 3, "resume": "le script rend son propre JSON en derniere ligne"}\n'})
+        a, b, c, d = (calls[k] for k in ("exec-a", "exec-b", "exec-c", "exec-d"))
+        self.assertEqual({x.status for x in (a, b, c, d)}, {"error"})                      # * un echec reste un echec
+        self.assertIn('"ExitCode": 6', a.error_summary)                                    # * avant : la ligne resumes_ecrits
+        self.assertNotIn("resumes_ecrits", a.error_summary)
+        self.assertEqual(classify_error(a.error_summary)["detail"], "ExitCode 6 ecrit par le script")
+        self.assertEqual(a.evidence.get("error_trailer_lines_removed"), 1)
+        self.assertEqual((b.error_summary, b.error_signature), (None, None))               # * rien d'autre dans la sortie : cause INCONNUE
+        self.assertIn("unknown", b.evidence.get("error_cause", ""))
+        self.assertEqual((c.evidence.get("error_trailer_lines_removed"), classify_error(c.error_summary)["script_exit_code"]), (2, 6))
+        self.assertIn('"ExitCode": 3', d.error_summary)                                    # * le JSON du script lui-meme n'est pas retire
+
+    def test_removing_the_trailer_touches_the_diagnosis_only(self) -> None:
+        """Le retrait ne sert qu'a extraire le diagnostic : tailles, empreintes, poids de partage et sources restent ceux de
+        la sortie ENTIERE, ligne de compte rendu comprise."""
+        build = 'Build failed.\n{\n  "ExitCode": 6\n}\n'
+        with_trailer = self._calls({"exec-a": build + self.TRAILER + "\n"})["exec-a"]
+        full = build + self.TRAILER + "\n"
+        self.assertGreaterEqual(with_trailer.output_size_bytes, len(full))                 # * la ligne ajoutee compte dans la taille brute
+        self.assertEqual(with_trailer.evidence["delivered_chars"], len(full))              # * et dans ce qui est livre au modele
+        self.assertTrue(with_trailer.evidence["source_end"]["line"])                       # * preuve source conservee
+        self.tmp.cleanup()
+        self.setUp()
+        without = self._calls({"exec-a": build})["exec-a"]
+        self.assertNotEqual(with_trailer.result_fingerprint, without.result_fingerprint)   # * l'empreinte porte sur toute la sortie
+        self.assertLess(without.output_size_bytes, with_trailer.output_size_bytes)
+        self.assertEqual(with_trailer.error_summary.strip(), without.error_summary.strip())  # * seul le diagnostic est le meme
+
+    def test_stored_summary_that_is_only_a_trailer_means_unknown_cause(self) -> None:
+        """Import anterieur : le magasin ne garde que la fin de la ligne de compte rendu. La cause reste inconnue."""
+        from agentwatch.core import normalize as N
+        stored = self.TRAILER[-400:]
+        self.assertTrue(N.is_report_trailer_fragment(stored))
+        self.assertFalse(N.is_report_trailer_fragment('  "ExitCode": 6,\n}'))
+        calls = self._calls({"exec-a": 'Build failed.\n{"ExitCode": 6}\n'})
+        import agentwatch.core.correlate as CO
+        events, _ = self.store.read_session_events("codex", ROOT)
+        for ev in events:
+            if ev.get("call_id") == "exec-a" and ev.get("error_summary"):
+                ev["error_summary"], ev["error_signature"] = stored, N.make_error_signature(stored)
+        call = next(c for c in CO.build_session(events, self.cfg).calls if c.call_id == "exec-a")
+        self.assertEqual((call.status, call.error_summary, call.error_signature), ("error", None, None))
+        self.assertIn("reimport", call.evidence["error_cause"])
+        self.assertTrue(calls)
+        # * la fin stockee tenait sur plusieurs lignes : la ligne de compte rendu est retiree, le reste est dit PARTIEL
+        mixed = "\r\n".join(['L56702186",', '  "InputsChangedDuringBuild": []', "}", self.TRAILER[:200]])
+        for ev in events:
+            if ev.get("call_id") == "exec-a" and ev.get("error_summary"):
+                ev["error_summary"] = mixed
+        call = next(c for c in CO.build_session(events, self.cfg).calls if c.call_id == "exec-a")
+        self.assertNotIn("resumes_ecrits", call.error_summary)
+        self.assertIn("InputsChangedDuringBuild", call.error_summary)
+        self.assertTrue(call.evidence["error_cause"].startswith("partial"))
+
+
 if __name__ == "__main__":
     unittest.main()

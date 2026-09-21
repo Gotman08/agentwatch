@@ -26,6 +26,9 @@ DEFAULTS: dict[str, Any] = {
     "max_event_bytes": 256 * 1024,           # taille max d'un evenement sanitise
     "max_command_chars": 2000,               # commande shell conservee (masquee)
     "max_error_chars": 400,                  # resume d'erreur conserve (masque)
+    # * lignes de compte rendu ajoutees en fin de sortie par un post-traitement : retirees avant de prendre le diagnostic
+    #   (None = motifs par defaut de `core.normalize.REPORT_TRAILER_PATTERNS`)
+    "error_trailer_patterns": None,
     "max_result_paths": 200,                 # chemins retenus d'un resultat de recherche/listage
     "max_session_events": 20000,             # quota par session (verifie par echantillonnage)
     "max_diagnostics_files": 1000,           # borne du journal d'incidents

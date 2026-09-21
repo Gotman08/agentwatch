@@ -192,7 +192,9 @@ def _exchange_measure(view: SessionView, cfg: dict[str, Any]) -> tuple[dict[str,
     from agentwatch.reports.exchanges import agent_exchanges
     ex = agent_exchanges(view, cfg)
     if not ex or not ex.get("messages"):
-        return {}, {}
+        # * 0 explicite : « aucun echange entre agents dans cette vue » (indicateurs SANS OBJET), a distinguer d'une
+        #   mesure enregistree avant ces indicateurs, ou la cle est absente (donnee MANQUANTE).
+        return {"exchange_sessions": 0}, {}
     m, rq = ex["messages"], ex.get("message_requests") or {}
     ch = rq.get("chains") or {}
     first: dict[str, int] = {}
@@ -439,6 +441,40 @@ def _descriptive(before: dict[str, Any], after: dict[str, Any]) -> list[dict[str
     return out
 
 
+# * Trois lectures qu'un tiret confondait (constate le 2026-09-21 sur la reprise de 01a0bf95) : un ZERO OBSERVE reste
+#   un nombre ; MISSING = la donnee n'a pas ete relevee (import anterieur, mesure enregistree avant l'indicateur) ;
+#   NOT_APPLICABLE = l'indicateur n'a pas de sens pour cette periode (aucun echange entre agents, aucun message
+#   rapproche a enchainer, aucune compaction).
+MISSING = "non releve"
+NOT_APPLICABLE = "sans objet"
+
+
+def _exch(e: dict[str, Any], value: Any) -> Any:
+    """Indicateur d'echange : valeur si la periode a des echanges, sans objet si elle n'en a pas, manquant sinon."""
+    if "exchange_sessions" not in e:
+        return MISSING
+    return value() if e.get("exchange_sessions") else NOT_APPLICABLE
+
+
+def _paired(e: dict[str, Any], value: Any) -> Any:
+    """Indicateur qui exige le rapprochement envoi -> reception et au moins un message rapproche."""
+    if "exchange_sessions" not in e:
+        return MISSING
+    if not e.get("exchange_sessions"):
+        return NOT_APPLICABLE
+    if not e.get("pairing_known_sessions"):
+        return MISSING
+    return value() if e.get("messages_paired") else NOT_APPLICABLE
+
+
+def _kept(e: dict[str, Any]) -> Any:
+    if "kept_fact_known_sessions" not in e:
+        return MISSING
+    if e.get("kept_fact_known_sessions"):
+        return _ratio(e.get("kept_agent_messages_at_last_compaction"), e.get("received_before_last_compaction"), 100)
+    return MISSING if e.get("kept_fact_agents_missing") else NOT_APPLICABLE
+
+
 def _ratio(a: Any, b: Any, scale: float = 1.0) -> float | None:
     return scale * a / b if isinstance(a, (int, float)) and isinstance(b, (int, float)) and b else None
 
@@ -462,32 +498,35 @@ _CONTEXT_ROWS: dict[str, list[tuple[str, str, Any]]] = {
          lambda e, a: _ratio(e.get("reread_tokens"), e.get("session_input_tokens"), 100)),
         ("window_start", "tokens ajoutes par les sorties en debut de fenetre apres compaction (mediane)",
          lambda e, a: _median(e.get("window_start_added_tokens") or [])),
-        ("execs_cut", "execs dont la sortie a ete coupee au milieu par le client (non releve = -)",
-         lambda e, a: e.get("execs_cut_in_the_middle") if e.get("truncation_known_sessions") else None),
-        ("quota_points", "points de quota consommes pendant les sessions (non releve = -)",
-         lambda e, a: e.get("quota_points") if e.get("quota_known_sessions") else None),
+        ("execs_cut", "execs dont la sortie a ete coupee au milieu par le client",
+         lambda e, a: e.get("execs_cut_in_the_middle") if e.get("truncation_known_sessions") else MISSING),
+        ("quota_points", "points de quota consommes pendant les sessions",
+         lambda e, a: e.get("quota_points") if e.get("quota_known_sessions") else MISSING),
         ("requests_per_quota_point", "requetes du modele par point de quota",
-         lambda e, a: _ratio(e.get("requests"), e.get("quota_points")) if e.get("quota_known_sessions") else None),
+         lambda e, a: (_ratio(e.get("requests"), e.get("quota_points")) if e.get("quota_points") else NOT_APPLICABLE)
+         if e.get("quota_known_sessions") else MISSING),
         ("turns_cut", "tours coupes par le client (quota epuise, serveur)", lambda e, a: e.get("turns_cut")),
         # * Entre agents (sessions a plusieurs agents seulement ; - sinon).
+        ("messages_sent", "messages envoyes a un autre agent", lambda e, a: _exch(e, lambda: e.get("messages_sent", 0))),
+        ("messages_received", "messages d'autres agents entres dans un fil", lambda e, a: _exch(e, lambda: e.get("messages_received", 0))),
         ("messages_per_100_requests", "messages envoyes a un autre agent, pour 100 requetes du modele",
-         lambda e, a: _ratio(e.get("messages_sent"), e.get("requests"), 100) if e.get("exchange_sessions") else None),
+         lambda e, a: _exch(e, lambda: _ratio(e.get("messages_sent", 0), e.get("requests"), 100))),
         ("message_only_requests", "requetes qui n'emettent que des messages, pour 100 requetes",
-         lambda e, a: _ratio(e.get("message_only_requests"), e.get("requests"), 100) if e.get("exchange_sessions") else None),
+         lambda e, a: _exch(e, lambda: _ratio(e.get("message_only_requests", 0), e.get("requests"), 100))),
         ("message_only_input_tokens", "entree des requetes qui n'emettent que des messages (tokens)",
-         lambda e, a: e.get("message_only_input_tokens") if e.get("exchange_sessions") else None),
+         lambda e, a: _exch(e, lambda: e.get("message_only_input_tokens", 0))),
         ("message_only_input_share", "part de l'entree relue par ces requetes (%)",
-         lambda e, a: _ratio(e.get("message_only_input_tokens"), e.get("session_input_tokens"), 100) if e.get("exchange_sessions") else None),
-        ("chain_messages_share", "messages rapproches enchaines sans appel d'outil hors messagerie entre deux (% ; non rapproche = -)",
-         lambda e, a: _ratio(e.get("chain_messages"), e.get("messages_paired"), 100) if e.get("pairing_known_sessions") else None),
-        ("first_response_messages_only", "premiere reponse apres un message recu qui n'emet que des messages (% ; non rapproche = -)",
-         lambda e, a: _ratio(sum(n for k, n in (e.get("first_response_after_message") or {}).items() if k.startswith("message_to_")),
-                             sum((e.get("first_response_after_message") or {}).values()), 100) if e.get("pairing_known_sessions") else None),
-        ("messages_slow_share", "messages entres chez le destinataire apres le delai de livraison lente (% ; non rapproche = -)",
-         lambda e, a: _ratio(e.get("messages_slow"), e.get("messages_paired"), 100) if e.get("pairing_known_sessions") else None),
-        ("kept_agent_messages_share", "messages d'agents gardes a la derniere compaction, sur 100 recus jusque-la (fait non importe = -)",
-         lambda e, a: _ratio(e.get("kept_agent_messages_at_last_compaction"), e.get("received_before_last_compaction"), 100)
-         if e.get("kept_fact_known_sessions") else None),
+         lambda e, a: _exch(e, lambda: _ratio(e.get("message_only_input_tokens", 0), e.get("session_input_tokens"), 100))),
+        ("chain_messages_share", "messages rapproches enchaines sans appel d'outil hors messagerie entre deux (%)",
+         lambda e, a: _paired(e, lambda: _ratio(e.get("chain_messages", 0), e.get("messages_paired"), 100))),
+        ("first_response_messages_only", "premiere reponse apres un message recu qui n'emet que des messages (%)",
+         lambda e, a: _paired(e, lambda: _ratio(sum(n for k, n in (e.get("first_response_after_message") or {}).items()
+                                                    if k.startswith("message_to_")),
+                                                sum((e.get("first_response_after_message") or {}).values()), 100))),
+        ("messages_slow_share", "messages entres chez le destinataire apres le delai de livraison lente (%)",
+         lambda e, a: _paired(e, lambda: _ratio(e.get("messages_slow", 0), e.get("messages_paired"), 100))),
+        ("kept_agent_messages_share", "messages d'agents gardes a la derniere compaction, sur 100 recus jusque-la",
+         lambda e, a: _kept(e)),
     ],
     # * Attributions reconstruites : partage d'une reponse entre ses appels, ressource reconnue d'une fenetre a l'autre.
     "attributed": [
@@ -498,23 +537,23 @@ _CONTEXT_ROWS: dict[str, list[tuple[str, str, Any]]] = {
         ("rereads_unchanged", "dont relectures d'une ressource identique ou sans modification observee",
          lambda e, a: a.get("rereads_unchanged")),
         ("truncated_added", "tokens entres par des sorties de commande que le client a coupees",
-         lambda e, a: a.get("truncated_calls_added_tokens") if e.get("truncation_known_sessions") else None),
+         lambda e, a: a.get("truncated_calls_added_tokens") if e.get("truncation_known_sessions") else MISSING),
         # * ESTIMATION, a ne jamais additionner a l'entree des requetes d'envoi (elles relisent deja ce contexte).
         ("retained_context_estimate", "estimation du contexte conserve : surplus de debut de fenetre x requetes (tokens)",
-         lambda e, a: a.get("retained_context_estimate_tokens") if e.get("exchange_sessions") else None),
-        ("retained_basis_fact_agents", "agents de cette estimation retenus sur le fait releve a la compaction (mesure anterieure = -)",
-         lambda e, a: (a.get("retained_context_agents_by_basis") or {}).get("fait releve a la compaction", 0)
-         if "retained_context_agents_by_basis" in a else None),
-        ("retained_basis_correlation_agents", "agents de cette estimation retenus sur la correlation, faute du fait (mesure anterieure = -)",
-         lambda e, a: (a.get("retained_context_agents_by_basis") or {}).get("correlation", 0)
-         if "retained_context_agents_by_basis" in a else None),
+         lambda e, a: _exch(e, lambda: a.get("retained_context_estimate_tokens", 0))),
+        ("retained_basis_fact_agents", "agents de cette estimation retenus sur le fait releve a la compaction",
+         lambda e, a: _exch(e, lambda: (a.get("retained_context_agents_by_basis") or {}).get("fait releve a la compaction", 0)
+                            if "retained_context_agents_by_basis" in a else MISSING)),
+        ("retained_basis_correlation_agents", "agents de cette estimation retenus sur la correlation, faute du fait",
+         lambda e, a: _exch(e, lambda: (a.get("retained_context_agents_by_basis") or {}).get("correlation", 0)
+                            if "retained_context_agents_by_basis" in a else MISSING)),
         ("retained_context_per_request", "cette estimation, par requete des fenetres concernees (tokens)",
-         lambda e, a: _ratio(a.get("retained_context_estimate_tokens"), a.get("retained_context_estimate_requests"))
-         if e.get("exchange_sessions") else None),
+         lambda e, a: _exch(e, lambda: _ratio(a.get("retained_context_estimate_tokens", 0), a.get("retained_context_estimate_requests"))
+                            if a.get("retained_context_estimate_requests") else NOT_APPLICABLE)),
         ("handoff_added", "tokens ajoutes par les lectures apres l'ecriture d'un autre agent",
-         lambda e, a: a.get("handoff_added_tokens") if e.get("exchange_sessions") else None),
+         lambda e, a: _exch(e, lambda: a.get("handoff_added_tokens", 0))),
         ("shared_reference_added", "tokens ajoutes par les lectures d'une ressource deja lue par un autre agent, jamais modifiee",
-         lambda e, a: a.get("shared_reference_added_tokens_by_others") if e.get("exchange_sessions") else None),
+         lambda e, a: _exch(e, lambda: a.get("shared_reference_added_tokens_by_others", 0))),
     ],
 }
 
@@ -573,8 +612,10 @@ def _n(v: Any) -> str:
 
 
 def _num(v: Any) -> str:
+    if isinstance(v, str):
+        return v               # * « non releve » ou « sans objet » : jamais un tiret, jamais un zero
     if v is None:
-        return "-"
+        return NOT_APPLICABLE  # * division sans denominateur (aucune requete, aucune fenetre) : l'indicateur n'a pas d'objet
     return _n(v) if isinstance(v, int) or (isinstance(v, float) and abs(v) >= 1000) else _fmt(float(v))
 
 

@@ -160,9 +160,9 @@ def _messages(view: SessionView, pm: dict[str, Any], st: dict[str, int]) -> dict
 
 def _requests(view: SessionView, pm: dict[str, Any], st: dict[str, int]) -> dict[str, Any] | None:
     """Reponses du modele qui n'emettent que des messages : chacune relit tout le contexte de son agent."""
+    # * Aucun envoi dans la vue (tranche ou seul un fil recoit) : les comptes sont des ZEROS OBSERVES, pas une absence de
+    #   mesure. La section n'existe que s'il y a des echanges entre agents (voir `agent_exchanges`).
     message_calls = {str(m.meta.get("message_id")) for m in pm["sent"] if m.meta.get("message_id")}
-    if not message_calls:
-        return None
     emitted: dict[str, list[Call]] = defaultdict(list)
     for c in view.calls:
         rid = (c.usage or {}).get("emitter_request_id")
@@ -470,11 +470,15 @@ def _shared_resources(view: SessionView, pm: dict[str, Any], st: dict[str, int])
 
 
 def agent_exchanges(view: SessionView, cfg: dict[str, Any] | None = None) -> dict[str, Any] | None:
-    """None pour une session a un seul agent : il n'y a rien entre agents a decrire."""
-    if len(view.agents) < 2 and not view.agent_infos:
-        return None
+    """None quand il n'y a rien entre agents a decrire : un seul agent ET aucun message d'agent envoye ni recu.
+
+    # ! Une tranche de temps ou un seul fil travaille peut quand meme RECEVOIR des messages d'autres agents (constate le
+    #   2026-09-21 : 4 messages entres, 0 envoye). Ces receptions sont gardees et « 0 envoye » est un fait.
+    """
     st = _settings(cfg)
     pm = pair_messages(view)
+    if len(view.agents) < 2 and not view.agent_infos and not pm["sent"] and not pm["received"]:
+        return None
     limits = ["le texte des messages entre agents n'est pas lu (chiffre par le fournisseur ou garde en empreinte) : il reste "
               "semantiquement indetermine ; seuls l'emetteur, le destinataire, l'instant, la taille et le rapprochement sont connus",
               "« n'emet que des messages » ne dit pas « ne travaille pas » : le modele raisonne aussi dans ces requetes",

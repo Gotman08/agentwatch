@@ -195,7 +195,7 @@ class ContextCostsTests(unittest.TestCase):
         self.assertEqual({r["key"] for r in ctx["exact"]} & {r["key"] for r in ctx["attributed"]}, set())
         by = {r["key"]: r for r in ctx["exact"]}
         self.assertEqual((by["window_first_input"]["before"], by["window_start"]["before"]), (43_000, 11_180))
-        self.assertEqual(by["quota_points"]["before"], None)               # * non releve : jamais un faux zero
+        self.assertEqual(by["quota_points"]["before"], C.MISSING)          # * non releve : jamais un faux zero, jamais un tiret
         sc = ctx["scenarios"][0]
         self.assertEqual((sc[0]["key"], sc[0]["added_tokens"]), ("unchanged_rereads", 16_000))  # * hypothese, a part (2 sessions)
         self.assertIn("borne haute", sc[0]["caveat"])

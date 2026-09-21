@@ -466,6 +466,8 @@ garde en empreinte), donc leur objet n'est pas connu et une consigne redonnee d'
 detectable ; une lecture apres l'ecriture d'un autre agent ne dit pas si elle etait necessaire (relire le travail d'un
 autre avant de l'executer est souvent voulu) ; aucune de ces lignes n'est un jugement.
 
+Dans `compare`, trois lectures ne se confondent plus (constate le 2026-09-21 sur une tranche ou un seul fil travaillait : un tiret partout, alors que « 0 message envoye » et « 4 messages entres » etaient des faits) : un **nombre**, zero compris, est un fait observe ; **`non releve`** = la donnee manque (import anterieur au releve, mesure enregistree avant l'indicateur : la cle est absente) ; **`sans objet`** = l'indicateur n'a pas de sens pour la periode (aucun echange entre agents, aucun message rapproche a enchainer, aucune compaction, aucun point de quota). Une tranche ou un seul fil travaille garde sa section « Entre agents » des qu'un message d'agent y est envoye OU recu : les receptions sont conservees meme sans aucun envoi.
+
 Dans `compare` (reference et avant/apres), memes calculs, jamais refaits, ranges par nature : **releves exacts**
 (messages pour 100 requetes, requetes qui n'emettent que des messages pour 100 requetes, leur entree en tokens et en
 part de l'entree, part des messages enchaines, part des premieres reponses qui n'emettent que des messages, part des

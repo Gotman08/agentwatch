@@ -196,7 +196,15 @@ class CodexAdapter:
         elif status == S.STATUS_ERROR:
             text = _output_text(resp)
             if text:
-                ev["error_summary"] = text[-int(cfg.get("max_error_chars", 400)):]
+                # * La fin de la sortie porte le diagnostic... sauf quand un post-traitement y a ajoute son compte rendu :
+                #   ces lignes sont retirees d'abord. S'il ne reste rien, la cause est INCONNUE, pas la ligne ajoutee.
+                body, removed = N.strip_report_trailer(text, cfg.get("error_trailer_patterns"))
+                if removed:
+                    ev["evidence"]["error_trailer_lines_removed"] = removed
+                if body.strip():
+                    ev["error_summary"] = body[-int(cfg.get("max_error_chars", 400)):]
+                else:
+                    ev["evidence"]["error_cause"] = "unknown: the output holds only a post-processing report"
         elif status == S.STATUS_UNKNOWN and ev["tool_category"] == S.CAT_SHELL:
             text = _output_text(resp)
             m = _ERROR_HINT_RE.search(text[-2000:]) if text else None
