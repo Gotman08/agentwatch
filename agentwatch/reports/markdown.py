@@ -108,11 +108,22 @@ def _render_repetitions(rep: dict[str, Any], top: int, report: dict[str, Any] | 
             out.append(f"Cadence simulee pour {g['tool']} ({g['calls']} appels, attente typique {G.fmt_duration(cad['typical_wait_s'])}, "
                        f"{cad['basis']}) :")
             out.append("")
-            out += ["| Delai minimal | Appels | Evites | Changements de phase | Retard max | Retard moyen |", "|---|---|---|---|---|---|"]
+            out += ["| Delai minimal | Appels restants | Appels en moins | Changements de phase observes | Retard max | "
+                    "Retard moyen |", "|---|---|---|---|---|---|"]
             for s in cad["simulation"]:
                 mark = " (suggere)" if s["cooldown_s"] == cad["recommended"]["cooldown_s"] else ""
+                # * Sans changement de phase observe, le retard n'est pas estimable : on l'ecrit, on n'affiche pas 0 ms.
+                delay_max = G.fmt_duration(s["max_delay_s"]) if s["max_delay_s"] is not None else "non estimable"
+                delay_mean = G.fmt_duration(s["mean_delay_s"]) if s["mean_delay_s"] is not None else "non estimable"
                 out.append(f"| {G.fmt_duration(s['cooldown_s'])}{mark} | {s['calls']} | {s['avoided']} | {s['changes']} | "
-                           f"{G.fmt_duration(s['max_delay_s'])} | {G.fmt_duration(s['mean_delay_s'])} |")
+                           f"{delay_max} | {delay_mean} |")
+            out.append("")
+            out.append("Simulation : ce qu'aurait donne un delai minimal entre deux appels, sur les appels deja enregistres. "
+                       + ("Aucun changement de phase n'a ete observe dans ce groupe : le retard de detection n'est pas "
+                          "estimable, et rien n'etablit que les appels en moins auraient ete retirables sans consequence "
+                          "sur le travail attendu."
+                          if not cad.get("phase_changes_seen") else
+                          "Le retard indique est celui qu'aurait pris la detection des changements de phase observes."))
             out.append("")
     if rhythm:
         out += ["Rythme des outils (intervalle entre deux appels successifs d'un meme agent, hors appels d'une meme reponse ; "

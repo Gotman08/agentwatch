@@ -378,6 +378,80 @@ class ReportAccuracyTests(unittest.TestCase):
         md = render_markdown(self._report(view))
         self.assertIn("ExitCode 0 : le script s'est termine normalement, aucun echec interne rapporte", md)
 
+    def test_bare_pauses_stay_observations_with_undetermined_usefulness(self) -> None:
+        """Une pause sans cible ni evenement corrole reste une observation : ni verdict, ni signalement.
+
+        Un `clock.sleep` rend « termine » quand la pause est finie ; cela ne dit rien de l'etat du travail attendu.
+        Les durees differentes ne sont pas non plus le meme appel, et des episodes eloignes ne font pas une cadence.
+        """
+        from agentwatch import CLIENT_CODEX
+        from agentwatch.detectors import repeated_calls as G
+        from agentwatch.selftest import Synth
+
+        s = Synth(self.home, client=CLIENT_CODEX, session_id="pauses", cfg=self.cfg)
+        s.response_gap_ms = 2_500
+        s.session_start()
+        done = {"output": "", "exit_code": 0}
+        for ms in (20000, 20000, 20000, 5000):                  # trois pauses de 20 s, une de 5 s
+            s.call("clock.sleep", {"duration_ms": ms}, done, duration_ms=ms)
+        view = s.view()
+        groups = {g["group"]: g for g in G.analyse(view, self.cfg)["groups"]}
+        # les durees differentes ne sont pas regroupees : seul le groupe des 20 s atteint le seuil de 3 appels
+        self.assertEqual(len(groups), 1)
+        g = next(iter(groups.values()))
+        self.assertEqual(g["calls"], 3)
+        self.assertIn("delai=20s", g["group"])
+        # observation conservee, mais aucune utilite affirmee et aucun signalement
+        self.assertEqual(g["verdict"], "indetermine")
+        self.assertIsNone(g["kind"])
+        self.assertIn("ne decrit pas l'etat du travail attendu", g["why"])
+        self.assertIn("Utilite des reprises : indeterminee", g["why"])
+        self.assertNotIn("avant que ce qu'elle attend n'arrive", g["why"])
+        self.assertFalse([f for f in G.detect(view, self.cfg) if "sleep" in str(f.evidence.get("tool"))])
+        # une attente qui rapporte un etat exterieur garde son traitement
+        self.assertFalse(G.describes_external_state([c for c in view.calls if c.tool_name == "clock.sleep"]))
+        s2 = Synth(self.home, client=CLIENT_CODEX, session_id="attentes", cfg=self.cfg)
+        s2.session_start()
+        s2.call("collaboration.wait_agent", {"targets": ["w"], "timeout_ms": 30000},
+                {"output": json.dumps({"timed_out": True, "status": {}})}, duration_ms=30_000)
+        self.assertTrue(G.describes_external_state(list(s2.view().calls)))
+
+    def test_undeterminable_detection_delay_is_said_not_shown_as_zero(self) -> None:
+        """Sans changement de phase observe, le retard de detection s'affiche « non estimable », jamais 0 ms."""
+        from agentwatch.core.correlate import Call
+        from agentwatch.core import schema as S
+        from agentwatch.detectors import repeated_calls as G
+
+        calls = []
+        for i in range(4):
+            c = Call(key=f"p{i}", client="codex", session_id="s", tool_name="clock.sleep", category=S.CAT_OTHER,
+                     status=S.STATUS_SUCCESS)
+            c.start_ns = c.end_ns = 1_000_000_000_000 + i * 30_000_000_000
+            calls.append(c)
+        phases = ["done"] * 4                                   # aucune transition
+        sim = G.simulate_cooldown(calls, phases, [(0, 3)], 60.0, [False] * 4)
+        self.assertEqual(sim["changes"], 0)
+        self.assertIsNone(sim["max_delay_s"])                   # et non 0.0
+        self.assertIsNone(sim["mean_delay_s"])
+        self.assertGreater(sim["avoided"], 0)
+        # rendu : la colonne dit « non estimable » et le texte refuse de promettre une suppression sans consequence
+        rep = {"groups": [{"agent": "main", "tool": "clock.sleep", "target": None, "calls": 4, "episodes": 1,
+                           "interval_s": {"median": 30.0, "min": 30.0}, "outcomes": {"same": 3}, "reasons": {},
+                           "declared": {}, "verdict": "indetermine", "verdict_label": "indetermine", "suggestion": "",
+                           "wait_timing": {"requested_s": [30.0]},
+                           "cadence": {"typical_wait_s": 90.0, "basis": "x", "phase_changes_seen": 0,
+                                       "recommended": {"cooldown_s": 60.0, "avoided": 2, "avoided_round_trips": 2,
+                                                       "calls": 2, "changes": 0, "max_delay_s": None,
+                                                       "mean_delay_s": None},
+                                       "simulation": [sim]}}],
+               "rhythm": [], "totals": {"groups": 1, "calls": 4, "round_trips": 3, "round_trips_by_verdict": {}},
+               "min_calls": 3}
+        from agentwatch.reports.markdown import _render_repetitions
+        md = "\n".join(_render_repetitions(rep, 5, {"agent_labels": {"main": "principal"}}))
+        self.assertIn("non estimable", md)
+        self.assertNotIn("| 0 ms |", md)
+        self.assertIn("rien n'etablit que les appels en moins auraient ete retirables sans consequence", md)
+
     def test_error_natures_total_matches_failed_calls(self) -> None:
         """Le decompte par nature couvre tous les appels en erreur, meme ceux hors du tableau borne."""
         view = self._session()

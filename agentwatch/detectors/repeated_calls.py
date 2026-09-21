@@ -79,7 +79,18 @@ _DEFAULT_COOLDOWNS = (10, 30, 60, 120, 300, 600)
 
 # ---------------------------------------------------------------------------- petits outils
 def group_key(c: Call) -> str:
-    return "\x1f".join((c.agent_key, str(c.tool_name), str(c.target_key), c.params_key))
+    """Cle d'un groupe d'appels « refaits a l'identique ».
+
+    # ! Les delais demandes sont exclus de `params_key` (parametres volatils) : sans precaution, une pause de 5 s et
+    #   une pause de 30 s deviendraient le meme appel repete. Pour un outil d'attente ou de pause, la duree demandee
+    #   FAIT partie de l'appel et entre dans la cle (constate le 2026-09-21 : 15 `clock.sleep` de 5 a 30 s presentes
+    #   comme quinze fois le meme appel).
+    """
+    parts = [c.agent_key, str(c.tool_name), str(c.target_key), c.params_key]
+    if _WAIT_NAME.search(c.mcp_tool or c.tool_name or ""):
+        req = requested_delay_s(c)
+        parts.append(f"delai={req:g}s" if req is not None else "delai=?")
+    return "\x1f".join(parts)
 
 
 def phase_of(c: Call) -> str:
@@ -322,10 +333,12 @@ def simulate_cooldown(calls: list[Call], phases: list[str], episodes: list[tuple
                 if pending is not None:
                     delays.append(max(0.0, (last + cd - pending) / 1e9))   # * servi a la fin du delai
                     pending = None
+    # * Sans changement de phase observe, le retard de detection n'est pas estimable : None, et non 0 ms, qui se
+    #   lirait comme « aucun retard » (constate le 2026-09-21 sur `clock.sleep`, dont la phase ne change jamais).
     return {"cooldown_s": cooldown_s, "calls": kept, "avoided": len(calls) - kept, "avoided_round_trips": avoided_rt,
             "changes": len(delays),
-            "max_delay_s": round(max(delays), 1) if delays else 0.0,
-            "mean_delay_s": round(sum(delays) / len(delays), 1) if delays else 0.0}
+            "max_delay_s": round(max(delays), 1) if delays else None,
+            "mean_delay_s": round(sum(delays) / len(delays), 1) if delays else None}
 
 
 def _cadence(calls: list[Call], reps: list[dict[str, Any]], episodes: list[tuple[int, int]], d: dict[str, Any]) -> dict[str, Any]:
@@ -392,6 +405,37 @@ def requested_delay_s(c: Call) -> float | None:
         if lk.endswith(("_s", "_sec", "_secs", "_seconds")):
             return float(v)
     return None
+
+
+def describes_external_state(calls: list[Call]) -> bool:
+    """Le resultat de ces appels dit-il quelque chose de l'etat d'un travail EXTERIEUR ?
+
+    Une pause pure (`clock.sleep`) rend « termine » quand la pause est finie : cela ne decrit pas l'avancement de ce
+    qu'on attend. Sans cible ni etat rapporte, la reprise ne peut etre jugee ni utile ni inutile.
+    # * Constate le 2026-09-21 : 15 `clock.sleep` sans cible, tous en phase `done` avec un etat vide, etaient lus
+    #   comme une attente relancee avant l'arrivee de ce qu'elle attend.
+    """
+    for c in calls:
+        if c.target or c.evidence.get("timed_out") is not None:
+            return True
+        if c.evidence.get("result_phase") in ("in_progress", "unavailable", "failed"):
+            return True
+        sf = c.evidence.get("state_fp")
+        if isinstance(sf, str) and sf not in ("", "empty"):
+            return True
+        if c.content_fingerprint:
+            return True
+    return False
+
+
+def _episode_intervals(calls: list[Call], reps: list[dict[str, Any]], episodes: list[tuple[int, int]]) -> list[float]:
+    """Intervalles entre appels D'UN MEME episode : l'ecart entre deux episodes n'est pas une cadence de reprise.
+
+    # * Constate le 2026-09-21 : 5 episodes separes de pres d'une heure donnaient un intervalle median de 1 min.
+    """
+    inside = {k for a, b in episodes for k in range(a + 1, b + 1)}
+    return [float(r["interval_s"]) for i, r in enumerate(reps, start=1)
+            if i in inside and r["round_trip"] and isinstance(r["interval_s"], (int, float))]
 
 
 def _wait_profile(calls: list[Call]) -> dict[str, Any]:
@@ -493,7 +537,8 @@ def _summarise(gk: str, calls: list[Call], reps: list[dict[str, Any]], d: dict[s
     declared = Counter(label for r in rt for label in r["declared"])
     phases = Counter(phase_of(c) for c in calls)
     episodes = _episodes(calls, episode_gap)
-    intervals = [float(r["interval_s"]) for r in rt if isinstance(r["interval_s"], (int, float))]
+    # * Seuls les intervalles INTERNES a un episode decrivent une cadence de reprise.
+    intervals = _episode_intervals(calls, reps, episodes)
     idles = [float(r["idle_s"]) for r in rt if isinstance(r["idle_s"], (int, float)) and r["idle_s"] >= 0]
     ns = sorted(c.order_ns for c in calls if c.order_ns)
     rt_calls = [c for c, r in zip(calls[1:], reps) if r["round_trip"]]
@@ -519,17 +564,31 @@ def _summarise(gk: str, calls: list[Call], reps: list[dict[str, Any]], d: dict[s
     known = n_rt - outcomes["unknown"]
     cadence = None
     verdict, kind, why, suggestion = "indetermine", None, "", ""
-    if n_rt == 0:
+    # ! Pause ou attente dont le resultat ne decrit aucun etat exterieur : les appels et leurs reprises sont
+    #   conservees comme observations, mais leur utilite n'est pas jugeable. Aucun verdict, aucun signalement.
+    bare_wait = is_wait_tool and not describes_external_state(calls)
+    if bare_wait and n_rt:
+        req = sorted({r for r in (requested_delay_s(c) for c in calls) if r is not None})
+        verdict, kind = "indetermine", None
+        why = (f"{len(calls)} pause(s) de cet agent, reparties en {len(episodes)} episode(s)"
+               + (f" ; duree(s) demandee(s) : {', '.join(fmt_duration(r) for r in req[:4])}" if req else "")
+               + ". Le resultat d'une pause dit seulement qu'elle est terminee : il ne decrit pas l'etat du travail "
+                 "attendu, et aucune cible ni evenement ne lui est associe. Utilite des reprises : indeterminee")
+        suggestion = ("aucune conclusion possible en l'etat : pour juger ces pauses, il faudrait relier chacune a ce "
+                      "qu'elle attend (identifiant de tache, fichier produit, evenement)")
+    elif n_rt == 0:
         verdict, why = "gratuit", "toutes les repetitions sont dans une meme reponse du modele (script, appels paralleles)"
     elif (polling * 2 >= n_rt and polling >= 2) or periodic:
         # * Au moins deux reprises sur un etat "en cours" ou "indisponible" : une seule ne fait pas un sondage
         #   (faux positif du 2026-09-19 : job_status repris une fois en cours, puis apres consigne et action).
         cadence = _cadence(calls, reps, episodes, d)
         rec = cadence["recommended"]
-        cad_txt = (f"un appel toutes les {fmt_duration(rec['cooldown_s'])} au plus aurait evite {rec['avoided']} appel(s) sur "
-                   f"{len(calls)} (dont {rec['avoided_round_trips']} aller(s)-retour(s) du modele)"
+        cad_txt = (f"une cadence d'un appel toutes les {fmt_duration(rec['cooldown_s'])} au plus aurait laisse "
+                   f"{rec['calls']} appel(s) sur {len(calls)} (dont {rec['avoided_round_trips']} aller(s)-retour(s) du "
+                   f"modele en moins)"
                    + (f", pour un retard de detection de {fmt_duration(rec['max_delay_s'])} au plus" if cadence["phase_changes_seen"]
-                      else ", retard de detection non estimable (aucun changement de phase observe)") if rec else "")
+                      else ", retard de detection NON ESTIMABLE (aucun changement de phase observe) : rien n'etablit que "
+                           "ces appels etaient retirables sans consequence") if rec else "")
         if reasons["unavailable"] > reasons["waiting"]:
             verdict, kind = "environnement", "retry_cadence"
             why = (f"{reasons['unavailable']} reprise(s) sur {n_rt} suivent un resultat disant le service indisponible : "

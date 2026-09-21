@@ -312,6 +312,15 @@ Verdict par groupe, sur les reprises qui ont coute un aller-retour :
 | sans aller-retour | toutes les repetitions dans une meme reponse | aucune |
 | indetermine | apport inconnu pour la majorite | aucune |
 
+Pause sans cible ni evenement corrole (precision du 2026-09-21). Le resultat d'une pause (`clock.sleep`) dit qu'elle
+est terminee, pas ou en est le travail attendu : sans cible, sans etat rapporte et sans `timed_out`
+(`describes_external_state`), les appels et leurs reprises restent des OBSERVATIONS dans le tableau, avec le verdict
+`indetermine` et aucun signalement. Le rapport dit ce qu'il faudrait pour juger : relier chaque pause a ce qu'elle
+attend. Deux consequences du meme constat : la duree demandee entre dans la cle de groupe des outils d'attente (une
+pause de 5 s et une de 30 s ne sont pas le meme appel repete), et les intervalles ne sont calcules qu'a l'interieur
+d'un episode (l'ecart entre deux episodes n'est pas une cadence de reprise). Constate sur 15 `clock.sleep` de 5 a
+30 s, repartis en 5 episodes, lus comme quinze fois le meme appel relance toutes les minutes.
+
 Trois durees d'une attente, jamais confondues (precision du 2026-09-20) : le delai DEMANDE a l'outil
 (parametre `timeout_ms`...), la duree OBSERVEE de l'appel, et l'INTERVALLE OBSERVE entre deux appels
 (duree de l'attente + temps de reponse du modele). Le rapport donne les trois (`wait_timing`) : une attente
@@ -347,7 +356,10 @@ gardes, evites (dont allers-retours) et retard ajoute a la detection de chaque c
 un appel arrive avant la fin du delai est retenu jusqu'a cette fin puis servi, les appels intermediaires
 disparaissent ; retard <= delai. Delai suggere : le plus long dont le retard reste sous
 max(`min_tolerated_delay_s`, `tolerated_delay_ratio` x attente typique), soit 10 % de la duree typique d'un
-episode. Sans changement de phase observe, le retard n'est pas estimable et le rapport le dit.
+episode. Sans changement de phase observe, le retard vaut `None` et s'affiche « non estimable », jamais 0 ms qui se
+lirait comme une absence de retard ; le rapport ajoute alors que rien n'etablit que les appels en moins auraient ete
+retirables sans consequence sur le travail attendu. Les colonnes disent « appels restants » et « appels en moins »,
+et non « evites » : la simulation compte des appels, elle ne demontre pas qu'ils etaient superflus.
 
 Signalements : un par habitude (nature x outil), qui rassemble ses groupes ; seulement pour les verdicts
 ameliorables, avec au moins `min_avoidable_calls` (3) appels evitables pour une cadence. Les lectures et
