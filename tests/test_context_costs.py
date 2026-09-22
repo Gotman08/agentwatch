@@ -226,6 +226,15 @@ class ContextCostsTests(unittest.TestCase):
         ctx = context_costs(build_session(late, self.cfg), self.cfg)
         self.assertEqual((ctx["floor"]["thread_first_input"], ctx["floor"]["threads_started_before_view"]), ({}, 1))
         self.assertEqual(ctx["floor"]["window_first_inputs"], [43_000])     # * la fenetre 1 commence dans la tranche : gardee
+        # * Constate le 2026-09-22 : dans compare, ce socle absent de la tranche s'affichait « sans objet ». Il est NON RELEVE.
+        rows = lambda m: {r["key"]: r["before"] for r in C._context_rows(m, m, "exact")}
+        sliced = rows(C.merge([C.measure(build_session(late, self.cfg), self.cfg)]))
+        self.assertEqual((sliced["thread_first_input"], sliced["floor_share"]), (C.MISSING, C.MISSING))
+        whole = C.merge([C.measure(build_session(events, self.cfg), self.cfg)])
+        self.assertEqual(rows(whole)["thread_first_input"], 40_000.0)
+        whole["context"]["exact"].pop("threads_before_view")                     # * mesure enregistree avant ce champ, sans fil
+        whole["context"]["exact"]["threads"] = 0
+        self.assertEqual(rows(whole)["thread_first_input"], C.MISSING)
 
 
 if __name__ == "__main__":

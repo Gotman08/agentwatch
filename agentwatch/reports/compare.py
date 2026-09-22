@@ -130,8 +130,86 @@ def measure(view: SessionView, cfg: dict[str, Any]) -> dict[str, Any]:
                                                             for k in ("input_tokens", "cached_input_tokens", "output_tokens")}},
             "counts": dict(counts), "clusters": dict(clusters), "ctx": dict(ctx), "sessions": 1 if view.calls else 0, "tasks": tasks,
             "nogain_cost": {k: dict(v) for k, v in nogain_cost.items()},
+            "settings": settings_of(view),
             "session_ids": [view.session_id] if view.calls else [],
             "first_time": view.first_time, "last_time": view.last_time}
+
+
+def settings_of(view: SessionView) -> dict[str, Any]:
+    """Reglages de fil ecrits par le client (`thread_settings_applied`, marqueurs `settings`) : modele, effort, niveau de
+    service, avec le nombre de releves et leurs instants, et le nombre de CHANGEMENTS de niveau de service (par fil, dans
+    l'ordre). Constate le 2026-09-22 : `service_tier` passe de `default` a `priority` a 20:29Z, et les points de quota par
+    requete ont triple ; sans ce releve, une comparaison de quota ne saurait pas qu'elle compare deux niveaux."""
+    rows: dict[tuple[Any, ...], dict[str, Any]] = {}
+    per_agent: dict[str, list[Any]] = {}
+    for m in sorted((m for m in view.markers if m.phase == S.PHASE_ACTIVITY and m.meta.get("kind") == "settings"), key=lambda m: m.ns):
+        key = (m.meta.get("model"), m.meta.get("reasoning_effort"), m.meta.get("service_tier"))
+        r = rows.setdefault(key, {"model": key[0], "effort": key[1], "service_tier": key[2], "count": 0, "first_time": m.time, "last_time": m.time})
+        r["count"] += 1
+        r["last_time"] = m.time
+        per_agent.setdefault(m.agent_id or "main", []).append(m.meta.get("service_tier"))
+    changes = sum(sum(1 for a, b in zip(L, L[1:]) if a != b) for L in per_agent.values())
+    return {"known": bool(rows), "configs": list(rows.values()), "tier_changes": changes}
+
+
+def _merge_settings(parts: list[dict[str, Any] | None]) -> dict[str, Any]:
+    out: dict[str, Any] = {"known": False, "configs": [], "tier_changes": 0}
+    by_key: dict[tuple[Any, ...], dict[str, Any]] = {}
+    for p in parts:
+        if not p:
+            continue
+        out["known"] = out["known"] or bool(p.get("known"))
+        out["tier_changes"] += int(p.get("tier_changes") or 0)
+        for c in p.get("configs") or []:
+            key = (c.get("model"), c.get("effort"), c.get("service_tier"))
+            r = by_key.setdefault(key, {**c, "count": 0})
+            r["count"] += int(c.get("count") or 0)
+            r["first_time"] = min(x for x in (r.get("first_time"), c.get("first_time")) if x) if (r.get("first_time") or c.get("first_time")) else None
+            r["last_time"] = max(x for x in (r.get("last_time"), c.get("last_time")) if x) if (r.get("last_time") or c.get("last_time")) else None
+    out["configs"] = sorted(by_key.values(), key=lambda c: c.get("first_time") or "")
+    return out
+
+
+def settings_text(s: dict[str, Any] | None) -> str:
+    """« modele / effort / niveau (n releves, du .. au ..) ; ... » ; non releve pour une mesure anterieure a ce releve."""
+    if not s:
+        return f"{MISSING} (mesure anterieure a ce releve)"
+    if not s.get("known"):
+        return f"{MISSING} (aucun reglage de fil ecrit par le client)"
+    return " ; ".join(f"{c.get('model') or '?'} / {c.get('effort') or '?'} / {c.get('service_tier') or '?'} ({c.get('count')} releve(s), "
+                      f"{(c.get('first_time') or '?')[:16]} -> {(c.get('last_time') or '?')[:16]})" for c in s.get("configs") or [])
+
+
+def settings_compare(before: dict[str, Any], after: dict[str, Any]) -> dict[str, Any]:
+    """Les deux periodes ont-elles le meme niveau de service ? Sinon les ratios de quota ne se comparent pas."""
+    def tiers(m: dict[str, Any]) -> set[Any] | None:
+        s = m.get("settings")
+        if not s or not s.get("known"):
+            return None
+        return {c.get("service_tier") for c in s.get("configs") or []}
+    tb, ta = tiers(before), tiers(after)
+    if tb is None or ta is None:
+        status = "non releve"
+    elif tb == ta and len(tb) == 1:
+        status = "identique"
+    else:
+        status = "differents"
+    return {"before": before.get("settings"), "after": after.get("settings"), "tiers_before": sorted(x or "?" for x in (tb or [])),
+            "tiers_after": sorted(x or "?" for x in (ta or [])), "service_tier_status": status,
+            "quota_limit": "les points de quota par requete ne se comparent qu'a niveau de service identique. La documentation du "
+                           "fournisseur indique un surcout du mode prioritaire ; le ratio observe par requete n'en est pas le multiplicateur."}
+
+
+def settings_lines(sc: dict[str, Any] | None) -> list[str]:
+    if not sc:
+        return []
+    mixed = " ; niveaux MELANGES dans une periode" if (len(sc["tiers_before"]) > 1 or len(sc["tiers_after"]) > 1) else ""
+    changes = (int(((sc.get("before") or {}).get("tier_changes") or 0)), int(((sc.get("after") or {}).get("tier_changes") or 0)))
+    return [f"- Reglages de fil (modele / effort / niveau de service), avant : {settings_text(sc.get('before'))} ; apres : "
+            f"{settings_text(sc.get('after'))} ; changements de niveau de service : {changes[0]} avant, {changes[1]} apres.",
+            f"- Niveau de service : {sc['service_tier_status']}"
+            + (f" ({', '.join(sc['tiers_before']) or '?'} -> {', '.join(sc['tiers_after']) or '?'})" if sc["service_tier_status"] == "differents" else "")
+            + mixed + f". Limite : {sc['quota_limit']}"]
 
 
 def _context_measure(view: SessionView, cfg: dict[str, Any]) -> dict[str, Any] | None:
@@ -160,6 +238,7 @@ def _context_measure(view: SessionView, cfg: dict[str, Any]) -> dict[str, Any] |
         "sessions": 1,
         "exact": {"session_input_tokens": c["session_input_tokens"], "requests": c["responses"],
                   "threads": len(floor["thread_first_input"]), "thread_first_input_sum": sum(floor["thread_first_input"].values()),
+                  "threads_before_view": floor["threads_started_before_view"],
                   "thread_first_reread_tokens": floor["thread_first_reread_tokens"],
                   "thread_first_basis_input_tokens": floor["thread_first_basis_input_tokens"],
                   "windows_after_compaction": c["windows_after_compaction"], "window_first_inputs": list(floor["window_first_inputs"]),
@@ -266,6 +345,7 @@ def merge(measures: list[dict[str, Any]]) -> dict[str, Any]:
                                                         "sub_aborted": 0, "sub_cut": 0,
                                                         "main_durations_ms": [], "sub_durations_ms": []}}
     out["context"] = _merge_context([m.get("context") for m in measures])
+    out["settings"] = _merge_settings([m.get("settings") for m in measures])
     for m in measures:
         for k in _SUMS:
             out[k] += m.get(k, 0)
@@ -362,6 +442,7 @@ def compare(before: dict[str, Any], after: dict[str, Any], top_habits: int = 8) 
                      "ratio": rr, "conclusion": _conclusion(k1, n1, k2, n2, rr, loss=True, clusters=c1 + c2)})
     rows += _task_rows(before, after)
     return {"compare_version": COMPARE_VERSION, "rows": rows, "descriptive": _descriptive(before, after),
+            "settings": settings_compare(before, after),
             "context": {"exact": _context_rows(before, after, "exact"), "attributed": _context_rows(before, after, "attributed"),
                         "scenarios": [_scenarios(before), _scenarios(after)]},
             "method": ("taux rapportes a l'activite (G : pour 1 000 reponses du modele ; autres : pour 1 000 appels) ; "
@@ -475,6 +556,14 @@ def _kept(e: dict[str, Any]) -> Any:
     return MISSING if e.get("kept_fact_agents_missing") else NOT_APPLICABLE
 
 
+def _floor(e: dict[str, Any], value: Any) -> Any:
+    """Socle : releve seulement pour les fils dont la premiere requete est dans la vue. Sans un tel fil, la donnee est
+    MANQUANTE (fils commences avant la tranche, ou mesure anterieure a ce champ), pas « sans objet » : le socle existe."""
+    if e.get("threads"):
+        return value()
+    return NOT_APPLICABLE if e.get("threads_before_view") == 0 and "threads_before_view" in e else MISSING
+
+
 def _ratio(a: Any, b: Any, scale: float = 1.0) -> float | None:
     return scale * a / b if isinstance(a, (int, float)) and isinstance(b, (int, float)) and b else None
 
@@ -485,9 +574,9 @@ _CONTEXT_ROWS: dict[str, list[tuple[str, str, Any]]] = {
         ("input_per_request", "entree par requete du modele, demandes de compaction comprises (tokens)",
          lambda e, a: _ratio(e.get("session_input_tokens"), e.get("requests"))),
         ("thread_first_input", "socle : entree de la premiere requete d'un fil (tokens, moyenne)",
-         lambda e, a: _ratio(e.get("thread_first_input_sum"), e.get("threads"))),
+         lambda e, a: _floor(e, lambda: _ratio(e.get("thread_first_input_sum"), e.get("threads")))),
         ("floor_share", "part de l'entree due au socle relu par chaque requete (%), fils commences dans la periode",
-         lambda e, a: _ratio(e.get("thread_first_reread_tokens"), e.get("thread_first_basis_input_tokens"), 100)),
+         lambda e, a: _floor(e, lambda: _ratio(e.get("thread_first_reread_tokens"), e.get("thread_first_basis_input_tokens"), 100))),
         ("window_first_input", "premiere requete apres une compaction (tokens, mediane)",
          lambda e, a: _median(e.get("window_first_inputs") or [])),
         ("requests_per_window", "requetes par fenetre de contexte",
@@ -662,6 +751,7 @@ def render_reference(ref: dict[str, Any]) -> str:
              + (f" ; {ref['excluded_unreliable_sessions']} ecartee(s), horodatages non fiables" if ref.get("excluded_unreliable_sessions") else ""),
              f"- Versions d'AGENTS.md vues dans la periode : " + (", ".join(f"`{v['fingerprint'][:8]}` ({v['chars']} car.)"
                                                                   for v in ref.get("agents_md_versions") or []) or "aucune"),
+             f"- Reglages de fil (modele / effort / niveau de service) : {settings_text(m.get('settings'))}",
              f"- Enregistre le {ref['created_at']} par AgentWatch {ref['agentwatch_version']} (comparaison v{ref['compare_version']})", "",
              "## 1. Mesures (constatees sur la periode)", "",
              "| Mesure | Valeur |", "|---|---|",
@@ -735,7 +825,7 @@ def render_markdown(result: dict[str, Any]) -> str:
              f"({a['first_time'] or '?'} a {a['last_time'] or '?'}) ; tokens d'entree {_n(a.get('input_tokens'))} dont en cache "
              f"{_n(a.get('cached_input_tokens'))}, hors cache {_n((a.get('input_tokens') or 0) - (a.get('cached_input_tokens') or 0))} ; "
              f"sortie {_n(a.get('output_tokens'))}",
-             f"- Methode : {result['comparison']['method']}", "",
+             f"- Methode : {result['comparison']['method']}", *settings_lines(result["comparison"].get("settings")), "",
              "## Ecarts testes (constates seulement si l'intervalle exclut l'absence d'effet)", "",
              "| Mesure | Unite | Avant (nombre) | Apres (nombre) | Apres / avant ou ecart [IC 95 %] | Conclusion |",
              "|---|---|---|---|---|---|"]
