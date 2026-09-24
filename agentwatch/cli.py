@@ -581,15 +581,30 @@ def cmd_compare(args: argparse.Namespace) -> int:
 
 
 def cmd_inspect(args: argparse.Namespace) -> int:
-    """Export detaille d'une session Codex, relu dans ses rollouts (lecture seule), secrets masques, fichier local."""
+    """Export detaille relu dans les journaux du client, secrets masques, fichier local."""
     from agentwatch.collector.store import EventStore
     from agentwatch.reports import inspect as INS
     home = home_dir(args.home)
     cfg = load_config(home)
-    _auto_import_rollouts(home, cfg, EventStore(home, cfg))    # * parts calculees par appel a jour
+    if args.client == "claude-code":
+        from agentwatch.reports import inspect_claude as INS
+    else:
+        _auto_import_rollouts(home, cfg, EventStore(home, cfg))    # * parts calculees par appel a jour
     since, until = _slice_bounds(args)
     ext = "md" if args.format == "markdown" else "jsonl"
     out_path = Path(args.out) if args.out else home / "exports" / f"{args.session[:13]}-{time.strftime('%Y%m%d-%H%M%S')}.{ext}"
+    # * L'export ne doit jamais tronquer son propre journal source (ni un autre
+    #   fil de la session), meme via un lien ou un chemin relatif equivalent.
+    try:
+        for item in INS.session_files(cfg, args.session):
+            source_path = Path(item[0] if isinstance(item, tuple) else item)
+            same = out_path.resolve() == source_path.resolve()
+            if not same and out_path.exists():
+                same = out_path.samefile(source_path)
+            if same:
+                raise ValueError("le fichier de sortie est un journal source : export refuse pour le preserver")
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from None
     out_path.parent.mkdir(parents=True, exist_ok=True)
     try:
         with open(out_path, "w", encoding="utf-8", newline="\n") as fh:
@@ -704,7 +719,10 @@ def cmd_import_transcripts(args: argparse.Namespace) -> int:
     for client, skey in targets:
         s = _import_transcripts(store, cfg, client, skey)
         if s["transcript"]:
-            _out(f"{client}/{skey} : {s['requests']} requetes API, {s['total_tokens']} tokens ; usage attribue a {s['calls_matched']} appel(s), "
+            token_text = f"{s['total_tokens']} tokens" if s['total_tokens'] is not None else "total de tokens non releve"
+            if s['total_tokens'] is None and s.get('observed_tokens') is not None:
+                token_text += f" (somme partielle : {s['observed_tokens']})"
+            _out(f"{client}/{skey} : {s['requests']} requetes API, {token_text} ; usage attribue a {s['calls_matched']} appel(s), "
                  f"{s['calls_without_hook_events']} appel(s) du transcript sans evenement de hook ; {s['subagent_transcripts']} transcript(s) "
                  f"de sous-agent ; {s['written']} observation(s) ecrite(s), {s['skipped']} deja presente(s)")
         else:
@@ -1112,15 +1130,16 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--until", help="seulement avant cet instant (meme format)")
     s.set_defaults(func=cmd_report)
 
-    s = sub.add_parser("inspect", help="export detaille d'une session Codex (consignes, messages, appels, resultats, tokens), "
-                                       "relu dans les rollouts, secrets masques")
+    s = sub.add_parser("inspect", help="export detaille d'une session (messages, appels, resultats, tokens), "
+                                       "relu dans les journaux du client, secrets masques")
+    s.add_argument("--client", choices=SUPPORTED_CLIENTS, default="codex", help="client source (defaut : codex)")
     s.add_argument("--session", required=True, help="identifiant (ou prefixe) du fil racine de la session")
     s.add_argument("--thread", help="seulement ce fil (identifiant ou prefixe)")
     s.add_argument("--day", help="seulement ce jour (AAAA-MM-JJ, jour local)")
     s.add_argument("--since", help="seulement a partir de cet instant (heure locale sans fuseau ; Z ou +02:00 acceptes)")
     s.add_argument("--until", help="seulement avant cet instant")
     s.add_argument("--max-chars", type=int, default=4000, help="texte affiche par champ (defaut 4000) ; au-dela : [tronque]")
-    s.add_argument("--reasoning", action="store_true", help="inclure le raisonnement brut quand Codex l'ecrit en clair")
+    s.add_argument("--reasoning", action="store_true", help="inclure le raisonnement brut quand le client l'ecrit en clair")
     s.add_argument("--no-conclusions", action="store_true", help="ne pas ajouter l'annexe des conclusions des detecteurs")
     s.add_argument("--format", default="markdown", choices=("markdown", "jsonl"))
     s.add_argument("--out", help="fichier de sortie (defaut : <donnees>/exports/<session>-<date>.md)")

@@ -54,7 +54,7 @@ les chemins conserves. Les chemins relatifs au projet sont stockes relatifs.
 
 ## Journaux natifs des clients
 
-- Transcripts Claude Code : lus seulement par `agentwatch import-transcripts` ou si
+- Transcripts Claude Code (collecte d'usage) : lus par `agentwatch import-transcripts` ou si
   `transcripts.auto_import` est vrai, a l'analyse, jamais par le hook. Seuls des nombres et
   des identifiants en sont extraits (usage par requete, `requestId`, `tool_use_id`,
   horodatage, modele) ; ni prompt, ni reponse, ni resultat d'outil. Le fichier n'est jamais
@@ -83,11 +83,14 @@ les chemins conserves. Les chemins relatifs au projet sont stockes relatifs.
   les empreintes HMAC courtes (16 caracteres) des 20 derniers textes de messages de chaque fil et les
   marqueurs deja calcules (longueurs, empreintes) des elements de message en attente de rapprochement ;
   jamais un texte.
-- Export detaille (`agentwatch inspect`) : sur demande explicite seulement, relit les rollouts d'une session et
+- Export detaille (`agentwatch inspect`) : sur demande explicite seulement, relit les rollouts Codex ou les
+  transcripts Claude Code (`--client claude-code`) d'une session et
   ecrit un fichier LOCAL lisible (consignes, messages, arguments, scripts, sorties, erreurs), secrets masques par
   les memes motifs que la collecte, textes bornes. Ce detail n'entre jamais dans le stockage d'AgentWatch, n'est
   envoye nulle part, et reste en clair dans le fichier : a relire avant tout partage. Le raisonnement brut que
-  Codex ecrit parfois en clair n'est inclus qu'avec `--reasoning` ; le raisonnement chiffre reste illisible.
+  le client ecrit en clair n'est inclus qu'avec `--reasoning` ; le raisonnement chiffre reste illisible.
+  L'inspection Claude ne declenche pas l'import des rollouts Codex. Les exports detailles sont distincts
+  des evenements anonymises ; les chemins et references de lignes permettent de retrouver la preuve locale.
 - Sante de la collecte : seules les dates de modification des transcripts Claude Code et
   des rollouts Codex sont lues (jamais leur contenu) pour reperer un client actif sans
   evenement recu.

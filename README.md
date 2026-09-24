@@ -94,6 +94,19 @@ non par octets. `transcripts.auto_import: true` dans `config.json` pour le faire
 python -m agentwatch import-transcripts --latest
 ```
 
+Pour reconstruire une sequence Claude Code meme sans hooks, `inspect` relit les transcripts
+en lecture seule et produit un export local avec messages, arguments, resultats, erreurs,
+requetes et references fichier/ligne. Les secrets sont masques et le raisonnement est omis
+par defaut. Le detail n'entre pas dans le stockage de collecte :
+
+```bash
+python -m agentwatch inspect --client claude-code --session <id> --since <instant> --until <instant> --format jsonl --out sequence.jsonl
+```
+
+Le client par defaut reste Codex. Les tokens absents restent non releves, avec couverture
+explicite ; les parts par appel sont calculees. Des transcripts de reprises peuvent contenir
+le meme historique : ne pas additionner leurs totaux comme des travaux independants.
+
 Codex sans hooks, sans effet sur Codex : ses rollouts (`~/.codex/sessions`) contiennent chaque action
 (code de sortie, duree), l'usage en tokens de chaque reponse et les sous-agents. AgentWatch les lit en
 lecture seule, de facon incrementale et en priorite d'arriere-plan, automatiquement avant `sessions`,

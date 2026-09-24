@@ -130,6 +130,21 @@ Les sous-agents ont leur propre fichier `<session>/subagents/**/agent-<id>.jsonl
 - Rien d'autre que des nombres et des identifiants n'est lu : ni prompt, ni reponse, ni
   resultat d'outil.
 
+Les releves incomplets conservent `null` pour les champs et totaux non etablis. Les sommes
+des seules valeurs presentes (`observed_totals`, `observed_tokens`) sont partielles et
+accompagnees de `usage_coverage` (requetes completes et couverture par champ). Un zero
+explicitement fourni reste un zero. Une derniere ligne sans fin de ligne est ignoree jusqu'a
+sa completion. Les references des requetes et les types de lignes rencontres sont disponibles
+dans le parseur, sans conserver de texte.
+
+L'export explicite `inspect --client claude-code` complete cette collecte de nombres : il
+reconstruit les messages, appels, resultats et frontieres de compaction directement depuis
+les transcripts, meme sans hooks, avec sources fichier/ligne et masquage. Il n'ajoute pas
+ces textes au spool et ne pretend pas fournir la courbe de contexte Codex pour Claude.
+L'entree complete d'une requete Claude est la somme des entrees nouvelles, creations de
+cache et lectures de cache ; les parts attribuees aux outils restent un calcul. Un historique
+recopie dans une autre session n'est pas une nouvelle depense mesuree.
+
 ## Import des rollouts Codex (`agentwatch import-rollouts`)
 
 Sans effet sur Codex : lecture seule de `~/.codex/sessions/AAAA/MM/JJ/rollout-*.jsonl` (ou
