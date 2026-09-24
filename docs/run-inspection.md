@@ -105,3 +105,69 @@ Un resultat negatif est conserve. Les tokens sont les compteurs des requetes
 observees chevauchant la sequence complete, y compris leurs autres actions :
 ils ne sont attribues ni a la lecture ni a sa projection. Des cas qui se
 chevauchent ne s'additionnent pas. Aucun gain reel de session n'est deduit.
+
+## Choisir la restitution selon la question
+
+Commencer par les options deja disponibles, sans ajouter une projection si le
+message suffit. Pour retrouver une notification courte dont on connait la ligne :
+
+```powershell
+python -m agentwatch --home <analyse> inspect --client claude-code --session <session> --thread <fil> --kind notification --source-line <ligne> --max-chars <borne> --format jsonl --out notification.jsonl
+```
+
+Verifier que cette ligne est disponible a la frontiere et prendre `max_chars`
+dans la reference `full_result`. Le filtre porte sur une ligne physique exacte;
+`--contains` selectionne un evenement entier, pas un extrait autour du mot.
+`--role` est le role du message (`assistant`, etc.), pas celui du processus
+`host`/`client`. Pour un complement deja acquis, les options de champs peuvent
+se combiner avec `--kind resultat --source-line <ligne>` et `--through-line`.
+Un champ manquant dans cette selection n'est pas necessairement absent du prefixe.
+
+Le meme rejeu produit maintenant `adaptive` : il conserve directement les
+notifications et les petites sorties, et compare chaque complement a la vue
+par champs existante. Les champs, roles, temps, phases, versions, limites et
+preuves servent a la selection; les valeurs `expected` servent uniquement aux
+verifications finales. Un fait terminal exactement deja notifie n'est pas
+repete dans le complement. Les acquisitions et leurs arguments restent dans
+les deux parcours : aucune commande historique n'est executee ou supprimee.
+
+Une sortie peut contenir un traceback meme si `is_error` est faux. Les erreurs,
+evenements d'echec, structures non interpretees et `retain_result_lines` restent
+directement visibles. Un fragment JSON lifecycle coupe n'est pas reconstruit.
+Les absences sont indiquees separement pour la sequence et pour le prefixe connu;
+elles signifient « non extrait », pas « preuve d'absence ».
+
+```powershell
+python examples/claude_run_replay.py --home <analyse> --session <session> --thread <fil> --cases cas.json --out audit.json --answer <id-du-cas>
+```
+
+`--answer` rend uniquement le parcours adapte du cas demande; `audit.json`
+conserve tous les textes, les projections candidates, leurs vues completes et
+les commandes `detail_commands` sous forme de listes d'arguments executables
+avec `subprocess.run`. Ces commandes inspectent les copies, jamais les outils
+observes. Les preuves sont partagees dans la reponse pour eviter de repeter
+le contexte a chaque complement. Le rendu adapte est donc une composition
+locale de l'inspection existante, pas le texte brut inchange de `--fields-only`.
+
+`rendered_utf8_bytes` distingue le parcours enregistre, la projection fixe,
+le parcours adapte et le direct avec le **meme contexte de preuve**. Une reponse
+directe peut rester plus longue que le texte historique a cause des versions,
+absences et references ajoutees; cet ecart reste visible. La decouverte, les
+arguments, les resultats, les complements, les erreurs et les decisions
+selectionnees sont inclus. Les commandes de detail restees dans l'audit ne sont
+pas comptees comme executees; toute lecture supplementaire doit etre mesuree.
+
+Les temps locaux du rejeu complet et de sa selection sont mesures avec
+`perf_counter`; ce ne sont ni la latence du modele ni celle des acquisitions.
+Les extractions manuelles remplacees comptent les groupes champ/resultat rendus
+par projection, une attribution calculee et non un temps humain observe. Le
+nombre d'acquisitions historiques evitees reste zero. Les complements dits
+necessaires sont ceux qui ajoutent des faits demandes absents des observations
+precedentes de la sequence; cela ne juge pas seul de leur necessite metier.
+
+Une ligne de `retain_result_lines` sans resultat associe est refusee. Si un
+lanceur non reconnu empeche le lien automatique, verifier ses references puis
+declarer explicitement les appels/resultats dans `common_lines`. Le lien garde
+la qualification `manifest_common_line`; il n'enrichit pas automatiquement les
+faits du run. Les differents blocs d'une meme ligne restent distincts. Toutes
+ces references doivent appartenir aux bornes du cas.
