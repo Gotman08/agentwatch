@@ -296,7 +296,8 @@ def read_run(run: dict, *, fields: list[str] | None = None, since: int | None = 
             timeline.append({k: obs[k] for k in ("kind", "source", "uuid", "request_id", "call_source", "call_id", "task_id", "association", "boundary",
                                                 "version", "version_basis", "partial", "is_error", "unparsed_lines",
                                                 "notification_recorded", "reception_observed", "api_consumption_proven", "full_result")}
-                            | {"preview": obs["text"][:min(max_chars, 240)], "categories": dict(categories), "matched_facts": len(facts)})
+                            | {"preview": obs["text"][:min(max_chars, 240)], "categories": dict(categories),
+                               "matched_facts": len(facts), "facts": facts})
     available_fields = sorted({f["field"] for f, _ in all_facts})
     wanted = list(dict.fromkeys(fields or available_fields))
     results = {}

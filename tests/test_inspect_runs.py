@@ -153,6 +153,8 @@ class RunViewTests(unittest.TestCase):
         self.assertEqual(after["fields"]["stream.MB"]["roles"]["host"]["latest_recorded"]["value"], 5014)
         self.assertEqual(after["missing"], [])
         self.assertIsNone(after["timeline"][2]["api_consumption_proven"])
+        self.assertEqual(after["timeline"][2]["facts"][0]["field"], "hitch_ms")
+        self.assertEqual(after["timeline"][2]["facts"][0]["value"], 6719)
 
     def test_time_reversal_uses_physical_frontier_and_preserves_latest_version(self):
         self.call("read", "python t5_view.py Run1")
