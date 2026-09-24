@@ -23,6 +23,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 from pathlib import Path
@@ -84,12 +85,19 @@ def find_transcripts(project_dir: str | None, session_id: str | None, cfg: dict[
 
 
 def _int(v: Any) -> int | None:
-    return int(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else None
+    if isinstance(v, int) and not isinstance(v, bool):
+        return v if v >= 0 else None
+    if isinstance(v, float) and math.isfinite(v) and v >= 0 and v.is_integer():
+        return int(v)
+    return None
 
 
 def parse_transcript(path: Path, max_bytes: int = 0) -> dict[str, Any]:
     """Requetes API du transcript : usage, appels emis, resultats consommes. Aucun texte conserve."""
-    out: dict[str, Any] = {"path": str(path), "requests": [], "agent_id": None, "warnings": [], "lines": 0, "bytes": 0}
+    coverage: dict[str, Any] = {"line_types": {}, "ignored_types": {}, "invalid_json_lines": 0,
+                                "non_object_lines": 0, "incomplete_lines": 0, "compaction_lines": []}
+    out: dict[str, Any] = {"path": str(path), "requests": [], "agent_id": None, "warnings": [], "lines": 0, "bytes": 0,
+                           "coverage": coverage}
     try:
         out["bytes"] = path.stat().st_size
     except OSError as exc:
@@ -105,22 +113,35 @@ def parse_transcript(path: Path, max_bytes: int = 0) -> dict[str, Any]:
     try:
         with path.open("r", encoding="utf-8", errors="replace") as fh:
             for lineno, raw in enumerate(fh, 1):
+                if not raw.endswith("\n"):
+                    coverage["incomplete_lines"] += 1
+                    if len(out["warnings"]) < _MAX_WARNINGS:
+                        out["warnings"].append(f"{path.name}:{lineno} : derniere ligne incomplete ignoree (ecriture en cours possible)")
+                    break
                 raw = raw.strip()
                 if not raw:
                     continue
                 try:
                     o = json.loads(raw)
                 except ValueError:
+                    coverage["invalid_json_lines"] += 1
                     if len(out["warnings"]) < _MAX_WARNINGS:
                         out["warnings"].append(f"{path.name}:{lineno} : ligne JSON invalide ignoree")
                     continue
                 if not isinstance(o, dict):
+                    coverage["non_object_lines"] += 1
                     continue
                 if out["agent_id"] is None and isinstance(o.get("agentId"), str):
                     out["agent_id"] = o["agentId"]
                 msg = o.get("message") if isinstance(o.get("message"), dict) else {}
                 content = msg.get("content")
                 kind = o.get("type")
+                label = kind if isinstance(kind, str) else "(absent)"
+                coverage["line_types"][label] = coverage["line_types"].get(label, 0) + 1
+                if kind not in ("user", "assistant"):
+                    coverage["ignored_types"][label] = coverage["ignored_types"].get(label, 0) + 1
+                if kind == "system" and o.get("subtype") == "compact_boundary":
+                    coverage["compaction_lines"].append(lineno)
                 if kind == "user":
                     if isinstance(content, list):
                         for b in content:
@@ -136,10 +157,13 @@ def parse_transcript(path: Path, max_bytes: int = 0) -> dict[str, Any]:
                         req = {"request_id": rid, "timestamp": o.get("timestamp") if isinstance(o.get("timestamp"), str) else None,
                                "model": msg.get("model") if isinstance(msg.get("model"), str) else None,
                                "usage": {k: _int(usage.get(src)) for k, src in _USAGE_KEYS},
-                               "tool_uses": [], "consumed": pending}
+                               "tool_uses": [], "consumed": pending,
+                               "source_lines": [], "first_line": lineno, "last_line": lineno}
                         pending = []
                         requests[rid] = req
                         order.append(rid)
+                    req["source_lines"].append(lineno)
+                    req["last_line"] = lineno
                     if isinstance(content, list):
                         for b in content:
                             if isinstance(b, dict) and b.get("type") == "tool_use" and isinstance(b.get("id"), str) and b["id"] not in req["tool_uses"]:
@@ -156,28 +180,44 @@ def attribute_calls(parsed: dict[str, Any]) -> dict[str, dict[str, Any]]:
     per: dict[str, dict[str, Any]] = {}
     for req in parsed["requests"]:
         u = req["usage"]
-        inp, cc, outp = u.get("input_tokens") or 0, u.get("cache_creation_tokens") or 0, u.get("output_tokens") or 0
+        inp, cc, outp = u.get("input_tokens"), u.get("cache_creation_tokens"), u.get("output_tokens")
+        uncached = inp + cc if isinstance(inp, int) and isinstance(cc, int) else None
         n = len(req["consumed"])
         for tid in req["consumed"]:
             per.setdefault(tid, {}).update({
-                "uncached_input_tokens": (inp + cc) // n, "input_tokens": inp // n, "cache_creation_tokens": cc // n,
-                "consumers": n, "consumer_request_id": req["request_id"], "consumer_timestamp": req["timestamp"]})
+                "uncached_input_tokens": uncached // n if uncached is not None else None,
+                "input_tokens": inp // n if isinstance(inp, int) else None,
+                "cache_creation_tokens": cc // n if isinstance(cc, int) else None,
+                "consumers": n, "consumer_request_id": req["request_id"], "consumer_timestamp": req["timestamp"],
+                "consumer_source_lines": req.get("source_lines", [])})
         m = len(req["tool_uses"])
         for tid in req["tool_uses"]:
-            per.setdefault(tid, {}).update({"output_tokens": outp // m, "emitters": m, "emitter_request_id": req["request_id"],
-                                            "model": req["model"]})
+            per.setdefault(tid, {}).update({"output_tokens": outp // m if isinstance(outp, int) else None,
+                                            "emitters": m, "emitter_request_id": req["request_id"],
+                                            "emitter_source_lines": req.get("source_lines", []), "model": req["model"]})
     return per
 
 
 def totals(parsed: dict[str, Any]) -> dict[str, Any]:
-    t: dict[str, Any] = {k: 0 for k, _ in _USAGE_KEYS}
-    for req in parsed["requests"]:
-        for k, _ in _USAGE_KEYS:
-            v = req["usage"].get(k)
-            if isinstance(v, int):
-                t[k] += v
-    t["requests"] = len(parsed["requests"])
-    t["total_tokens"] = sum(t[k] for k, _ in _USAGE_KEYS)
+    """Totaux complets, ou None ; les sommes partielles restent identifiees comme telles.
+
+    Un zero ecrit par le client est connu. Un champ absent (ou invalide) n'est jamais un zero.
+    `missing_requests` compte les requetes auxquelles manque au moins un champ d'usage.
+    """
+    requests = parsed["requests"]
+    n = len(requests)
+    values = {k: [r["usage"][k] for r in requests if isinstance(r["usage"].get(k), int)] for k, _ in _USAGE_KEYS}
+    observed = {k: sum(v) if v else None for k, v in values.items()}
+    complete = sum(all(isinstance(r["usage"].get(k), int) for k, _ in _USAGE_KEYS) for r in requests)
+    has_values = any(values.values())
+    t: dict[str, Any] = {k: sum(v) if n and len(v) == n else None for k, v in values.items()}
+    t["requests"] = n
+    t["total_tokens"] = sum(t[k] for k, _ in _USAGE_KEYS) if n and complete == n else None
+    t["observed_totals"] = observed
+    t["observed_tokens"] = sum(v for v in observed.values() if v is not None) if has_values else None
+    t["usage_coverage"] = {"requests": n, "complete_requests": complete, "missing_requests": n - complete,
+                           "field_requests": {k: len(v) for k, v in values.items()},
+                           "status": "complete" if n and complete == n else "partial" if has_values else "missing"}
     return t
 
 
@@ -207,23 +247,28 @@ def build_observations(client: str, session_id: str | None, view: SessionView, p
                        "usage": {"scope": "call", "source": SOURCE, "method": METHOD, "cache_read_tokens": None,
                                  **{k: row.get(k) for k in ("input_tokens", "output_tokens", "cache_creation_tokens", "uncached_input_tokens",
                                                             "consumers", "emitters", "consumer_request_id", "emitter_request_id")}}})
-            ev["event_id"] = sha256_hex(f"transcript|{session_id}|{tid}|{row.get('consumer_request_id')}|{row.get('emitter_request_id')}|"
-                                        f"{row.get('uncached_input_tokens')}|{row.get('output_tokens')}".encode("utf-8"))[:32]
             ev["evidence"]["import_file"] = os.path.basename(parsed["path"])
+            ev["evidence"]["usage_sources"] = {part: {"file": os.path.basename(parsed["path"]), "lines": row.get(f"{part}_source_lines", [])}
+                                               for part in ("emitter", "consumer")}
+            # Versionner l'observation : une relecture corrige aussi les anciennes parts qui confondaient None et 0.
+            ev["event_id"] = sha256_hex(f"transcript-v2|{session_id}|{tid}|{json.dumps(ev['usage'], sort_keys=True)}|"
+                                        f"{json.dumps(ev['evidence']['usage_sources'], sort_keys=True)}".encode("utf-8"))[:32]
             events.append(ev)
         if parsed is not parsed_main:
             agents[parsed["agent_id"] or os.path.basename(parsed["path"])[len("agent-"):-len(".jsonl")]] = totals(parsed)
     tot = totals(parsed_main)
     meta = {"transcript": os.path.basename(parsed_main["path"]), "transcript_bytes": parsed_main["bytes"],
-            "calls_matched": matched, "calls_without_hook_events": unmatched, "subagent_transcripts": len(parsed_subs), "agents": agents}
+            "calls_matched": matched, "calls_without_hook_events": unmatched, "subagent_transcripts": len(parsed_subs), "agents": agents,
+            "parser_coverage": parsed_main.get("coverage", {})}
     sev = S.empty_event()
     sev.update({"source": S.SOURCE_IMPORT, "client": client, "session_id": session_id, "phase": S.PHASE_USAGE,
                 "hook_event_name": "transcript_usage", "model": next((r["model"] for r in parsed_main["requests"] if r["model"]), None),
                 "usage": {"scope": "session", "source": SOURCE, **tot}, "session_meta": meta})
     sev["event_id"] = sha256_hex(f"transcript-session|{session_id}|{json.dumps(tot, sort_keys=True)}|"
-                                 f"{json.dumps(agents, sort_keys=True)}".encode("utf-8"))[:32]
+                                 f"{json.dumps(meta, sort_keys=True)}".encode("utf-8"))[:32]
     events.append(sev)
-    return events, {"requests": tot["requests"], "total_tokens": tot["total_tokens"], "calls_matched": matched,
+    return events, {"requests": tot["requests"], "total_tokens": tot["total_tokens"], "observed_tokens": tot["observed_tokens"],
+                    "usage_coverage": tot["usage_coverage"], "calls_matched": matched,
                     "calls_without_hook_events": unmatched, "subagent_transcripts": len(parsed_subs),
                     "warnings": list(parsed_main["warnings"]) + [w for p in parsed_subs for w in p["warnings"]]}
 
@@ -232,7 +277,8 @@ def import_session(store: EventStore, cfg: dict[str, Any], client: str, skey: st
                    existing_ids: set[str]) -> dict[str, Any]:
     """Importe l'usage du transcript d'une session dans le spool (idempotent : identifiants derives du contenu)."""
     summary: dict[str, Any] = {"client": client, "session": skey, "transcript": None, "subagent_transcripts": 0, "requests": 0,
-                               "total_tokens": 0, "calls_matched": 0, "calls_without_hook_events": 0, "written": 0, "skipped": 0,
+                               "total_tokens": None, "observed_tokens": None, "usage_coverage": None,
+                               "calls_matched": 0, "calls_without_hook_events": 0, "written": 0, "skipped": 0,
                                "warnings": []}
     if client != CLIENT_CLAUDE_CODE:
         summary["warnings"].append("transcripts lus pour claude-code seulement (rollouts Codex non lus)")
@@ -254,7 +300,7 @@ def import_session(store: EventStore, cfg: dict[str, Any], client: str, skey: st
         store.write_event(ev)
         existing_ids.add(ev["event_id"])
         summary["written"] += 1
-    summary.update({"transcript": str(main), **{k: info[k] for k in ("requests", "total_tokens", "calls_matched",
+    summary.update({"transcript": str(main), **{k: info[k] for k in ("requests", "total_tokens", "observed_tokens", "usage_coverage", "calls_matched",
                                                                    "calls_without_hook_events", "subagent_transcripts")}})
     summary["warnings"].extend(info["warnings"])
     return summary

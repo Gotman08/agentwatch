@@ -112,6 +112,9 @@ def tokens_cost_text(cost: dict[str, Any]) -> str:
     if not isinstance(tok, dict):
         return "tokens : aucun releve (agentwatch import-transcripts ou import-rollouts)"
     src = {"claude-code:transcript": "transcript", "codex:rollout": "rollout"}.get(str(tok.get("source")), str(tok.get("source")))
+    if tok.get("total") is None:
+        return (f"repartition partielle : {tok.get('observed_total')} tokens sur les seules composantes connues ; total non releve "
+                f"({tok.get('complete_for', 0)}/{cost.get('calls')} appels avec entree et sortie ; releves par reponse : {src})")
     return (f"{tok['total']} tokens repartis par calcul sur ces appels ({tok['uncached_input']} d'entree non mise en cache + "
             f"{tok['output']} de sortie ; {tok['known_for']}/{cost.get('calls')} appels ; releves par reponse : {src})")
 

@@ -138,7 +138,8 @@ def _collect_sessions(store: EventStore, cfg: dict[str, Any], client: str | None
             "first_time": view.first_time, "last_time": view.last_time, "last_ns": view.last_ns or 0,
             "calls": len(view.calls), "errors": sum(1 for x in view.calls if x.status in _ERRORS),
             "findings": findings, "mcp_servers": mcp_servers_of(view.calls),
-            "tokens": int(session_usage.get("total_tokens") or 0) if session_usage else None,
+            "tokens": (session_usage["total_tokens"] if session_usage and
+                       isinstance(session_usage.get("total_tokens"), int) and not isinstance(session_usage["total_tokens"], bool) else None),
         })
     rows.sort(key=lambda r: r["last_ns"], reverse=True)
     return rows, skipped

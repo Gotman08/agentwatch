@@ -391,7 +391,10 @@ def session_tokens(view: SessionView) -> dict[str, Any] | None:
         return None
     rollout = [u for u in usages if u.get("source") == _ROLLOUT_SOURCE and u.get("scope") != "response"]
     if not rollout:
-        best = max(usages, key=lambda u: int(u.get("requests") or 0))
+        # A nombre de requetes egal, un reimport corrige peut completer ou invalider un ancien releve.
+        # Preferer les imports qui distinguent absence/zero, puis le plus recent ; garder les anciens evenements.
+        _, best = max(enumerate(usages), key=lambda item: (int(item[1].get("requests") or 0),
+                                                         bool(item[1].get("usage_coverage")), item[0]))
         return dict(best)
     per_thread: dict[str, dict[str, Any]] = {}
     for u in rollout:
@@ -443,10 +446,20 @@ def _usage_summary(view: SessionView) -> dict[str, Any]:
             "threads": session["threads"],
         }
     if session:
+        coverage = session.get("usage_coverage") or {}
+        if coverage.get("status") in ("missing", "partial"):
+            observed = session.get("observed_tokens")
+            detail = (f"somme partielle des champs releves : {observed} tokens" if isinstance(observed, int)
+                      else "aucun champ d'usage releve")
+            status = (f"usage non releve completement dans le transcript : {session.get('requests')} requetes API, "
+                      f"total non releve ; {detail} ; {coverage.get('complete_requests', 0)}/{session.get('requests')} "
+                      "requetes avec les quatre champs d'usage")
+        else:
+            status = (f"mesure depuis le transcript : {session.get('requests')} requetes API, {session.get('total_tokens')} tokens "
+                      f"(entree {session.get('input_tokens')}, creation de cache {session.get('cache_creation_tokens')}, "
+                      f"lecture de cache {session.get('cache_read_tokens')}, sortie {session.get('output_tokens')})")
         return {
-            "status": (f"mesure depuis le transcript : {session.get('requests')} requetes API, {session.get('total_tokens')} tokens "
-                       f"(entree {session.get('input_tokens')}, creation de cache {session.get('cache_creation_tokens')}, "
-                       f"lecture de cache {session.get('cache_read_tokens')}, sortie {session.get('output_tokens')})"),
+            "status": status,
             "note": "comptes tels qu'ecrits par le client dans son transcript, dedoublonnes par requete",
             "kinds": {
                 "measured": "par requete API : comptes ecrits par le client dans son transcript, sommes pour la session",

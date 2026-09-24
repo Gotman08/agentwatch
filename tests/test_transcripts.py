@@ -17,6 +17,10 @@ from agentwatch.config import load_config
 from agentwatch.core.session import load_session
 from agentwatch.detectors import run_detectors
 from agentwatch.selftest import Synth
+from agentwatch.reports.stats import session_tokens
+from agentwatch.detectors.base import observed_cost, tokens_of
+from agentwatch.reports.labels import tokens_cost_text
+from agentwatch.core import schema as S
 
 
 def _assistant(rid: str, usage: dict, blocks: list[dict], n_lines: int = 1, agent: str | None = None) -> list[str]:
@@ -160,6 +164,142 @@ class TranscriptTests(unittest.TestCase):
         with redirect_stdout(buf):
             self.assertEqual(cli.main(["--home", str(self.home), "import-transcripts", "--all"]), 0)
         self.assertIn("deja presente(s)", buf.getvalue())
+
+    def test_missing_usage_stays_unknown_through_import_report_and_trends(self) -> None:
+        # Missing readings must not become the measured value zero at any consumer.
+        self.main.write_text("\n".join([
+            *_assistant("missing1", {}, [{"type": "tool_use", "id": "toolu_0001"}]),
+            _result("toolu_0001"),
+            *_assistant("missing2", {}, []),
+        ]) + "\n", encoding="utf-8")
+        parsed = parse_transcript(self.main)
+        attributed = attribute_calls(parsed)["toolu_0001"]
+        self.assertIsNone(attributed["output_tokens"])
+        self.assertIsNone(attributed["uncached_input_tokens"])
+        total = totals(parsed)
+        self.assertIsNone(total["total_tokens"])
+        self.assertIsNone(total["observed_tokens"])
+        self.assertEqual(total["usage_coverage"]["status"], "missing")
+        self.assertEqual(total["usage_coverage"]["missing_requests"], 2)
+        store = EventStore(self.home, self.cfg)
+        view = load_session(store, "claude-code", "tx", self.cfg)
+        summary = import_session(store, self.cfg, "claude-code", "tx", view, set())
+        self.assertIsNone(summary["total_tokens"])
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            self.assertEqual(cli.main(["--home", str(self.home), "report", "--session", "tx", "--format", "json"]), 0)
+        report = json.loads(buf.getvalue())
+        self.assertIsNone(report["stats"]["usage"]["session"]["total_tokens"])
+        self.assertIn("non releve", report["stats"]["usage"]["status"])
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            self.assertEqual(cli.main(["--home", str(self.home), "trends", "--days", "0", "--format", "json"]), 0)
+        trends = json.loads(buf.getvalue())
+        self.assertIsNone(trends["tokens"])
+        self.assertIsNone(trends["by_session"][0]["tokens"])
+
+    def test_partial_usage_keeps_observed_sums_separate_from_totals(self) -> None:
+        self.main.write_text("\n".join([
+            *_assistant("partial1", {"input_tokens": 2, "output_tokens": 4}, [{"type": "tool_use", "id": "toolu_0001"}]),
+            _result("toolu_0001"),
+            *_assistant("partial2", {"input_tokens": 3, "cache_creation_input_tokens": 5,
+                                        "cache_read_input_tokens": 7}, []),
+        ]) + "\n", encoding="utf-8")
+        parsed = parse_transcript(self.main)
+        total = totals(parsed)
+        self.assertEqual(total["input_tokens"], 5)
+        self.assertIsNone(total["output_tokens"])
+        self.assertIsNone(total["total_tokens"])
+        self.assertEqual(total["observed_tokens"], 21)
+        self.assertEqual(total["observed_totals"]["output_tokens"], 4)
+        self.assertEqual(total["usage_coverage"]["status"], "partial")
+        self.assertEqual(total["usage_coverage"]["field_requests"]["output_tokens"], 1)
+        attributed = attribute_calls(parsed)["toolu_0001"]
+        self.assertEqual(attributed["output_tokens"], 4)
+        self.assertEqual(attributed["uncached_input_tokens"], 8)
+
+    def test_explicit_zero_remains_measured_zero(self) -> None:
+        usage = {"input_tokens": 0, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0, "output_tokens": 0}
+        self.main.write_text("\n".join(_assistant("zero", usage, [{"type": "tool_use", "id": "toolu_0001"}])) + "\n", encoding="utf-8")
+        parsed = parse_transcript(self.main)
+        total = totals(parsed)
+        self.assertEqual(total["total_tokens"], 0)
+        self.assertEqual(total["observed_tokens"], 0)
+        self.assertEqual(total["usage_coverage"]["status"], "complete")
+        self.assertEqual(attribute_calls(parsed)["toolu_0001"]["output_tokens"], 0)
+
+    def test_parser_coverage_and_request_line_references_keep_no_text(self) -> None:
+        rows = [*_assistant("refs", {}, [], n_lines=2),
+                json.dumps({"type": "system", "subtype": "compact_boundary", "content": "SECRET SUMMARY"}),
+                json.dumps({"type": "progress", "data": "SECRET PROGRESS"}), "{bad-json", "[]"]
+        self.main.write_text("\n".join(rows) + "\n", encoding="utf-8")
+        parsed = parse_transcript(self.main)
+        self.assertEqual(parsed["requests"][0]["source_lines"], [1, 2])
+        self.assertEqual((parsed["requests"][0]["first_line"], parsed["requests"][0]["last_line"]), (1, 2))
+        self.assertEqual(parsed["coverage"]["line_types"], {"assistant": 2, "system": 1, "progress": 1})
+        self.assertEqual(parsed["coverage"]["ignored_types"], {"system": 1, "progress": 1})
+        self.assertEqual(parsed["coverage"]["invalid_json_lines"], 1)
+        self.assertEqual(parsed["coverage"]["non_object_lines"], 1)
+        self.assertEqual(parsed["coverage"]["compaction_lines"], [3])
+        self.assertNotIn("SECRET", json.dumps(parsed))
+
+    def test_reimport_same_request_count_replaces_older_missing_usage(self) -> None:
+        self.main.write_text("\n".join(_assistant("same", {}, [])) + "\n", encoding="utf-8")
+        store = EventStore(self.home, self.cfg)
+        view = load_session(store, "claude-code", "tx", self.cfg)
+        import_session(store, self.cfg, "claude-code", "tx", view, set())
+        self.main.write_text("\n".join(_assistant("same", {"input_tokens": 1, "cache_creation_input_tokens": 0,
+                                                           "cache_read_input_tokens": 0, "output_tokens": 2}, [])) + "\n", encoding="utf-8")
+        view = load_session(store, "claude-code", "tx", self.cfg)
+        existing = {e.get("event_id") for e in store.read_session_events("claude-code", "tx")[0]}
+        import_session(store, self.cfg, "claude-code", "tx", view, existing)
+        current = session_tokens(load_session(store, "claude-code", "tx", self.cfg))
+        self.assertEqual(current["total_tokens"], 3)
+
+    def test_invalid_token_counts_do_not_become_measured_values(self) -> None:
+        self.main.write_text("\n".join(_assistant("invalid", {"input_tokens": -1, "cache_creation_input_tokens": True,
+                                                              "cache_read_input_tokens": float("inf"), "output_tokens": 1.5}, [])) + "\n", encoding="utf-8")
+        total = totals(parse_transcript(self.main))
+        self.assertIsNone(total["total_tokens"])
+        self.assertEqual(total["usage_coverage"]["status"], "missing")
+
+    def test_incomplete_last_line_is_not_an_observed_request(self) -> None:
+        self.main.write_text("\n".join(_assistant("partial-write", {"input_tokens": 2, "output_tokens": 3}, [])), encoding="utf-8")
+        parsed = parse_transcript(self.main)
+        self.assertEqual(parsed["requests"], [])
+        self.assertEqual(parsed["coverage"]["incomplete_lines"], 1)
+        self.assertTrue(any("incomplete" in w for w in parsed["warnings"]))
+
+    def test_partial_call_cost_does_not_invent_its_missing_component(self) -> None:
+        store = EventStore(self.home, self.cfg)
+        call = load_session(store, "claude-code", "tx", self.cfg).calls[0]
+        call.usage = {"source": "claude-code:transcript", "uncached_input_tokens": None, "output_tokens": 5}
+        cost = observed_cost([call])
+        self.assertIsNone(tokens_of(call))
+        self.assertIsNone(cost["tokens"]["total"])
+        self.assertIsNone(cost["tokens"]["uncached_input"])
+        self.assertEqual(cost["tokens"]["observed_total"], 5)
+        self.assertEqual(cost["tokens"]["complete_for"], 0)
+        self.assertIn("partielle", tokens_cost_text(cost))
+        self.assertNotIn("None", tokens_cost_text(cost))
+
+    def test_reimport_prefers_coverage_over_legacy_false_zero(self) -> None:
+        self.main.write_text("\n".join(_assistant("legacy", {}, [])) + "\n", encoding="utf-8")
+        store = EventStore(self.home, self.cfg)
+        old = S.empty_event()
+        old.update({"source": S.SOURCE_IMPORT, "client": "claude-code", "session_id": "tx", "phase": S.PHASE_USAGE,
+                    "event_id": "legacy-usage", "usage": {"scope": "session", "source": "claude-code:transcript",
+                    "requests": 1, "input_tokens": 0, "cache_creation_tokens": 0, "cache_read_tokens": 0,
+                    "output_tokens": 0, "total_tokens": 0}})
+        store.write_event(old)
+        view = load_session(store, "claude-code", "tx", self.cfg)
+        self.assertEqual(session_tokens(view)["total_tokens"], 0, "ancien import avant correction")
+        import_session(store, self.cfg, "claude-code", "tx", view, {"legacy-usage"})
+        current = session_tokens(load_session(store, "claude-code", "tx", self.cfg))
+        self.assertIsNone(current["total_tokens"])
+        self.assertEqual(current["usage_coverage"]["status"], "missing")
+        self.assertTrue(any(e.get("event_id") == "legacy-usage" for e in store.read_session_events("claude-code", "tx")[0]),
+                        "la correction ajoute une observation sans effacer l'historique")
 
 
 if __name__ == "__main__":

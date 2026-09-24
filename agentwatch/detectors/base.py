@@ -60,13 +60,12 @@ MEASURED_SOURCES = (TRANSCRIPT_SOURCE, ROLLOUT_SOURCE)
 
 
 def tokens_of(call: Call) -> int | None:
-    """Tokens mesures d'un appel (transcript Claude Code ou rollout Codex) : entree non mise en cache + sortie. None sinon."""
+    """Parts calculees d'un appel : entree non mise en cache + sortie, None si une composante manque."""
     u = call.usage
     if not isinstance(u, dict) or u.get("source") not in MEASURED_SOURCES:
         return None
     parts = [u.get("uncached_input_tokens"), u.get("output_tokens")]
-    known = [p for p in parts if isinstance(p, int)]
-    return sum(known) if known else None
+    return sum(parts) if all(isinstance(p, int) and not isinstance(p, bool) for p in parts) else None
 
 
 def observed_cost(calls: Iterable[Call]) -> dict[str, Any]:
@@ -84,16 +83,25 @@ def observed_cost(calls: Iterable[Call]) -> dict[str, Any]:
     recon_dur = [c.duration_ms for c in recon]
     # * Base de la reconstruction : entre deux hooks (leur surcout est compris), ou entre deux horodatages du rollout.
     bases = {"rollout" if c.duration_source == DURATION_RECONSTRUCTED_ROLLOUT else "hooks" for c in recon}
-    measured = [(c, tokens_of(c)) for c in calls]
-    with_tokens = [(c, t) for c, t in measured if t is not None]
+    with_tokens = [c for c in calls if isinstance(c.usage, dict) and c.usage.get("source") in MEASURED_SOURCES
+                   and any(isinstance(c.usage.get(k), int) and not isinstance(c.usage[k], bool)
+                           for k in ("uncached_input_tokens", "output_tokens"))]
     tokens: Any = "non mesure"
     if with_tokens:
+        components = {name: [c.usage[key] for c in with_tokens if isinstance(c.usage.get(key), int)
+                              and not isinstance(c.usage[key], bool)]
+                      for name, key in (("uncached_input", "uncached_input_tokens"), ("output", "output_tokens"))}
+        observed = {k: sum(v) if v else None for k, v in components.items()}
+        complete = sum(tokens_of(c) is not None for c in with_tokens)
         tokens = {
-            "total": sum(t for _, t in with_tokens),
-            "uncached_input": sum(int((c.usage or {}).get("uncached_input_tokens") or 0) for c, _ in with_tokens),
-            "output": sum(int((c.usage or {}).get("output_tokens") or 0) for c, _ in with_tokens),
+            "total": sum(tokens_of(c) for c in with_tokens) if complete == len(with_tokens) else None,
+            **{k: sum(v) if len(v) == len(with_tokens) else None for k, v in components.items()},
+            "observed_total": sum(v for v in observed.values() if v is not None),
+            "observed_components": observed,
             "known_for": len(with_tokens),
-            "source": "+".join(sorted({str((c.usage or {}).get("source")) for c, _ in with_tokens})),
+            "complete_for": complete,
+            "component_known_for": {k: len(v) for k, v in components.items()},
+            "source": "+".join(sorted({str(c.usage.get("source")) for c in with_tokens})),
             # * Une part par appel est un CALCUL d'AgentWatch a partir des releves par reponse : ni une mesure par appel,
             #   ni une estimation depuis des octets. Aucune donnee de facturation n'entre ici.
             "kind": "allocated",
