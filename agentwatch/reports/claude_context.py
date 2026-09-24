@@ -308,11 +308,15 @@ def analyse(cfg: dict, home: str, sessions: list[str]) -> dict:
     for window in windows.values():
         rows = window.pop("requests")
         points = [r for r in rows if r["input_total"] is not None]
-        window.update({"request_ids": [r["request_id"] for r in rows], "first_time": rows[0]["timestamp"], "last_time": rows[-1]["timestamp"],
-                       "first_source": rows[0]["sources"][0], "last_source": rows[-1]["sources"][0],
-                       "usage": T.totals({"requests": rows}), "input_initial": rows[0]["input_total"], "input_last": rows[-1]["input_total"],
+        dates = [I._ns(r["timestamp"]) for r in rows]
+        ordered = all(ns is not None for ns in dates) and len(set(dates)) == len(dates)
+        first_input, last_input = (rows[0]["input_total"], rows[-1]["input_total"]) if ordered else (None, None)
+        window.update({"request_ids": [r["request_id"] for r in rows], "temporal_order_complete": ordered,
+                       "first_time": rows[0]["timestamp"] if ordered else None, "last_time": rows[-1]["timestamp"] if ordered else None,
+                       "first_source": rows[0]["sources"][0] if ordered else None, "last_source": rows[-1]["sources"][0] if ordered else None,
+                       "usage": T.totals({"requests": rows}), "input_initial": first_input, "input_last": last_input,
                        "input_peak": max((r["input_total"] for r in points), default=None),
-                       "growth_first_to_last": rows[-1]["input_total"] - rows[0]["input_total"] if rows[0]["input_total"] is not None and rows[-1]["input_total"] is not None else None,
+                       "growth_first_to_last": last_input - first_input if first_input is not None and last_input is not None else None,
                        "boundary": comp_by_id.get(window["boundary_id"]),
                        "negative_deltas": sum(r["input_delta"] is not None and r["input_delta"] < 0 for r in rows)})
         lo, hi = window["content_interval"]["since_ns"], window["content_interval"]["until_ns"]
@@ -325,7 +329,8 @@ def analyse(cfg: dict, home: str, sessions: list[str]) -> dict:
                 candidates.append({**content, "window_sources": [o["source"] for o in matched]})
         candidates.sort(key=lambda c: min(s["ns"] for s in c["window_sources"]))
         first_ns = I._ns(window["first_time"])
-        window["content_before_first_request"] = sum(first_ns is not None and any(s["ns"] < first_ns for s in c["window_sources"]) for c in candidates)
+        window["content_before_first_request"] = (sum(any(s["ns"] < first_ns for s in c["window_sources"]) for c in candidates)
+                                                  if first_ns is not None else None)
         window["content_counts"] = dict(Counter(c["kind"] for c in candidates))
         window["content_bytes"] = {kind: sum(c["bytes"] for c in candidates if c["kind"] == kind and c["bytes"] is not None) for kind in window["content_counts"]}
         window["content_bytes_unknown_counts"] = dict(Counter(c["kind"] for c in candidates if c["bytes"] is None))

@@ -169,6 +169,11 @@ class ClaudeContextTests(unittest.TestCase):
         result = self.run_analysis(["one"])
         self.assertIsNone(result["requests"][1]["input_delta"])
         self.assertIsNone(result["requests"][2]["input_delta"])
+        self.assertFalse(result["windows"][0]["temporal_order_complete"])
+        self.assertIsNone(result["windows"][0]["growth_first_to_last"])
+        self.assertIsNone(result["windows"][0]["input_last"])
+        self.assertIsNone(result["windows"][0]["content_before_first_request"])
+        self.assertIsNone(result["windows"][0]["first_source"])
 
     def test_configuration_change_separates_segments_and_temporal_content(self):
         a = response("r1", 1, "a", "u")
