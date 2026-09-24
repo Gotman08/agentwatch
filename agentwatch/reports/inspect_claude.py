@@ -23,6 +23,22 @@ _META_TYPES = {"file-history-snapshot", "queue-operation", "last-prompt", "custo
                "agent-color", "tag", "pr-link"}
 
 
+def _normalize_kinds(kinds: list[str] | str | None) -> tuple[str, ...] | None:
+    """Normalise la forme pratique du filtre sans inventer d'alias de types."""
+    if kinds is None:
+        return None
+    values = [kinds] if isinstance(kinds, str) else kinds
+    if not isinstance(values, (list, tuple)) or any(not isinstance(value, str) for value in values):
+        raise ValueError("kinds doit etre une chaine, une liste de chaines ou nul")
+    return tuple(dict.fromkeys(values))
+
+
+def _validate_filter_text(value: str | None, name: str) -> str | None:
+    if value is not None and not isinstance(value, str):
+        raise ValueError(f"{name} doit etre une chaine ou nul")
+    return value
+
+
 def session_files(cfg: dict[str, Any], session: str) -> list[Path]:
     """Trouve une racine par identifiant/prefixe non ambigu, puis ses sous-agents."""
     if not session or any(c in session for c in "*?[]/\\"):
@@ -100,7 +116,64 @@ def _scan(path: Path) -> dict[str, Any]:
 
 
 class ClaudeExporter(Exporter):
-    """Utilise le bornage, le masquage et les rendus existants pour les deux formats."""
+    """Utilise le bornage, le masquage et les rendus existants pour les deux formats.
+
+    Les filtres sont appliques aux enregistrements canoniques avant que ``text``
+    ne borne un champ. Ils ne font donc pas passer une mesure de tokens pour une
+    mesure de la selection; les releves sont gardes dans le resume de l'export.
+    """
+
+    def __init__(self, out: IO[str], key: bytes, *, kinds: list[str] | str | None = None,
+                 role: str | None = None, contains: str | None = None, source_line: int | None = None,
+                 **kwargs: Any) -> None:
+        super().__init__(out, key, **kwargs)
+        self.filter_kinds = _normalize_kinds(kinds)
+        self.filter_role = _validate_filter_text(role, "role")
+        self.filter_contains = _validate_filter_text(contains, "contains")
+        if source_line is not None and (isinstance(source_line, bool) or not isinstance(source_line, int) or source_line < 1):
+            raise ValueError("source_line doit etre un entier positif")
+        self.filter_source_line = source_line
+        self.filter_active = any(value is not None for value in
+                                 (self.filter_kinds, self.filter_role, self.filter_contains, self.filter_source_line))
+        self.selection: dict[str, int] = {"examined": 0, "selected": 0, "excluded": 0}
+        self.thread_selection: dict[str, int] = {"examined": 0, "selected": 0, "excluded": 0}
+
+    def begin_thread_selection(self) -> None:
+        self.thread_selection = {"examined": 0, "selected": 0, "excluded": 0}
+
+    def selection_snapshot(self) -> dict[str, int]:
+        return dict(self.thread_selection)
+
+    def selection_filters(self) -> dict[str, Any]:
+        # The query is metadata returned to the caller as well as documentation
+        # of the scope. Mask it before it can be copied into a report by a caller.
+        query = P.mask_secrets(self.filter_contains, self.key) if self.filter_contains is not None else None
+        return {"kinds": list(self.filter_kinds) if self.filter_kinds is not None else None,
+                "role": self.filter_role, "contains": query, "source_line": self.filter_source_line}
+
+    def _unbounded_text(self, value: Any) -> str:
+        """Rendu masque mais non borne utilise exclusivement pour la selection."""
+        filtered = self._omit_reasoning(value)
+        masked = self._mask_tree(filtered)
+        if masked is None:
+            return ""
+        if isinstance(masked, str):
+            return masked
+        return json.dumps(masked, ensure_ascii=False, indent=1)
+
+    def _matches(self, src: dict[str, Any], kind: str, data: dict[str, Any],
+                 text_fields: tuple[str, ...], event_role: str | None) -> bool:
+        if self.filter_kinds is not None and kind not in self.filter_kinds:
+            return False
+        if self.filter_role is not None and event_role != self.filter_role:
+            return False
+        if self.filter_source_line is not None and src.get("line") != self.filter_source_line:
+            return False
+        if self.filter_contains is not None:
+            rendered = "\n".join(self._unbounded_text(data.get(field)) for field in text_fields if field in data)
+            if self.filter_contains.casefold() not in rendered.casefold():
+                return False
+        return True
 
     def _omit_reasoning(self, value: Any) -> Any:
         if isinstance(value, dict):
@@ -161,8 +234,19 @@ class ClaudeExporter(Exporter):
         return body, flags
 
     def emit(self, src: dict[str, Any], kind: str, title: str, data: dict[str, Any],
-             flags: list[str] | None = None, *, text_fields: tuple[str, ...] = ()) -> None:
+             flags: list[str] | None = None, *, text_fields: tuple[str, ...] = (),
+             selectable: bool = True, event_role: str | None = None) -> None:
         flags = list(flags or [])
+        if selectable:
+            self.selection["examined"] += 1
+            self.thread_selection["examined"] += 1
+            role = event_role if event_role is not None else data.get("role")
+            if not self._matches(src, kind, data, text_fields, role if isinstance(role, str) else None):
+                self.selection["excluded"] += 1
+                self.thread_selection["excluded"] += 1
+                return
+            self.selection["selected"] += 1
+            self.thread_selection["selected"] += 1
         safe: dict[str, Any] = {}
         for key, value in data.items():
             if key in text_fields or isinstance(value, str):
@@ -239,7 +323,10 @@ def _line(ex: ClaudeExporter, obj: Any, src: dict[str, Any], info: dict[str, Any
                     ex.emit(bsrc, "resultat", f"Resultat {cid} (is_error={block.get('is_error')})",
                             {**base, "call_id": cid, "is_error": block.get("is_error"), "content": block.get("content"),
                              "call_source": call, "elapsed_from_timestamps_ms": elapsed,
-                             "attribution": ex.computed.get(lookup)}, bflags, text_fields=("content",))
+                             "attribution": ex.computed.get(lookup)}, bflags, text_fields=("content",),
+                            # Un bloc tool_result est porte par une ligne user,
+                            # mais ne constitue pas un texte ecrit par l'utilisateur.
+                            event_role="tool")
                 elif bkind in ("thinking", "redacted_thinking"):
                     data = {**base, "type": bkind}
                     if ex.reasoning and bkind == "thinking":
@@ -279,12 +366,15 @@ def _line(ex: ClaudeExporter, obj: Any, src: dict[str, Any], info: dict[str, Any
 
 def export_session(cfg: dict[str, Any], home: str, session: str, out: IO[str], *, thread: str | None = None,
                    since: int | None = None, until: int | None = None, max_chars: int = 4000, reasoning: bool = False,
-                   fmt: str = "markdown", conclusions: bool = True) -> dict[str, Any]:
+                   fmt: str = "markdown", conclusions: bool = True, kinds: list[str] | str | None = None,
+                   role: str | None = None, contains: str | None = None, source_line: int | None = None) -> dict[str, Any]:
     """Export du principal et de ses sous-agents; le stockage/hooks ne sont pas requis.
 
     La periode est [since, until). Une requete est datee a son premier bloc par
     parse_transcript; les evenements sans date restent visibles, mais leurs mesures
-    sont exclues des totaux d'une periode et comptabilisees separement.
+    sont exclues des totaux d'une periode et comptabilisees separement. Les
+    filtres ``kinds``, ``role``, ``contains`` et ``source_line`` sont conjonctifs;
+    ``contains`` cherche litteralement dans le rendu masque avant bornage.
     """
     if fmt not in ("markdown", "jsonl"):
         raise ValueError("format d'export inconnu")
@@ -305,17 +395,27 @@ def export_session(cfg: dict[str, Any], home: str, session: str, out: IO[str], *
         infos = [i for i in infos if i["thread_id"].startswith(thread) or i["path"].stem.startswith(thread)]
         if len(infos) != 1:
             raise ValueError(f"fil Claude Code introuvable ou prefixe ambigu : {thread!r}")
-    ex = ClaudeExporter(out, P.ensure_key(home), max_chars=max_chars, reasoning=reasoning, fmt=fmt, since=since, until=until)
+    ex = ClaudeExporter(out, P.ensure_key(home), max_chars=max_chars, reasoning=reasoning, fmt=fmt, since=since, until=until,
+                         kinds=kinds, role=role, contains=contains, source_line=source_line)
     ex.w("# AgentWatch - export detaille d'une session Claude Code")
     ex.w(f"\n- Session : `{root}` ; export v{EXPORT_VERSION} ; transcripts lus en lecture seule ; texte borne a {max_chars} car.")
     ex.w("- MESURES : usage Claude, dedoublonne par requestId. Entree totale = input + cache_creation + cache_read; "
          "ni facturation ni economie constatee. CALCULE : attribution par appel, pas poids exact du resultat.")
     ex.w("- Liens : identifiants observes et dossier de session; aucun lien deduit des horaires. "
          "Les totaux de plusieurs sessions peuvent recouvrir un historique copie et ne doivent pas etre additionnes sans verification.")
+    if ex.filter_active:
+        ex.w("- Selection : filtres appliques aux evenements canoniques avant bornage du texte; "
+             "les compteurs examined/selected/excluded sont dans `summary.selection`. "
+             "Les mesures de tokens et totaux restent dans la portee complete de la periode et sont omis de cet export filtre.")
     if since is not None or until is not None:
         ex.w(f"- Periode [{since}, {until}) en ns UTC; requetes datees au premier bloc. "
              "Evenements sans date affiches et signales; mesures sans date exclues du total de periode.")
-    summary: dict[str, Any] = {"session": root, "client": "claude-code", "threads": [], "flags": {}, "kinds": {}}
+    summary: dict[str, Any] = {"session": root, "client": "claude-code", "threads": [], "flags": {}, "kinds": {},
+                               "selection": {"active": ex.filter_active, "scope": "evenements_transcript_canonique",
+                                             "filters": ex.selection_filters(), "examined": 0, "selected": 0,
+                                             "excluded": 0, "measurements_scope": "periode_complete",
+                                             "period": {"since": since, "until": until},
+                                             "releves_exportes": not ex.filter_active, "threads": []}}
     for info in infos:
         path = info["path"]
         parsed = T.parse_transcript(path)
@@ -329,12 +429,13 @@ def export_session(cfg: dict[str, Any], home: str, session: str, out: IO[str], *
         measured["total_input_tokens"] = sum(input_parts) if all(isinstance(v, int) for v in input_parts) else None
         ex.computed = T.attribute_calls(scoped_parsed)
         ex.thread = {"thread_id": info["thread_id"]}
+        ex.begin_thread_selection()
         calls_before, results_before = ex.kinds["appel"], ex.kinds["resultat"]
         ex.w(f"\n## Fil `{info['thread_id']}`\n")
         src = {"file": path.name, "path": str(path), "line": 0, "ordinal": None, "ts": None, "ns": None}
         ex.emit(src, "fil", "Source et liens du fil", {"path": str(path), "session": root,
                 "association": "transcript principal" if path == files[0] else "dossier de la session (appel parent non deduit)",
-                "agentIds": sorted(info["agents"]), "parentToolUseIDs": sorted(info["parent_tools"])})
+                "agentIds": sorted(info["agents"]), "parentToolUseIDs": sorted(info["parent_tools"])}, selectable=False)
         for event_src, obj, issue in _rows(path):
             if issue:
                 flag = "[absent] derniere ligne incomplete ignoree" if issue == "incomplete" else "[non compris] ligne JSON invalide"
@@ -344,18 +445,28 @@ def export_session(cfg: dict[str, Any], home: str, session: str, out: IO[str], *
             if ns is not None and not _in_period(ns, since, until):
                 continue
             _line(ex, obj, event_src, info, index)
-        for req in scoped:
-            lines = req.get("source_lines") or ([req["first_line"]] if req.get("first_line") else [])
-            rsrc = {**src, "line": lines[0] if lines else 0, "ts": req.get("timestamp"), "ns": _ns(req.get("timestamp"))}
-            flags = ["[absent] mesure de tokens incomplete"] if any(v is None for v in req["usage"].values()) else []
-            ex.emit(rsrc, "requete", "Tokens MESURES de la requete (une fois par requestId)",
-                    {**req, "attribution_method": T.METHOD}, flags)
-        ex.emit(src, "totaux", "Totaux MESURES du fil dans la periode", {**measured,
-                "requests_unknown_timestamp": dated_unknown, "attribution_method": T.METHOD},
-                ["[absent] certaines mesures de tokens manquent"] if measured.get("total_tokens") is None else [])
+        # Un export filtre ne reproduit pas les relevés hors selection : ils
+        # restent accessibles via un export sans filtre et sont toujours
+        # retournes dans ``summary`` avec leur portee de periode explicite.
+        if not ex.filter_active:
+            for req in scoped:
+                lines = req.get("source_lines") or ([req["first_line"]] if req.get("first_line") else [])
+                rsrc = {**src, "line": lines[0] if lines else 0, "ts": req.get("timestamp"), "ns": _ns(req.get("timestamp"))}
+                flags = ["[absent] mesure de tokens incomplete"] if any(v is None for v in req["usage"].values()) else []
+                ex.emit(rsrc, "requete", "Tokens MESURES de la requete (une fois par requestId)",
+                        {**req, "attribution_method": T.METHOD}, flags, selectable=False)
+            ex.emit(src, "totaux", "Totaux MESURES du fil dans la periode", {**measured,
+                    "requests_unknown_timestamp": dated_unknown, "attribution_method": T.METHOD},
+                    ["[absent] certaines mesures de tokens manquent"] if measured.get("total_tokens") is None else [],
+                    selectable=False)
+        thread_selection = ex.selection_snapshot()
+        summary["selection"]["threads"].append({"thread_id": info["thread_id"], **thread_selection})
+        for key, value in thread_selection.items():
+            summary["selection"][key] += value
         summary["threads"].append({"thread_id": info["thread_id"], "path": str(path), "model": next((r.get("model") for r in scoped if r.get("model")), None),
                                    "calls": ex.kinds["appel"] - calls_before, "results": ex.kinds["resultat"] - results_before,
-                                   "responses": len(scoped), "measured": measured, "requests_unknown_timestamp": dated_unknown})
+                                   "responses": len(scoped), "measured": measured, "requests_unknown_timestamp": dated_unknown,
+                                   "selection": thread_selection})
     if conclusions:
         ex.w("\nConclusions des detecteurs : non executees par cet export des transcripts seuls; aucune conclusion ne filtre les evenements.")
     summary["flags"], summary["kinds"] = dict(ex.flags), dict(ex.kinds)

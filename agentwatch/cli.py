@@ -586,9 +586,12 @@ def cmd_inspect(args: argparse.Namespace) -> int:
     from agentwatch.reports import inspect as INS
     home = home_dir(args.home)
     cfg = load_config(home)
+    filters = {k: getattr(args, k, None) for k in ("kinds", "role", "contains", "source_line")}
     if args.client == "claude-code":
         from agentwatch.reports import inspect_claude as INS
     else:
+        if any(v is not None for v in filters.values()):
+            raise SystemExit("les filtres types de cette version concernent --client claude-code")
         _auto_import_rollouts(home, cfg, EventStore(home, cfg))    # * parts calculees par appel a jour
     since, until = _slice_bounds(args)
     ext = "md" if args.format == "markdown" else "jsonl"
@@ -610,13 +613,37 @@ def cmd_inspect(args: argparse.Namespace) -> int:
         with open(out_path, "w", encoding="utf-8", newline="\n") as fh:
             summary = INS.export_session(cfg, str(home), args.session, fh, thread=args.thread, since=since, until=until,
                                          max_chars=args.max_chars, reasoning=args.reasoning, fmt=args.format,
-                                         conclusions=not args.no_conclusions)
+                                         conclusions=not args.no_conclusions, **(filters if args.client == "claude-code" else {}))
     except ValueError as exc:
         raise SystemExit(str(exc)) from None
     flags = ", ".join(f"{k.strip('[]')} {v}" for k, v in summary["flags"].items() if v) or "aucun"
     _out(f"export ecrit : {out_path} ({out_path.stat().st_size} octets) ; {len(summary['threads'])} fil(s) ; "
          f"{sum(summary['kinds'].values())} evenement(s) ; signalements : {flags}")
     _out("contenu en clair (secrets masques) : fichier local, a ne pas partager sans relecture")
+    if summary.get("selection", {}).get("active"):
+        selection = summary["selection"]
+        _out(f"selection : {selection['selected']}/{selection['examined']} evenement(s) ; releves de tokens non attribues a la selection")
+    return 0
+
+
+def cmd_claude_context(args: argparse.Namespace) -> int:
+    """Analyse passive d'un ensemble explicite de transcripts, sans import ni collecte."""
+    from agentwatch.reports import claude_context as CC
+    home = home_dir(args.home)
+    cfg = load_config(home)
+    out_path = Path(args.out)
+    try:
+        for source in CC.source_files(cfg, args.session):
+            if out_path.resolve() == source.resolve() or (out_path.exists() and out_path.samefile(source)):
+                raise ValueError("le fichier de sortie est un journal source : export refuse pour le preserver")
+        result = CC.analyse(cfg, str(home), args.session)
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from None
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    _out(f"contexte Claude : {result['usage']['requests']} requetes uniques, {len(result['windows'])} fenetres/segments, "
+         f"{len(result['compactions'])} compactions distinctes ; {out_path}")
+    _out("deltas calcules ; retention par requete indeterminee hors preuves explicites, aucune economie de session deduite")
     return 0
 
 
@@ -1133,6 +1160,10 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("inspect", help="export detaille d'une session (messages, appels, resultats, tokens), "
                                        "relu dans les journaux du client, secrets masques")
     s.add_argument("--client", choices=SUPPORTED_CLIENTS, default="codex", help="client source (defaut : codex)")
+    s.add_argument("--kind", dest="kinds", action="append", help="Claude : type canonique a garder (message, appel, resultat, notification...), repetable")
+    s.add_argument("--role", choices=("user", "assistant", "tool"), help="Claude : role du contenu, resultats d'outils separes")
+    s.add_argument("--contains", help="Claude : texte litteral insensible a la casse, recherche avant bornage")
+    s.add_argument("--source-line", type=int, help="Claude : numero de ligne physique dans le fichier source")
     s.add_argument("--session", required=True, help="identifiant (ou prefixe) du fil racine de la session")
     s.add_argument("--thread", help="seulement ce fil (identifiant ou prefixe)")
     s.add_argument("--day", help="seulement ce jour (AAAA-MM-JJ, jour local)")
@@ -1144,6 +1175,11 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--format", default="markdown", choices=("markdown", "jsonl"))
     s.add_argument("--out", help="fichier de sortie (defaut : <donnees>/exports/<session>-<date>.md)")
     s.set_defaults(func=cmd_inspect)
+
+    s = sub.add_parser("claude-context", help="fenetres de contexte, compactions et requetes uniques depuis les transcripts Claude")
+    s.add_argument("--session", action="append", required=True, help="session ou prefixe, repetable pour dedoublonner les reprises")
+    s.add_argument("--out", required=True, help="rapport JSON local avec mesures, limites et references")
+    s.set_defaults(func=cmd_claude_context)
 
     s = sub.add_parser("compare", help="avant / apres une correction : les pertes ont-elles reellement baisse ? (IC 95 %%)")
     s.add_argument("--at", help="instant de la correction (AAAA-MM-JJ[THH:MM], heure locale) ou agents-md:<empreinte>")

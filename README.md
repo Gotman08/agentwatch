@@ -107,6 +107,12 @@ Le client par defaut reste Codex. Les tokens absents restent non releves, avec c
 explicite ; les parts par appel sont calculees. Des transcripts de reprises peuvent contenir
 le meme historique : ne pas additionner leurs totaux comme des travaux independants.
 
+`claude-context --session <origine> --session <reprise> --out contexte.json`
+reunit maintenant ces copies par identite de requete et reconstruit les fenetres
+observees autour des compactions. `inspect` peut filtrer les messages Claude par
+type, role, texte ou ligne source avant troncature. Mesures, provenances et limites :
+[`docs/claude-context.md`](docs/claude-context.md).
+
 Codex sans hooks, sans effet sur Codex : ses rollouts (`~/.codex/sessions`) contiennent chaque action
 (code de sortie, duree), l'usage en tokens de chaque reponse et les sous-agents. AgentWatch les lit en
 lecture seule, de facon incrementale et en priorite d'arriere-plan, automatiquement avant `sessions`,
