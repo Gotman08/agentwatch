@@ -106,11 +106,13 @@ class FollowTests(unittest.TestCase):
         self.assertEqual(cli.main(["--home", home, "import-rollouts", "--stop-follow"]), 0)   # * deja arrete : sans effet
         self.assertIsNone(F.stop_requested(home))
 
-    def test_status_without_recorded_stop_says_killed_or_rebooted(self) -> None:
+    def test_status_without_recorded_stop_keeps_the_cause_unknown(self) -> None:
         F.write_status(str(self.home), {"pid": 4242, "started": "2026-09-19T21:30:00Z", "last_tick": "2026-09-19T23:24:04Z",
                                         "last_tick_epoch": 1.0, "cycles": 12, "interval_s": 30, "stopped": None})
         line = cli._follow_state_lines(self.home)[0]
-        self.assertIn("aucun arret consigne : processus tue ou machine redemarree", line)
+        self.assertIn("aucun arret consigne : cause inconnue", line)
+        self.assertNotIn("processus tue", line)
+        self.assertNotIn("machine redemarree", line)
 
 
 if __name__ == "__main__":

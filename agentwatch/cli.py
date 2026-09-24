@@ -188,7 +188,7 @@ def _follow_state_lines(home: Path) -> list[str]:
     if st.get("started"):
         return [f"suivi continu : ARRETE (dernier demarrage {st.get('started')}, dernier passage {st.get('last_tick')}"
                 + (f", arret consigne {stopped.get('time')} : {stopped.get('reason')}" if stopped else
-                   ", aucun arret consigne : processus tue ou machine redemarree") + ") ; la lecture automatique avant "
+                   ", aucun arret consigne : cause inconnue") + ") ; la lecture automatique avant "
                 "sessions, report et trends rattrape ; relance : python -m agentwatch import-rollouts --follow"]
     return ["suivi continu : jamais lance avec cet etat (python -m agentwatch import-rollouts --follow)"]
 
