@@ -8,7 +8,9 @@
 #   horodatage, modele) : jamais le texte des prompts, des reponses ni des resultats d'outils.
 # * Format observe en direct (Claude Code 2.1.275, voir docs/events.md) : une reponse API est
 #   ecrite en plusieurs lignes `assistant` (un bloc de contenu par ligne) portant le meme
-#   `requestId` et le meme `usage` -> dedoublonnage par requestId. Les resultats d'outils
+#   `requestId`. Un bloc de streaming peut avoir un usage provisoire : le bloc terminal
+#   est prioritaire, avec provenance et conflits conserves, jamais par maximum numerique.
+#   Les copies historiques peuvent aussi contenir des compteurs incoherents. Les resultats d'outils
 #   sont des lignes `user` avec des blocs `tool_result` (un par ligne quand les appels sont
 #   paralleles) ; ils sont consommes par la requete `assistant` suivante.
 # * Attribution par appel : part de l'entree NON mise en cache (input + cache_creation) de la
@@ -92,10 +94,57 @@ def _int(v: Any) -> int | None:
     return None
 
 
+def _usage_observation(msg: dict[str, Any], lineno: int) -> dict[str, Any]:
+    """Conserver uniquement les compteurs et les preuves structurelles de leur statut."""
+    usage = msg.get("usage") if isinstance(msg.get("usage"), dict) else {}
+    iterations = usage.get("iterations")
+    has_iterations = isinstance(iterations, list) and bool(iterations)
+    # Une iteration message unique permet de constater une contradiction, sans
+    # reconstruire le compteur principal ni supposer comment sommer plusieurs iterations.
+    iteration = (iterations[0] if has_iterations and len(iterations) == 1
+                 and isinstance(iterations[0], dict) and iterations[0].get("type") == "message" else {})
+    return {"line": lineno, "usage": {k: _int(usage.get(src)) for k, src in _USAGE_KEYS},
+            "terminal": isinstance(msg.get("stop_reason"), str) and bool(msg["stop_reason"]),
+            "has_iterations": has_iterations,
+            "single_iteration_usage": {k: _int(iteration.get(src)) for k, src in _USAGE_KEYS} if iteration else None}
+
+
+def _arbitrate_usage(req: dict[str, Any]) -> None:
+    observations = req["usage_observations"]
+    terminal = [o for o in observations if o["terminal"]]
+    selected = terminal or observations
+    req["usage_source_lines"] = [o["line"] for o in selected]
+    req["usage_basis"] = ("terminal_with_iterations" if terminal and all(o["has_iterations"] for o in terminal)
+                          else "terminal" if terminal else "observations_without_terminal")
+    conflicts: list[dict[str, Any]] = []
+    for key, _ in _USAGE_KEYS:
+        values: dict[int, list[int]] = {}
+        for observation in selected:
+            value = observation["usage"][key]
+            if value is not None:
+                values.setdefault(value, []).append(observation["line"])
+        mismatch: dict[tuple[int, int], list[int]] = {}
+        for observation in selected:
+            iteration = observation["single_iteration_usage"]
+            value = observation["usage"][key]
+            other = iteration.get(key) if iteration else None
+            if value is not None and other is not None and value != other:
+                mismatch.setdefault((value, other), []).append(observation["line"])
+        if len(values) > 1:
+            conflicts.append({"field": key, "reason": "disagreeing_observations",
+                              "values": [{"value": value, "source_lines": lines} for value, lines in sorted(values.items())]})
+        for (value, other), lines in mismatch.items():
+            conflicts.append({"field": key, "reason": "top_level_iteration_mismatch", "source_lines": lines,
+                              "top_level_value": value, "single_iteration_value": other})
+        req["usage"][key] = next(iter(values)) if len(values) == 1 and not mismatch else None
+    req["usage_conflicts"] = conflicts
+
+
 def parse_transcript(path: Path, max_bytes: int = 0) -> dict[str, Any]:
     """Requetes API du transcript : usage, appels emis, resultats consommes. Aucun texte conserve."""
     coverage: dict[str, Any] = {"line_types": {}, "ignored_types": {}, "invalid_json_lines": 0,
-                                "non_object_lines": 0, "incomplete_lines": 0, "compaction_lines": []}
+                                "non_object_lines": 0, "incomplete_lines": 0, "compaction_lines": [],
+                                "synthetic_assistant_lines": 0}
     out: dict[str, Any] = {"path": str(path), "requests": [], "agent_id": None, "warnings": [], "lines": 0, "bytes": 0,
                            "coverage": coverage}
     try:
@@ -142,6 +191,11 @@ def parse_transcript(path: Path, max_bytes: int = 0) -> dict[str, Any]:
                     coverage["ignored_types"][label] = coverage["ignored_types"].get(label, 0) + 1
                 if kind == "system" and o.get("subtype") == "compact_boundary":
                     coverage["compaction_lines"].append(lineno)
+                if kind == "assistant" and msg.get("model") == "<synthetic>":
+                    # Message local du client, toujours present dans le transcript et
+                    # son export, mais sans requete API ni consommation des resultats en attente.
+                    coverage["synthetic_assistant_lines"] += 1
+                    continue
                 if kind == "user":
                     if isinstance(content, list):
                         for b in content:
@@ -153,17 +207,23 @@ def parse_transcript(path: Path, max_bytes: int = 0) -> dict[str, Any]:
                         continue
                     req = requests.get(rid)
                     if req is None:
-                        usage = msg.get("usage") if isinstance(msg.get("usage"), dict) else {}
                         req = {"request_id": rid, "timestamp": o.get("timestamp") if isinstance(o.get("timestamp"), str) else None,
-                               "model": msg.get("model") if isinstance(msg.get("model"), str) else None,
-                               "usage": {k: _int(usage.get(src)) for k, src in _USAGE_KEYS},
-                               "tool_uses": [], "consumed": pending,
-                               "source_lines": [], "first_line": lineno, "last_line": lineno}
-                        pending = []
+                                "model": msg.get("model") if isinstance(msg.get("model"), str) else None,
+                                "usage": {k: None for k, _ in _USAGE_KEYS}, "usage_observations": [],
+                                "tool_uses": [], "consumed": [],
+                                "source_lines": [], "first_line": lineno, "last_line": lineno}
                         requests[rid] = req
                         order.append(rid)
+                    # Une copie historique peut repeter une requete deja connue apres
+                    # ses resultats. Les rattacher a cette identite, sans les laisser
+                    # fuir vers la prochaine requete ni doubler les resultats copies.
+                    for tool_id in pending:
+                        if tool_id not in req["consumed"]:
+                            req["consumed"].append(tool_id)
+                    pending = []
                     req["source_lines"].append(lineno)
                     req["last_line"] = lineno
+                    req["usage_observations"].append(_usage_observation(msg, lineno))
                     if isinstance(content, list):
                         for b in content:
                             if isinstance(b, dict) and b.get("type") == "tool_use" and isinstance(b.get("id"), str) and b["id"] not in req["tool_uses"]:
@@ -171,6 +231,8 @@ def parse_transcript(path: Path, max_bytes: int = 0) -> dict[str, Any]:
     except OSError as exc:
         out["warnings"].append(f"{path.name} : lecture interrompue ({exc})")
     out["requests"] = [requests[r] for r in order]
+    for req in out["requests"]:
+        _arbitrate_usage(req)
     out["lines"] = lineno
     return out
 

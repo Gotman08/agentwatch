@@ -113,6 +113,23 @@ class TranscriptTests(unittest.TestCase):
         self.assertEqual(t["total_tokens"], 15 + 1800 + 16100 + 110)
         self.assertEqual(parse_transcript(self.main, max_bytes=10)["requests"], [], "fichier trop gros : ignore avec avertissement")
 
+    def test_replayed_request_drains_pending_results_without_leaking_or_duplicates(self) -> None:
+        usage = {"input_tokens": 2, "cache_creation_input_tokens": 3,
+                 "cache_read_input_tokens": 5, "output_tokens": 7}
+        for copies in (1, 2):
+            with self.subTest(copies=copies):
+                rows = _assistant("replayed", usage, [])
+                for _ in range(copies):
+                    rows.extend([_result("c"), *_assistant("replayed", usage, [])])
+                rows.extend([_result("d"), *_assistant("next", usage, [])])
+                self.main.write_text("\n".join(rows) + "\n", encoding="utf-8")
+                parsed = parse_transcript(self.main)
+                self.assertEqual(len(parsed["requests"]), 2)
+                replayed, following = parsed["requests"]
+                self.assertEqual(replayed["consumed"], ["c"])
+                self.assertEqual(following["consumed"], ["d"])
+                self.assertEqual(totals(parsed)["requests"], 2)
+
     def test_import_attaches_usage_to_calls_and_session(self) -> None:
         store = EventStore(self.home, self.cfg)
         view = load_session(store, "claude-code", "tx", self.cfg)
@@ -227,6 +244,100 @@ class TranscriptTests(unittest.TestCase):
         self.assertEqual(total["observed_tokens"], 0)
         self.assertEqual(total["usage_coverage"]["status"], "complete")
         self.assertEqual(attribute_calls(parsed)["toolu_0001"]["output_tokens"], 0)
+
+    def test_synthetic_assistant_is_not_api_usage_but_real_zero_and_fallback_are(self) -> None:
+        zero = {"input_tokens": 0, "cache_creation_input_tokens": 0,
+                "cache_read_input_tokens": 0, "output_tokens": 0}
+        synthetic = json.loads(_assistant("synthetic", zero, [])[0])
+        synthetic.pop("requestId")
+        synthetic["message"]["model"] = "<synthetic>"
+        real = json.loads(_assistant("real-zero", zero, [])[0])
+        fallback = json.loads(_assistant("fallback", {**zero, "output_tokens": 7}, [])[0])
+        fallback.pop("requestId")
+        self.main.write_text("\n".join([
+            _result("pending-tool"), json.dumps(synthetic), json.dumps(real), json.dumps(fallback),
+        ]) + "\n", encoding="utf-8")
+        parsed = parse_transcript(self.main)
+        self.assertEqual([r["request_id"] for r in parsed["requests"]], ["real-zero", "msg_fallback"])
+        self.assertEqual(parsed["requests"][0]["usage"]["output_tokens"], 0)
+        self.assertEqual(parsed["requests"][0]["consumed"], ["pending-tool"])
+        self.assertEqual(parsed["requests"][1]["usage"]["output_tokens"], 7)
+        self.assertEqual(parsed["coverage"]["synthetic_assistant_lines"], 1)
+        self.assertEqual(parsed["coverage"]["line_types"]["assistant"], 3)
+        self.assertEqual(totals(parsed)["requests"], 2)
+        from agentwatch.reports.inspect_claude import export_session
+        exported = io.StringIO()
+        export_session(self.cfg, str(self.home), "tx", exported)
+        self.assertIn("msg_synthetic", exported.getvalue(), "le message local reste visible dans l'export")
+
+    def _usage_rows(self, observations: list[tuple[dict, str | None]]) -> dict:
+        rows = []
+        for line, (usage, stop_reason) in enumerate(observations):
+            row = json.loads(_assistant("stream", usage, [{"type": "tool_use", "id": "toolu_0001"}])[0])
+            row["uuid"] = f"stream-{line}"
+            row["message"]["stop_reason"] = stop_reason
+            rows.append(json.dumps(row))
+        self.main.write_text("\n".join(rows) + "\n", encoding="utf-8")
+        return parse_transcript(self.main)
+
+    def test_terminal_usage_replaces_streaming_counter_with_provenance(self) -> None:
+        initial = {"input_tokens": 2, "cache_creation_input_tokens": 30,
+                   "cache_read_input_tokens": 35, "output_tokens": 8}
+        final = {**initial, "output_tokens": 242}
+        final["iterations"] = [{"type": "message", **final}]
+        parsed = self._usage_rows([(initial, None), (final, "tool_use")])
+        req = parsed["requests"][0]
+        self.assertEqual(req["usage"]["output_tokens"], 242)
+        self.assertEqual(req["usage_source_lines"], [2])
+        self.assertEqual(req["usage_basis"], "terminal_with_iterations")
+        self.assertEqual(req["usage_conflicts"], [])
+        self.assertEqual([o["line"] for o in req["usage_observations"]], [1, 2])
+        self.assertEqual(attribute_calls(parsed)["toolu_0001"]["output_tokens"], 242)
+        self.assertNotIn("SECRET", json.dumps(parsed))
+
+    def test_terminal_usage_is_not_selected_by_numeric_maximum(self) -> None:
+        initial = {"input_tokens": 2, "cache_creation_input_tokens": 30,
+                   "cache_read_input_tokens": 35, "output_tokens": 999}
+        final = {**initial, "output_tokens": 242}
+        final["iterations"] = [{"type": "message", **final}]
+        parsed = self._usage_rows([(initial, None), (final, "tool_use")])
+        self.assertEqual(parsed["requests"][0]["usage"]["output_tokens"], 242)
+
+    def test_conflicting_terminal_usage_stays_unknown(self) -> None:
+        first = {"input_tokens": 2, "cache_creation_input_tokens": 30,
+                 "cache_read_input_tokens": 35, "output_tokens": 242}
+        second = {**first, "output_tokens": 300}
+        for usage in (first, second):
+            usage["iterations"] = [{"type": "message", **usage}]
+        parsed = self._usage_rows([(first, "tool_use"), (second, "tool_use")])
+        req = parsed["requests"][0]
+        self.assertIsNone(req["usage"]["output_tokens"])
+        self.assertEqual(req["usage"]["input_tokens"], 2)
+        self.assertEqual(req["usage_source_lines"], [1, 2])
+        self.assertTrue(any(c["field"] == "output_tokens" for c in req["usage_conflicts"]))
+        self.assertIsNone(totals(parsed)["total_tokens"])
+
+    def test_zeroed_history_copy_does_not_reconstruct_usage_from_iterations(self) -> None:
+        zero = {"input_tokens": 0, "cache_creation_input_tokens": 0,
+                "cache_read_input_tokens": 0, "output_tokens": 0,
+                "iterations": [{"type": "message", "input_tokens": 2,
+                                "cache_creation_input_tokens": 634,
+                                "cache_read_input_tokens": 962681, "output_tokens": 4899}]}
+        parsed = self._usage_rows([(zero, "tool_use")])
+        req = parsed["requests"][0]
+        self.assertTrue(all(v is None for v in req["usage"].values()))
+        self.assertEqual(len(req["usage_conflicts"]), 4)
+        self.assertEqual(req["usage_observations"][0]["usage"]["output_tokens"], 0)
+        self.assertIsNone(totals(parsed)["total_tokens"])
+
+    def test_disagreement_without_terminal_evidence_is_not_arbitrated_by_order(self) -> None:
+        first = {"input_tokens": 2, "output_tokens": 8}
+        second = {"input_tokens": 2, "output_tokens": 42}
+        for observations in ([(first, None), (second, None)], [(second, None), (first, None)]):
+            req = self._usage_rows(observations)["requests"][0]
+            self.assertIsNone(req["usage"]["output_tokens"])
+            self.assertEqual(req["usage"]["input_tokens"], 2)
+            self.assertTrue(req["usage_conflicts"])
 
     def test_parser_coverage_and_request_line_references_keep_no_text(self) -> None:
         rows = [*_assistant("refs", {}, [], n_lines=2),
