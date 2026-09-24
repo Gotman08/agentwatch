@@ -91,11 +91,15 @@ def _blocks(obj: dict[str, Any]) -> list[Any]:
     return content if isinstance(content, list) else []
 
 
-def _scan(path: Path) -> dict[str, Any]:
+def _scan(path: Path, *, until: int | None = None, through_line: int | None = None) -> dict[str, Any]:
     """Index de references uniquement; aucun contenu de message conserve."""
     info: dict[str, Any] = {"path": path, "calls": {}, "results": {}, "uuids": {}, "agents": set(),
                             "parent_tools": set(), "complete_lines": set()}
     for src, obj, issue in _rows(path):
+        if through_line is not None and src["line"] > through_line:
+            break
+        if until is not None and (src["ns"] is None or src["ns"] >= until):
+            continue
         if issue or not isinstance(obj, dict):
             continue
         info["complete_lines"].add(src["line"])

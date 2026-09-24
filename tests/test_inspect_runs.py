@@ -23,6 +23,8 @@ class RunViewTests(unittest.TestCase):
         self.cfg = {"transcripts": {"claude_projects_dir": str(self.projects)}}
         (self.home / "config.json").write_text(json.dumps(self.cfg), encoding="utf-8")
         self.rows = []
+        self.row("assistant", message={"content": [{"type": "tool_use", "id": "runner-source", "name": "Read", "input": {"file_path": "C:/project/run_game_scenario.py"}}]})
+        self.result("runner-source", "ROOT = pathlib.Path(__file__).resolve().parents[0]\nout = ROOT / 'Saved' / 'Runs' / args.label")
         self.call("launch", "python run_game_scenario.py --label Run1")
         self.result("launch", "Command running in background with ID: bg1.")
         self.call("watch", "python watch_run.py Saved/Runs/Run1", name="Monitor")
@@ -67,7 +69,7 @@ class RunViewTests(unittest.TestCase):
         self.notification("monitor1", "host 10.0 ok " + "x" * 1000)
         data = self.read(limit=1, max_chars=60)
         self.assertEqual(data["total_runs"], 1)
-        self.assertEqual(data["runs"][0]["anchor"]["line"], 1)
+        self.assertEqual(data["runs"][0]["anchor"]["line"], 3)
         self.assertLessEqual(len(data["runs"][0]["preview"]), 60)
         self.assertNotIn("x" * 100, json.dumps(data))
 
@@ -85,16 +87,16 @@ class RunViewTests(unittest.TestCase):
 
     def test_duplicate_launch_copy_keeps_one_run_and_notification_call_link(self):
         import copy
-        self.rows.extend(copy.deepcopy(self.rows[:2]))
+        self.rows.extend(copy.deepcopy(self.rows[2:4]))
         data = self.read()
         self.assertEqual(data["total_runs"], 1)
         notification = next(o for o in self.view()["timeline"] if o["kind"] == "notification")
         self.assertEqual(notification["call_id"], "watch")
-        self.assertEqual(notification["call_source"]["line"], 3)
+        self.assertEqual(notification["call_source"]["line"], 5)
 
     def test_no_timestamp_is_available_at_physical_frontier_only(self):
-        self.rows[4].pop("timestamp")
-        physical = self.view(thread="session", through_line=5, fields=["hitch_ms"])
+        self.rows[6].pop("timestamp")
+        physical = self.view(thread="session", through_line=7, fields=["hitch_ms"])
         self.assertEqual(physical["missing"], [])
         self.assertIsNone(physical["fields"]["hitch_ms"]["roles"]["host"]["latest_recorded"]["observed_at"])
         timed = self.view(until=R.I._ns("2026-09-24T13:00:00Z"), fields=["hitch_ms"])
@@ -105,7 +107,7 @@ class RunViewTests(unittest.TestCase):
         compact = R.compact_answer(data)
         field = compact["fields"]["hitch_ms"]["roles"]["host"]
         self.assertEqual(field["max_visible"]["value"], 6719)
-        self.assertEqual(compact["evidence"][field["max_visible"]["evidence"]]["line"], 5)
+        self.assertEqual(compact["evidence"][field["max_visible"]["evidence"]]["line"], 7)
 
     def test_rounded_time_different_stream_phases_are_not_conflicting(self):
         self.call("read", "python t5_view.py Run1")
@@ -129,7 +131,7 @@ class RunViewTests(unittest.TestCase):
         self.assertEqual(data["fields"]["process_exit"]["roles"]["client"]["latest_recorded"]["value"], 7)
 
     def test_discovery_preview_and_count_honor_filters(self):
-        data = self.read(kinds="resultat", source_line=4)
+        data = self.read(kinds="resultat", source_line=6)
         self.assertEqual(data["runs"][0]["observations"], 1)
         self.assertIn("Monitor started", data["runs"][0]["preview"])
         self.assertNotIn("6719", data["runs"][0]["preview"])
@@ -147,7 +149,7 @@ class RunViewTests(unittest.TestCase):
     def test_notification_missing_metrics_and_later_result(self):
         self.call("read", "python t5_view.py Run1")
         self.result("read", "======================== host\n10.0 STREAM observation MB=5014 lv=35")
-        before = self.view(thread="session", through_line=5, fields=["hitch_ms", "stream.MB"])
+        before = self.view(thread="session", through_line=7, fields=["hitch_ms", "stream.MB"])
         self.assertEqual(before["missing"], ["stream.MB"])
         after = self.view(fields=["hitch_ms", "stream.MB"])
         self.assertEqual(after["fields"]["stream.MB"]["roles"]["host"]["latest_recorded"]["value"], 5014)
@@ -161,14 +163,14 @@ class RunViewTests(unittest.TestCase):
         self.result("read", "======================== host\n10.0 STREAM observation MB=5014")
         self.call("later", "python t5_view.py Run1")
         self.result("later", "======================== host\n10.0 STREAM observation MB=6014")
-        self.rows[-1]["timestamp"] = self.rows[4]["timestamp"]
-        early = self.view(thread="session", through_line=7, fields=["stream.MB"])
+        self.rows[-1]["timestamp"] = self.rows[6]["timestamp"]
+        early = self.view(thread="session", through_line=9, fields=["stream.MB"])
         self.assertEqual(early["fields"]["stream.MB"]["roles"]["host"]["latest_recorded"]["value"], 5014)
         late = self.view(fields=["stream.MB"])
         field = late["fields"]["stream.MB"]["roles"]["host"]
         self.assertEqual(field["latest_recorded"]["value"], 6014)
         self.assertEqual(field["conflicting_keys"], 1)
-        selected = self.view(fields=["stream.MB"], source_line=7)
+        selected = self.view(fields=["stream.MB"], source_line=9)
         self.assertEqual(selected["fields"]["stream.MB"]["roles"]["host"]["conflicting_keys"], 0)
 
     def test_distinct_runs_same_text_and_old_notification(self):
@@ -228,9 +230,9 @@ class RunViewTests(unittest.TestCase):
     def test_filters_masking_full_result_reference_and_source_protection(self):
         self.call("read", "python t5_view.py Run1")
         self.result("read", "======================== host\n10.0 STREAM observation MB=5014\npassword=hunter2hunter2")
-        data = self.view(kinds="resultat", source_line=7, fields=["stream.MB"])
+        data = self.view(kinds="resultat", source_line=9, fields=["stream.MB"])
         self.assertEqual(len(data["timeline"]), 1)
-        self.assertEqual(data["timeline"][0]["full_result"]["source_line"], 7)
+        self.assertEqual(data["timeline"][0]["full_result"]["source_line"], 9)
         self.assertNotIn("hunter2hunter2", json.dumps(data))
         self.write()
         before = self.source.read_bytes()
@@ -247,7 +249,56 @@ class RunViewTests(unittest.TestCase):
             cli.main(["inspect", "--client", "codex", "--session", "any", "--list-runs"])
         imported.assert_not_called()
         with self.assertRaisesRegex(ValueError, "thread"):
-            self.view(through_line=5)
+            self.view(through_line=7)
+
+    def test_start_by_call_id_and_unresolved_call_remains_inspectable(self):
+        self.assertEqual(self.read(run="launch")["view"]["label"], "Run1")
+        self.call("shell", "sh C:/unknown/route.sh route Run1")
+        self.result("shell", "Command running in background with ID: unresolved-task.")
+        self.call("read-shell", "cat /tmp/tasks/unresolved-task.output")
+        self.result("read-shell", "host 11.0 END 0 echec(s)")
+        diagnostic = self.read(run="shell", fields=["run_end"])
+        self.assertEqual(diagnostic["schema"], "agentwatch.run-call.v1")
+        self.assertEqual(diagnostic["call"]["fields"]["run_end"]["status"], "not_attributed_to_a_run")
+        self.assertTrue(any(e["call_id"] == "read-shell" for e in diagnostic["call"]["evidence"]))
+        self.assertEqual(R.compact_answer(diagnostic), diagnostic)
+        self.assertEqual(self.read()["launcher_status_counts"], {"partial": 2})
+
+    def test_dynamic_launch_is_counted_and_call_filters_are_honored(self):
+        self.call("dynamic", 'python run_game_scenario.py --label "$LABEL"')
+        self.result("dynamic", "opaque")
+        data = self.read(kinds="appel", source_line=len(self.rows)-1)
+        self.assertEqual(data["launcher_count"], 1)
+        self.assertEqual(data["launchers"][0]["call_id"], "dynamic")
+        self.assertEqual(data["launchers"][0]["status"], "not_demonstrable")
+
+    def test_call_id_and_run_label_collision_is_rejected(self):
+        self.call("other", "python run_game_scenario.py --label launch")
+        with self.assertRaisesRegex(ValueError, "ambigu"):
+            self.read(run="launch")
+        self.assertEqual(self.read(run="session:launch")["view"]["label"], "Run1")
+
+    def test_future_result_reference_is_not_exposed_in_historical_metadata(self):
+        self.call("pending", "sh C:/unknown/script.sh route Run1")
+        boundary = len(self.rows)
+        self.result("pending", "future response")
+        data = self.read(run="pending", thread="session", through_line=boundary)
+        self.assertNotIn("future response", json.dumps(data))
+        self.assertEqual(len(data["call"]["evidence"]), 1)
+        events, _, _ = R.load_events(self.cfg, str(self.home), "session", thread="session", through_line=boundary)
+        pending = next(e for e in events if e["kind"] == "appel" and e["data"].get("call_id") == "pending")
+        self.assertIsNone(pending["data"].get("result_source"))
+
+    def test_future_agent_identity_does_not_change_bounded_thread_selector(self):
+        self.write()
+        child = self.source.parent / "session" / "subagents" / "agent-child.jsonl"
+        child.parent.mkdir(parents=True)
+        rows = [{"type":"assistant", "agentId":"early-agent", "timestamp":"2026-09-24T12:00:00Z", "message":{"content":[{"type":"text","text":"before"}]}},
+                {"type":"assistant", "agentId":"later-agent", "timestamp":"2026-09-24T12:10:00Z", "message":{"content":[{"type":"text","text":"after"}]}}]
+        child.write_text("\n".join(json.dumps(r) for r in rows)+"\n", encoding="utf-8")
+        for bounds in ({"through_line":1}, {"until":R.I._ns("2026-09-24T12:05:00Z")}):
+            events, _, _ = R.load_events(self.cfg, str(self.home), "session", thread="early-agent", **bounds)
+            self.assertEqual({e["thread"] for e in events}, {"early-agent"})
 
 
 if __name__ == "__main__":

@@ -25,6 +25,38 @@ lecture par label devient alors ambigue. Une copie du meme appel conserve son
 identite. Les cibles de scripts seulement mentionnees par `git add`/`echo` ne
 sont pas des lancements.
 
+`--run <call-id-complet>` permet aussi de commencer par un appel. Avec `--thread`,
+sa portee est le fichier de ce fil. Sans lien unique, la reponse
+`agentwatch.run-call.v1` montre ses recus, lectures, notifications, candidats et
+contradictions; ses champs restent `not_attributed_to_a_run`. Un candidat n'est
+jamais utilise comme une preuve. `--list-runs` expose aussi `launchers` et les
+comptes `complete`, `partial`, `ambiguous`, `not_demonstrable`, avec pagination.
+`complete` indique une chaine de references avec tache, notification et resultat;
+ce statut ne signifie ni fin de scenario ni succes.
+
+Le lanceur `sh`/`bash` est resolu dans un sous-ensemble volontairement borne :
+version `Write` consignée et confirmee, chemin complet, `cd` literal, branche
+`case "$N"` litterale et argument `--label`. Les editions suivantes invalident
+la version; commandes conditionnelles, substitutions et cas dynamiques non pris
+en charge restent non resolus. Les corps de heredoc et commandes citees ne sont
+pas des invocations. Aucun script actuel n'est lu, importe ou execute.
+
+Pour relier un lanceur a un watcher par son dossier, l'adaptateur recherche dans
+les lectures historiques du **meme chemin Python** le calcul borne
+`ROOT = pathlib.Path(__file__).resolve().parents[N]` puis
+`out = ROOT / '...' / args.label`. Le dossier normalise doit correspondre
+exactement a la cible du watcher; le basename ou le label seul ne suffit pas.
+Les extraits portent leurs references et versions masquees. Ils ne prouvent
+pas l'absence de modifications hors journal ni un hash d'execution du script.
+
+La vue complete contient `links`, `launch_evidence`, `chain` et `readings`.
+Chaque arete garde les deux identifiants complets, la portee, la regle, les
+sources, les limites et `known_from`. Plusieurs taches peuvent appartenir au
+meme appel et plusieurs appels au meme run. Deux proprietaires contradictoires
+d'une tache restent ambigus, meme si leurs labels coincident. Une association
+apprise tard peut enrichir une vue ulterieure, jamais le prefixe anterieur.
+Les liens explicites de manifeste du rejeu restent distincts de ce graphe.
+
 Les filtres existants `--kind`, `--role`, `--contains`, `--source-line` s'appliquent
 aux observations apres resolution des liens; ils recherchent le texte masque
 avant bornage. Les ancrages anterieurs restent disponibles pour identifier le
@@ -44,6 +76,9 @@ un temps et une phase de scenario. La version HMAC identifie la **version masque
 de la sortie enregistree**, pas le
 fichier original sur disque. `--fields-only` partage ces references dans une
 table pour restituer les complements sans repeter la chronologie complete.
+Cette reponse courte garde aussi la chaine et les dix derniers complements
+bornes avec `full_result`, y compris une sortie sans fait interprete. Les
+complements anterieurs sont comptes; la vue complete les conserve tous.
 Les series numeriques donnent leur derniere valeur enregistree et leurs extrema
 visibles. Ce ne sont pas les extrema garantis du run complet. Une contradiction
 sur un meme role/temps/phase/champ reste comptee; une version plus recente ne l'efface
@@ -65,6 +100,11 @@ classes sont calculees; elles ne jugent pas seules de la necessite d'une lecture
 L'analyste relie les champs demandes a une decision observee. Une verification
 independante exige une preuve de source/methode independante; relire le meme
 fichier de sortie ne la fournit pas.
+`readings` ajoute un classement par lecture : recu, erreur, nouveaux faits,
+etat plus recent, aucun nouveau fait extrait, ou preuve non interpretee a
+examiner. `usefulness_judgement` et `independent_verification` restent inconnus.
+Un delta de faits vide ne signifie pas une lecture inutile : une structure
+terminale non reconnue peut etre la preuve utile qui manquait.
 
 `notification_recorded` atteste seulement une ligne du journal. Les champs
 `reception_observed` et `api_consumption_proven` restent `null` : le transcript

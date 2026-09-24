@@ -22,10 +22,10 @@ class ReplayTests(unittest.TestCase):
             fixture.write()
             before = fixture.source.read_bytes()
             cases = [
-                {"id": "missing", "question": "metric unavailable", "run": "Run1", "start_line": 5,
-                 "end_line": 7, "fields": ["stream.MB"], "expected_missing": ["stream.MB"], "discovery": True},
-                {"id": "present", "question": "observed metric", "run": "Run1", "start_line": 5,
-                 "end_line": 9, "fields": ["stream.MB"], "expected": [{"field": "stream.MB", "value": 5014}]},
+                {"id": "missing", "question": "metric unavailable", "run": "Run1", "start_line": 7,
+                 "end_line": 9, "fields": ["stream.MB"], "expected_missing": ["stream.MB"], "discovery": True},
+                {"id": "present", "question": "observed metric", "run": "Run1", "start_line": 7,
+                 "end_line": 11, "fields": ["stream.MB"], "expected": [{"field": "stream.MB", "value": 5014}]},
             ]
             result = replay(fixture.cfg, str(fixture.home), "session", "session", cases)
             self.assertEqual(before, fixture.source.read_bytes())
@@ -48,8 +48,8 @@ class ReplayTests(unittest.TestCase):
         fixture.setUp()
         try:
             fixture.write()
-            case = {"id": "short", "question": "hitch?", "run": "Run1", "start_line": 5,
-                    "end_line": 5, "fields": ["hitch_ms"], "expected": [{"field": "hitch_ms", "value": 6719, "role": "host"}]}
+            case = {"id": "short", "question": "hitch?", "run": "Run1", "start_line": 7,
+                    "end_line": 7, "fields": ["hitch_ms"], "expected": [{"field": "hitch_ms", "value": 6719, "role": "host"}]}
             data = replay(fixture.cfg, str(fixture.home), "session", "session", [case])["cases"][0]["adaptive"]
             self.assertTrue(data["all_checks_pass"])
             self.assertEqual(data["steps"]["projection_calls"], 0)
@@ -57,9 +57,9 @@ class ReplayTests(unittest.TestCase):
             self.assertIn("6719", data["answer"]["path"][0]["content"])
             proof = next(iter(data["answer"]["context"]["evidence"].values()))
             self.assertTrue(proof["version"])
-            self.assertEqual(proof["observed_at"], "2026-09-24T12:00:05Z")
+            self.assertEqual(proof["observed_at"], "2026-09-24T12:00:07Z")
             cmd = next(iter(data["detail_commands"].values()))
-            self.assertEqual(cmd[cmd.index("--source-line") + 1], "5")
+            self.assertEqual(cmd[cmd.index("--source-line") + 1], "7")
         finally:
             fixture.tearDown()
 
@@ -73,8 +73,8 @@ class ReplayTests(unittest.TestCase):
             fixture.notification("monitor1", "host 200.0 END 0 echec(s)")
             fixture.write()
             original = fixture.source.read_bytes()
-            case = {"id": "wide", "question": "recent memory, end?", "run": "Run1", "start_line": 6,
-                    "end_line": 7, "fields": ["stream.MB", "run_end"],
+            case = {"id": "wide", "question": "recent memory, end?", "run": "Run1", "start_line": 8,
+                    "end_line": 9, "fields": ["stream.MB", "run_end"],
                     "expected": [{"field": "stream.MB", "value": 5099, "at": 99.0, "role": "unspecified"}],
                     "expected_missing": ["run_end"]}
             other = copy.deepcopy(case)
@@ -85,7 +85,7 @@ class ReplayTests(unittest.TestCase):
             self.assertTrue(a["all_checks_pass"])
             self.assertFalse(b["all_checks_pass"])
             self.assertEqual(a["steps"]["projection_calls"], 1)
-            self.assertEqual(a["steps"]["necessary_recorded_complements"], [7])
+            self.assertEqual(a["steps"]["necessary_recorded_complements"], [9])
             self.assertEqual(a["steps"]["historical_acquisitions_avoided"], 0)
             self.assertLess(a["rendered_utf8_bytes"]["difference_same_context"], 0)
             context = a["answer"]["context"]
@@ -106,8 +106,8 @@ class ReplayTests(unittest.TestCase):
                 fixture.call(cid, "python t5_view.py Run1 | cut -c1-100")
                 fixture.result(cid, wide + "\n" + suffix)
             fixture.write()
-            case = {"id": "unsafe", "question": "memory?", "run": "Run1", "start_line": 6,
-                    "end_line": 11, "fields": ["stream.MB"], "expected": [{"field": "stream.MB", "value": 99}]}
+            case = {"id": "unsafe", "question": "memory?", "run": "Run1", "start_line": 8,
+                    "end_line": 13, "fields": ["stream.MB"], "expected": [{"field": "stream.MB", "value": 99}]}
             r = replay(fixture.cfg, str(fixture.home), "session", "session", [case])["cases"][0]
             self.assertEqual(r["adaptive"]["steps"]["projection_calls"], 0)
             for needle in ("FileNotFoundError", "FAIL walkto", "incomplete"):
@@ -123,8 +123,8 @@ class ReplayTests(unittest.TestCase):
             fixture.call("read", "python t5_view.py Run1")
             fixture.result("read", "host 100.0 STREAM observation MB=4000")
             fixture.write()
-            case = {"id": "scope", "question": "hitch in this result?", "run": "Run1", "start_line": 6,
-                    "end_line": 7, "fields": ["hitch_ms"], "expected": [{"field": "hitch_ms", "value": 6719}]}
+            case = {"id": "scope", "question": "hitch in this result?", "run": "Run1", "start_line": 8,
+                    "end_line": 9, "fields": ["hitch_ms"], "expected": [{"field": "hitch_ms", "value": 6719}]}
             r = replay(fixture.cfg, str(fixture.home), "session", "session", [case])["cases"][0]
             self.assertTrue(r["all_checks_pass"])
             self.assertFalse(r["adaptive"]["all_checks_pass"])
@@ -144,8 +144,8 @@ class ReplayTests(unittest.TestCase):
                            "\n".join(f"{i}.0 STREAM observation MB={i} extra=" + "x" * 100 for i in range(100)) +
                            "\n100.0 END 0 echec(s)")
             fixture.write()
-            case = {"id": "complement", "question": "memory and count?", "run": "Run1", "start_line": 6,
-                    "end_line": 8, "fields": ["stream.MB", "tests_failed"],
+            case = {"id": "complement", "question": "memory and count?", "run": "Run1", "start_line": 8,
+                    "end_line": 10, "fields": ["stream.MB", "tests_failed"],
                     "expected": [{"field": "tests_failed", "value": 0, "role": "host"}, {"field": "stream.MB", "value": 99}]}
             r = replay(fixture.cfg, str(fixture.home), "session", "session", [case])["cases"][0]["adaptive"]
             self.assertTrue(r["all_checks_pass"])
@@ -161,8 +161,8 @@ class ReplayTests(unittest.TestCase):
             fixture.notification("monitor1", "host 10.0 ok arrivee admise apres 0.3 s — arrivée 日本")
             fixture.write()
             manifest = fixture.root / "cases.json"
-            manifest.write_text(json.dumps([{"id": "utf8", "question": "arrival?", "run": "Run1", "start_line": 6,
-                                           "end_line": 6, "fields": ["arrival"],
+            manifest.write_text(json.dumps([{"id": "utf8", "question": "arrival?", "run": "Run1", "start_line": 8,
+                                           "end_line": 8, "fields": ["arrival"],
                                            "expected": [{"field": "arrival", "value": {"kind": "arrival_admitted", "after_s": 0.3}}]}]), encoding="utf-8")
             cmd = [sys.executable, "examples/claude_run_replay.py", "--home", str(fixture.home), "--session", "session",
                    "--thread", "session", "--cases", str(manifest), "--out", str(fixture.root / "audit.json"), "--answer", "utf8"]
@@ -183,20 +183,20 @@ class ReplayTests(unittest.TestCase):
                                                           "content": '{"client":{"ended":false}}'})
             fixture.notification("monitor1", "run finished", status="completed")
             fixture.write()
-            case = {"id": "manual", "question": "did it end?", "run": "Run1", "start_line": 6, "end_line": 8,
-                    "fields": ["watcher_end", "run_end"], "retain_result_lines": [7],
+            case = {"id": "manual", "question": "did it end?", "run": "Run1", "start_line": 8, "end_line": 10,
+                    "fields": ["watcher_end", "run_end"], "retain_result_lines": [9],
                     "expected": [{"field": "watcher_end", "value": True}], "expected_missing": ["run_end"]}
             with self.assertRaisesRegex(ValueError, "sans resultat associe"):
                 replay(fixture.cfg, str(fixture.home), "session", "session", [case])
-            case["common_lines"] = [6, 7]
+            case["common_lines"] = [8, 9]
             data = replay(fixture.cfg, str(fixture.home), "session", "session", [case])["cases"][0]["adaptive"]
             self.assertTrue(data["all_checks_pass"])
             self.assertIn("4294967295", json.dumps(data["answer"]))
             self.assertIn('client', json.dumps(data["answer"]))
             refs = data["answer"]["context"]["evidence"]
-            self.assertEqual(sum(k.startswith("7.") for k in refs), 2)
-            self.assertEqual(next(v for k, v in refs.items() if k.startswith("7."))["association"], "manifest_common_line")
-            case["common_lines"] = [6, 7, 9]
+            self.assertEqual(sum(k.startswith("9.") for k in refs), 2)
+            self.assertEqual(next(v for k, v in refs.items() if k.startswith("9."))["association"], "manifest_common_line")
+            case["common_lines"] = [8, 9, 11]
             with self.assertRaisesRegex(ValueError, "hors de la sequence"):
                 replay(fixture.cfg, str(fixture.home), "session", "session", [case])
         finally:

@@ -1189,7 +1189,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--source-line", type=int, help="Claude : numero de ligne physique dans le fichier source")
     runs = s.add_mutually_exclusive_group()
     runs.add_argument("--list-runs", action="store_true", help="Claude : decouvrir des runs par references et apercus bornes")
-    runs.add_argument("--run", help="Claude : vue du run par identifiant, task-id, chemin ou label non ambigu")
+    runs.add_argument("--run", help="Claude : run par identifiant, task-id, chemin, label ou call-id complet; appel non relie: diagnostic")
     s.add_argument("--field", dest="fields", action="append", help="vue run : champ demande, repetable (hitch_ms, stream.MB, tests_failed...)")
     s.add_argument("--fields-only", action="store_true", help="lecteur run : champs demandes et table de preuves partagee, sans chronologie complete")
     s.add_argument("--limit", type=int, default=20, help="decouverte de runs : taille de page (1 a 100)")

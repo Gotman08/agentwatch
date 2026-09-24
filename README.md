@@ -115,7 +115,9 @@ type, role, texte ou ligne source avant troncature. Mesures, provenances et limi
 
 Pour relier les notifications aux lectures d'un run, utiliser `inspect --list-runs`,
 puis `--run <id> --field <champ> --fields-only`. La borne `--through-line` garde
-l'etat historique du fil meme lorsque les dates reculent. Voir
+l'etat historique du fil meme lorsque les dates reculent. `--run <call-id>` part
+aussi d'un lanceur shell : les versions consignees, recus de taches et chemins
+etablissent les liens ; les appels non resolus restent consultables. Voir
 [`docs/run-inspection.md`](docs/run-inspection.md) pour les preuves, limites et rejeux.
 
 Codex sans hooks, sans effet sur Codex : ses rollouts (`~/.codex/sessions`) contiennent chaque action
