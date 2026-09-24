@@ -587,10 +587,17 @@ def cmd_inspect(args: argparse.Namespace) -> int:
     home = home_dir(args.home)
     cfg = load_config(home)
     filters = {k: getattr(args, k, None) for k in ("kinds", "role", "contains", "source_line")}
+    run_view = getattr(args, "list_runs", False) or getattr(args, "run", None) is not None
+    if getattr(args, "fields", None) and not getattr(args, "run", None):
+        raise SystemExit("--field necessite --run")
+    if getattr(args, "through_line", None) is not None and not run_view:
+        raise SystemExit("--through-line necessite --run ou --list-runs")
+    if getattr(args, "fields_only", False) and not (getattr(args, "run", None) and getattr(args, "fields", None)):
+        raise SystemExit("--fields-only necessite --run et --field")
     if args.client == "claude-code":
         from agentwatch.reports import inspect_claude as INS
     else:
-        if any(v is not None for v in filters.values()):
+        if run_view or any(v is not None for v in filters.values()):
             raise SystemExit("les filtres types de cette version concernent --client claude-code")
         _auto_import_rollouts(home, cfg, EventStore(home, cfg))    # * parts calculees par appel a jour
     since, until = _slice_bounds(args)
@@ -608,6 +615,22 @@ def cmd_inspect(args: argparse.Namespace) -> int:
                 raise ValueError("le fichier de sortie est un journal source : export refuse pour le preserver")
     except ValueError as exc:
         raise SystemExit(str(exc)) from None
+    if run_view:
+        from agentwatch.reports import inspect_runs
+        try:
+            result = inspect_runs.analyse(cfg, str(home), args.session, run=args.run, fields=args.fields,
+                                          thread=args.thread, since=since, until=until, max_chars=args.max_chars,
+                                          limit=args.limit, offset=args.offset, through_line=args.through_line, **filters)
+            if args.fields_only:
+                result = inspect_runs.compact_answer(result)
+        except ValueError as exc:
+            raise SystemExit(str(exc)) from None
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(out_path, "w", encoding="utf-8", newline="\n") as fh:
+            inspect_runs.render(result, fh, args.format)
+        _out(f"vue par run ecrite : {out_path} ({out_path.stat().st_size} octets) ; "
+             "versions consignees uniquement, aucune consommation API ni economie deduite")
+        return 0
     out_path.parent.mkdir(parents=True, exist_ok=True)
     try:
         with open(out_path, "w", encoding="utf-8", newline="\n") as fh:
@@ -1164,6 +1187,14 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--role", choices=("user", "assistant", "tool"), help="Claude : role du contenu, resultats d'outils separes")
     s.add_argument("--contains", help="Claude : texte litteral insensible a la casse, recherche avant bornage")
     s.add_argument("--source-line", type=int, help="Claude : numero de ligne physique dans le fichier source")
+    runs = s.add_mutually_exclusive_group()
+    runs.add_argument("--list-runs", action="store_true", help="Claude : decouvrir des runs par references et apercus bornes")
+    runs.add_argument("--run", help="Claude : vue du run par identifiant, task-id, chemin ou label non ambigu")
+    s.add_argument("--field", dest="fields", action="append", help="vue run : champ demande, repetable (hitch_ms, stream.MB, tests_failed...)")
+    s.add_argument("--fields-only", action="store_true", help="lecteur run : champs demandes et table de preuves partagee, sans chronologie complete")
+    s.add_argument("--limit", type=int, default=20, help="decouverte de runs : taille de page (1 a 100)")
+    s.add_argument("--offset", type=int, default=0, help="decouverte de runs : decalage dans les references")
+    s.add_argument("--through-line", type=int, help="vue run : arret inclusif a cette ligne du --thread, sans supposer l'ordre des horodatages")
     s.add_argument("--session", required=True, help="identifiant (ou prefixe) du fil racine de la session")
     s.add_argument("--thread", help="seulement ce fil (identifiant ou prefixe)")
     s.add_argument("--day", help="seulement ce jour (AAAA-MM-JJ, jour local)")

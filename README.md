@@ -113,6 +113,11 @@ observees autour des compactions. `inspect` peut filtrer les messages Claude par
 type, role, texte ou ligne source avant troncature. Mesures, provenances et limites :
 [`docs/claude-context.md`](docs/claude-context.md).
 
+Pour relier les notifications aux lectures d'un run, utiliser `inspect --list-runs`,
+puis `--run <id> --field <champ> --fields-only`. La borne `--through-line` garde
+l'etat historique du fil meme lorsque les dates reculent. Voir
+[`docs/run-inspection.md`](docs/run-inspection.md) pour les preuves, limites et rejeux.
+
 Codex sans hooks, sans effet sur Codex : ses rollouts (`~/.codex/sessions`) contiennent chaque action
 (code de sortie, duree), l'usage en tokens de chaque reponse et les sous-agents. AgentWatch les lit en
 lecture seule, de facon incrementale et en priorite d'arriere-plan, automatiquement avant `sessions`,
