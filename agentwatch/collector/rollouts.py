@@ -586,6 +586,8 @@ class RolloutReader:
         st.setdefault("emitters", {})          # appel de haut niveau -> reponse emettrice
         st.setdefault("emit_tokens", {})       # appel de haut niveau -> tokens de sortie de sa reponse emettrice
         st.setdefault("emit_input", {})        # appel de haut niveau -> [entree totale, dont cache] de sa reponse emettrice
+        st.setdefault("emit_provenance", {})   # references explicites ; distinctes de la regle d'allocation
+        st.setdefault("output_provenance", {})  # sortie de fonction (meme quand un item a deja fourni la fin)
         st.setdefault("totals", _usage_numbers(None))
         st.setdefault("messages", 0)
         st.setdefault("execs_without_actions", 0)
@@ -595,6 +597,7 @@ class RolloutReader:
         st.setdefault("pending_items", [])    # elements AgentMessage/UserMessage en attente de rapprochement (10 lignes)
         self.st = st
         self._src: dict[str, Any] | None = None
+        self._src_identity: dict[str, Any] | None = None
         self._recent_texts: list[str] = []      # * textes des derniers messages : en memoire seulement, jamais dans l'etat
         self._pending_texts: dict[str, str] = {}
         self.events: list[dict[str, Any]] = []
@@ -644,6 +647,8 @@ class RolloutReader:
         ev["evidence"]["import_source"] = SOURCE
         if self._src is not None:
             ev["evidence"]["source"] = dict(self._src)
+        if self._src_identity and (ev.get("call_id") or ev.get("phase") == S.PHASE_USAGE):
+            ev["evidence"]["source_identity"] = dict(self._src_identity)
         if self.agent_id and not ev.get("agent_id"):
             ev["agent_id"], ev["agent_type"] = self.agent_id, self.agent_type
         ev = sanitize_event(ev, self.key, self.cfg)
@@ -713,6 +718,7 @@ class RolloutReader:
             self.flush_items()
         # * Source de chaque evenement : fichier, ligne et octet dans le rollout (`inspect` montre les memes lignes).
         self._src = {"file": os.path.basename(self.path), "line": self.st["line_no"], "offset": offset}
+        self._src_identity = None
         try:
             o = json.loads(raw)
         except ValueError:
@@ -726,6 +732,15 @@ class RolloutReader:
         raw_p = o.get("payload")
         p: dict[str, Any] = raw_p if isinstance(raw_p, dict) else {}
         pt = p.get("type")
+        if t in ("response_item", "event_msg", "token_usage_record"):
+            # Champs observes du journal uniquement. Un turn_id commun n'est pas
+            # un lien appel -> reponse ; ne jamais le promouvoir en correlation.
+            self._src_identity = {"record_type": t, **{k: p[k] for k in
+                ("id", "call_id", "response_id", "session_id", "thread_id", "turn_id")
+                if isinstance(p.get(k), str) and 0 < len(p[k]) <= 160}}
+            it = p.get("item")
+            if isinstance(it, dict) and isinstance(it.get("id"), str) and 0 < len(it["id"]) <= 160:
+                self._src_identity["item_id"] = it["id"]
         ns = iso_to_ns(o.get("timestamp"))
         if ns is not None:
             self.st["last_ns"] = ns
@@ -866,7 +881,8 @@ class RolloutReader:
         if pt == "custom_tool_call":
             cid = p.get("call_id")
             if isinstance(cid, str):
-                self.st["open_execs"][cid] = {"emitter": None, "actions": [], "tool": p.get("name") or "exec"}
+                self.st["open_execs"][cid] = {"emitter": None, "actions": [], "tool": p.get("name") or "exec",
+                                             "source": self._src, "source_identity": self._src_identity}
                 self.st["pending_emit"].append(cid)
         elif pt == "custom_tool_call_output":
             cid = p.get("call_id")
@@ -874,6 +890,7 @@ class RolloutReader:
             text = _content_text(p.get("output"))
             size = len(text)
             if ex is not None:
+                ex["output_provenance"] = {"source": self._src, "source_identity": self._src_identity}
                 if not ex["actions"]:
                     self.st["execs_without_actions"] += 1
                 # * Ce que le modele recoit de l'exec entier : taille livree, images, et coupe au milieu par Codex.
@@ -1122,7 +1139,9 @@ class RolloutReader:
         elif iid in self.st.setdefault("fn_closed", []):
             return
         parent = None if fn is not None else self._parent_exec()
-        evidence: dict[str, Any] = {"rollout_item": ty, "exec_call_id": parent, "item_status": item.get("status")}
+        evidence: dict[str, Any] = {"rollout_item": ty, "exec_call_id": parent, "item_status": item.get("status"),
+                                   "call_identity_basis": "matching_function_call_id" if fn is not None else
+                                   "last_open_exec_in_log" if parent is not None else "standalone_item_id"}
         cwd = clean_path(item.get("cwd"))
         dur = _duration_ms(item.get("duration"))
         size = 0
@@ -1314,6 +1333,7 @@ class RolloutReader:
         output = p.get("output")
         text = output if isinstance(output, str) else json.dumps(output, ensure_ascii=False)
         self.st["to_consume"].append([cid, len(text), "fn"])
+        self.st["output_provenance"][cid] = {"source": self._src, "source_identity": self._src_identity}
         if info.get("item_end"):
             return     # * fin deja donnee par l'item MCP de meme identifiant (statut, duree)
         # * Fonctions de collaboration et d'attente : sortie vide ou JSON, aucun code de sortie. Sans indice
@@ -1375,6 +1395,8 @@ class RolloutReader:
                 self.st["usage_format"] = "mixte"
         u = _usage_numbers(p.get("usage"))
         rid = p.get("response_id") if isinstance(p.get("response_id"), str) else f"resp-{self.st['responses']}"
+        response_ref = {"response_id": rid, "source": self._src, "source_identity": self._src_identity,
+                        "id_origin": "source_field" if (self._src_identity or {}).get("response_id") == rid else "generated"}
         idx = self.st["responses"]
         self.st["responses"] += 1
         self.st["last_input"] = u["input_tokens"]
@@ -1410,10 +1432,17 @@ class RolloutReader:
                 out_parts = split_exact(out_tok, aw) if isinstance(out_tok, int) else [None] * len(acts)
                 for (iid, _s), a_in, a_out in zip(acts, in_parts, out_parts):
                     self._usage_obs(iid, a_in, a_out, ex.get("emitter"), rid, idx, ns, len(acts), ex.get("in_tokens"),
-                                    ex.get("delivery"))
+                                    ex.get("delivery"), {"operation_to_emitter": "last_open_exec_in_log",
+                                    "parent_call_id": cid, "parent_source": ex.get("source"),
+                                    "parent_source_identity": ex.get("source_identity"),
+                                    "emitter": ex.get("emitter_provenance"), "consumer": response_ref,
+                                    "output": ex.get("output_provenance")})
             else:
                 self._usage_obs(cid, share, self.st["emit_tokens"].pop(cid, None), self.st["emitters"].pop(cid, None),
-                                rid, idx, ns, 1, self.st.setdefault("emit_input", {}).pop(cid, None))
+                                rid, idx, ns, 1, self.st.setdefault("emit_input", {}).pop(cid, None),
+                                correlation={"operation_to_emitter": "function_call_id" if kind == "fn" else "unlinked_item",
+                                             "emitter": self.st["emit_provenance"].pop(cid, None), "consumer": response_ref,
+                                             "output": self.st["output_provenance"].pop(cid, None)})
         self.st["to_consume"] = []
         # * Emission : la sortie de cette reponse est l'appel qu'elle vient d'emettre (un appel par reponse observe).
         pend = self.st["pending_emit"]
@@ -1422,20 +1451,26 @@ class RolloutReader:
                 self.st["open_execs"][cid]["emitter"] = rid
                 self.st["open_execs"][cid]["out_tokens"] = u["output_tokens"] // max(1, len(pend))
                 self.st["open_execs"][cid]["in_tokens"] = [u["input_tokens"], u["cached_input_tokens"]]
+                self.st["open_execs"][cid]["emitter_provenance"] = response_ref
             else:
                 self.st["emitters"][cid] = rid
                 self.st["emit_tokens"][cid] = u["output_tokens"] // max(1, len(pend))
                 self.st.setdefault("emit_input", {})[cid] = [u["input_tokens"], u["cached_input_tokens"]]
+                self.st["emit_provenance"][cid] = response_ref
         self.st["pending_emit"] = []
 
     def _usage_obs(self, call_id: str, uncached: int, out_tok: int | None, emitter: str | None, consumer: str, idx: int,
                    ns: int | None, siblings: int, emit_in: list[int] | None = None,
-                   delivery: dict[str, Any] | None = None) -> None:
+                   delivery: dict[str, Any] | None = None, correlation: dict[str, Any] | None = None) -> None:
         emit_in = emit_in if isinstance(emit_in, list) and len(emit_in) == 2 else [None, None]
         ev = S.empty_event()
         if isinstance(delivery, dict):
             # * Faits de l'exec entier (partages par ses actions) : a lire une fois par `exec_call_id`.
             ev["evidence"].update({k: v for k, v in delivery.items() if v is not None})
+        if correlation is not None:
+            ev["evidence"]["allocation_correlation"] = {**correlation,
+                "emission_rule": "pending_calls_at_usage_record", "consumption_rule": "outputs_since_previous_usage_record",
+                "semantics": "rule_based_allocation_not_tool_marginal_cost"}
         ev.update({"client": CLIENT_CODEX, "phase": S.PHASE_OBSERVATION, "session_id": self.session_id, "call_id": call_id,
                    "hook_event_name": "rollout_usage", "model": self.st.get("model"),
                    "usage": {"scope": "call", "source": SOURCE, "uncached_input_tokens": uncached, "output_tokens": out_tok,
@@ -1450,6 +1485,7 @@ class RolloutReader:
 
     def session_usage_event(self) -> None:
         self._src = None     # * total du fil : aucune ligne source unique
+        self._src_identity = None
         t = dict(self.st["totals"])
         if not self.st["responses"]:
             return

@@ -42,12 +42,16 @@ class RichViewTests(unittest.TestCase):
 
     @unittest.skipUnless(HAS_RICH, "rich non installe")
     def test_html_svg_and_text_exports(self) -> None:
+        (self.home / "config.json").write_text(json.dumps({"detectors": {"repeated_calls": {
+            "tolerated_delay_ratio": 0.1, "min_tolerated_delay_s": 17}}}), encoding="utf-8")
         html_path = self.home / "r.html"
         self._run("report", "--session", "rich", "--format", "html", "--out", str(html_path))
         html = html_path.read_text(encoding="utf-8")
         self.assertTrue(html.lstrip().startswith("<!DOCTYPE html>"))
         self.assertIn("AgentWatch", html)
         self.assertIn("repete 2 fois", html)
+        self.assertIn("Verifications pour trancher", html)
+        self.assertIn("tolerated_delay_ratio", html)
         svg_path = self.home / "r.svg"
         self._run("report", "--session", "rich", "--format", "svg", "--out", str(svg_path))
         self.assertIn("<svg", svg_path.read_text(encoding="utf-8")[:300])
@@ -55,7 +59,12 @@ class RichViewTests(unittest.TestCase):
         self._run("report", "--session", "rich", "--format", "rich", "--out", str(txt_path))
         txt = txt_path.read_text(encoding="utf-8")
         self.assertIn("Opportunites prioritaires", txt)
-        self.assertIn("agent-rich", txt)
+        # Le rendu affiche le prefixe unique, l'identifiant complet reste dans le JSON.
+        self.assertIn("agent-ri", txt)
+        report = json.loads(self._run("report", "--session", "rich", "--format", "json"))
+        self.assertIn("agent-rich", report["agent_labels"])
+        self.assertIn("tolerated_delay_ratio", txt)
+        self.assertIn("Verifications pour trancher", txt)
         self.assertNotIn("\x1b[", txt, "export texte sans sequences ANSI")
 
     def test_auto_format_is_markdown_when_not_a_tty(self) -> None:

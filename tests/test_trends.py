@@ -112,8 +112,12 @@ class TrendsTests(unittest.TestCase):
         self.assertEqual(set(projects), {r"C:\proj1", r"C:\proj2"})
         p1, p2 = projects[r"C:\proj1"], projects[r"C:\proj2"]
         self.assertEqual((p1["sessions"], p1["clients"]), (4, ["claude-code", "codex"]))
-        self.assertEqual([row["pattern_key"].split("|")[0] for row in p1["recurring"]], ["A", "B"])
-        self.assertEqual(p1["recurring"][0]["sessions"], 3, "compte des sessions limite au projet")
+        self.assertEqual([row["pattern_key"].split("|")[0] for row in p1["recurring"]], ["B", "A"])
+        # Les quatre occurrences globales de A ne doivent plus fausser son rang dans proj1 (trois seulement).
+        self.assertEqual(p1["recurring"][1]["sessions"], 3, "compte des sessions limite au projet")
+        self.assertEqual(p1["recurring"][1]["occurrences"], 3)
+        self.assertEqual(p1["recurring"][1]["calls"], 6)
+        self.assertTrue(all(e["project_dir"] == r"C:\proj1" for e in p1["recurring"][1]["examples"]))
         self.assertEqual(p1["single_session_patterns"], 1, "notes.txt relu une seule fois dans le projet")
         self.assertEqual(p2["sessions"], 1)
         self.assertEqual(p2["recurring"], [], "une seule session : aucune recurrence mesurable dans le projet")

@@ -33,7 +33,10 @@ hooks du client ──stdin JSON──▶ agentwatch/hook_entry.py (python -I, ~
 | `core/normalize.py` | categories d'outils, chemins, commandes shell, signatures d'erreur | oui |
 | `core/correlate.py` | evenements -> appels (`Call`), marqueurs, agents (`SessionView`) | non |
 | `core/intent.py` | appel -> unite de travail (operation normalisee, cible, parametres) independante de l'outil ; liste blanche de formes shell, `cd ... &&` gere, reste `unknown` | non |
-| `detectors/*.py` | cinq regles independantes (A lectures refaites, B boucles d'erreurs, C regroupables, D sequences, E service manipule a la main), seuils configurables | non |
+| `detectors/*.py` | sept regles independantes A-G, seuils configurables | non |
+| `reports/observed_graph.py`, `reports/replacements.py` | graphe de preuves, contrats de remplacement, preconditions trivalues et sensibilite ; enrichissement des rapports A-G et tendances | non |
+| `reports/wait_contracts.py` | audit local d'une attente existante, limite a des appels precis ; distinction code audite, version applicable et preference de delai | non |
+| `reports/token_coverage.py`, `reports/shared_json.py` | diagnostic numerique des allocations manquantes ; export 2.0 a references et reconstruction sans perte du JSON classique | non |
 | `reports/*.py` | statistiques, matrice de couverture, Markdown, JSON, retours locaux ; `trends.py` = vue multi-sessions (cle de motif stable, comptes par session / projet / client) | non |
 | `installer/*.py` | diff / apply / remove des hooks, sauvegardes | non |
 | `selftest.py` | constructeur de sessions synthetiques + scenarios de reference | non |

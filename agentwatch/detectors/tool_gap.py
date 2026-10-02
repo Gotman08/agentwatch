@@ -28,7 +28,7 @@ from agentwatch.core.correlate import Call, SessionView
 from agentwatch.detectors import base as B
 
 RULE_ID = "E.tool_gap"
-RULE_VERSION = "1.0"
+RULE_VERSION = "1.1"
 _FAILED = {S.STATUS_ERROR, S.STATUS_TIMEOUT, S.STATUS_DENIED}
 _WRAPPERS = {"sudo", "doas", "time", "rtk", "env", "nohup", "cd"}
 FAMILIES: dict[str, set[str]] = {
@@ -179,15 +179,14 @@ def detect(view: SessionView, cfg: dict[str, Any]) -> list[B.Finding]:
             conf = B.CONFIDENCE_LOW
             why = f"{n} commandes vers la meme cible, sans echec ; aucun serveur MCP lie observe dans la session"
         names = ", ".join(r["server"] for r in related)
-        title = f"{n} commandes {family} vers {target!r} faites a la main" + (f" alors que le serveur MCP {names} etait disponible" if related else "")
+        title = f"{n} commandes {family} vers {target!r} faites a la main" + (f" ; serveur MCP apparente observe : {names}" if related else "")
         if related:
-            text = (f"Passer par le serveur MCP {names}, deja disponible dans cette session : chaque operation revient en un appel "
-                    f"structure, sans construire la commande ni relire une sortie brute. Si une operation manque, l'ajouter au "
-                    f"serveur plutot que de repasser par le shell.")
+            text = (f"Verifier si un outil du serveur MCP {names} couvre ces operations avec les memes resultats, droits, erreurs "
+                    f"et effets. La presence d'un serveur apparente ne prouve ni cette capacite ni sa disponibilite au moment requis.")
         else:
-            text = (f"Candidat pour un outil MCP ou une skill {family!r} vers {target!r} : {n} commandes a construire et {n} sorties "
-                    f"brutes a lire dans cette session, contre un appel structure par operation (moins de tokens, plus de contexte "
-                    f"utile). AgentWatch ne cree rien : a decider.")
+            text = (f"Candidat pour un outil MCP ou une skill {family!r} vers {target!r} : {n} commandes observees. "
+                    f"Definir puis verifier le contrat de remplacement ; une skill ne reduit pas automatiquement le nombre "
+                    f"d'appels. Disponibilite de la capacite exacte inconnue. AgentWatch ne cree rien.")
         findings.append(B.Finding(
             rule_id=RULE_ID, rule_version=RULE_VERSION, kind="manual_service_access", title=title,
             confidence=conf, confidence_rationale=why + ". " + B.LIMIT_HEURISTIC,
@@ -196,8 +195,7 @@ def detect(view: SessionView, cfg: dict[str, Any]) -> list[B.Finding]:
                       "call_seqs": [c.seq for c in members][:40], "statuses": [c.status for c in members][:40], "failures": failures,
                       "mcp_servers_seen": sorted(servers), "related_servers": related},
             explanation=(f"{n} commandes de la famille {family} ({', '.join(sorted(cl['heads']))}) visent {target!r} dans la session. "
-                         "Chacune a demande de construire une commande puis de lire sa sortie brute ; un outil qui expose ces "
-                         "operations rend la meme information en un appel, avec un resultat structure."),
+                         "Un remplacement structure exige de verifier chaque operation et les informations a conserver."),
             counter_indications=[
                 "Une commande shell ponctuelle reste legitime : le signalement porte sur la repetition vers une meme cible.",
                 "Un outil MCP a un cout fixe (demarrage, schema dans le contexte) : rentable seulement si l'operation revient.",
@@ -208,7 +206,9 @@ def detect(view: SessionView, cfg: dict[str, Any]) -> list[B.Finding]:
                           if not any(isinstance(c.usage, dict) for c in members) else []),
             observed_cost=B.observed_cost(members),
             proposal={"type": "use_or_build_tool", "steps_replaced": n, "family": family, "target": target,
-                      "tool_candidates": [r["server"] for r in related], "text": text},
+                      "tool_candidates": [r["server"] for r in related], "text": text,
+                      "steps_replaced_basis": "candidate_scope_not_demonstrated_reduction",
+                      "capability_availability": "unknown", "capability_equivalence": "unknown"},
             validation_protocol=[
                 "Lister les operations distinctes faites par ces commandes (verbes) et verifier qu'un outil MCP ou une skill les couvre.",
                 "Transcripts importes : comparer les tokens de ces commandes avec ceux d'un appel MCP equivalent.",

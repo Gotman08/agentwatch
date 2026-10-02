@@ -132,6 +132,9 @@ def _finding_panel(f: dict[str, Any], detailed: bool):
         body.append("\nValidation :\n", style="bold")
         for i, s in enumerate(f["validation_protocol"], 1):
             body.append(f"  {i}. {s}\n")
+    from agentwatch.reports.replacements import summary_lines
+    if f.get("replacement_analysis"):
+        body.append("\n" + "\n".join(summary_lines(f["replacement_analysis"])) + "\n")
     if f.get("feedback"):
         body.append(f"\nRetour local : {f['feedback'].get('mark')}", style="italic")
     return Panel(body, title=f"[{style}]{f['title']}[/]", border_style=style or "white", expand=True)
@@ -163,11 +166,17 @@ def render(report: dict[str, Any], console: Any) -> None:
     if prov.get("text"):
         head.append(f"\nSource des evenements : {prov['text']}", style="dim")
     console.print(Panel(head, title="AgentWatch - rapport de session", border_style="cyan"))
+    for warning in report.get("config_warnings", []):
+        console.print(Text("Avertissement de configuration : " + warning, style="yellow"))
 
     findings = report["findings"]
     top_ids = set(report["top_findings"])
     console.rule("[bold]Opportunites prioritaires")
     console.print(Text("Classement : " + " > ".join(report["ranking_criteria"]) + ". Aucun score global.", style="dim"))
+    union = report.get("finding_cost_union")
+    if union:
+        console.print(Text(f"Perimetre unique des signalements actifs : {union['unique_calls']} appels "
+                           f"({union['call_references']} references). Couts des motifs et scenarios non additionnables.", style="dim"))
     top = [f for f in findings if f["finding_id"] in top_ids]
     if not top:
         console.print(Panel(report.get("no_issue_statement") or "Aucun probleme demontre dans les donnees couvertes.", border_style="green"))

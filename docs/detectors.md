@@ -354,9 +354,10 @@ un outil du client (shell, `wait`, `wait_agent`) non, c'est l'agent qui choisit 
 Cadence simulee (sondages, reessais) : pour chaque delai minimal de `cooldowns_s` (10 s a 10 min), appels
 gardes, evites (dont allers-retours) et retard ajoute a la detection de chaque changement de phase. Modele :
 un appel arrive avant la fin du delai est retenu jusqu'a cette fin puis servi, les appels intermediaires
-disparaissent ; retard <= delai. Delai suggere : le plus long dont le retard reste sous
-max(`min_tolerated_delay_s`, `tolerated_delay_ratio` x attente typique), soit 10 % de la duree typique d'un
-episode. Sans changement de phase observe, le retard vaut `None` et s'affiche « non estimable », jamais 0 ms qui se
+disparaissent ; la consultation differee finale reste servie et comptee ; retard <= delai.
+Delai suggere : le plus long sous le budget fixe `min_tolerated_delay_s` (30 s par defaut).
+La selection ignore l'issue de la trace et l'ancien `tolerated_delay_ratio`.
+Sans changement de phase observe, le retard vaut `None` et s'affiche « non estimable », jamais 0 ms qui se
 lirait comme une absence de retard ; le rapport ajoute alors que rien n'etablit que les appels en moins auraient ete
 retirables sans consequence sur le travail attendu. Les colonnes disent « appels restants » et « appels en moins »,
 et non « evites » : la simulation compte des appels, elle ne demontre pas qu'ils etaient superflus.
@@ -383,7 +384,7 @@ justifiees.
 Limites : le raisonnement du modele n'est pas observe (seuls les faits et les categories annoncees) ; un
 etat identique a l'empreinte peut cacher un detail utile ; la simulation suppose qu'un etat observe persiste
 jusqu'a l'appel suivant. Reglages : `detectors.repeated_calls` (`min_calls`, `episode_gap_s`,
-`min_avoidable_calls`, `cooldowns_s`, `min_tolerated_delay_s`, `tolerated_delay_ratio`, `rhythm_top`,
+`min_avoidable_calls`, `cooldowns_s`, `min_tolerated_delay_s`, `rhythm_top`,
 `report_top`).
 
 ## Contexte : sorties relues, reprises apres compaction, quota (section du rapport, sans verdict)

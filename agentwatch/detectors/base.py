@@ -40,6 +40,7 @@ class Finding:
     validation_protocol: list[str]
     finding_id: str = ""
     feedback: dict[str, Any] | None = None
+    replacement_analysis: dict[str, Any] | None = None
 
     def __post_init__(self) -> None:
         if not self.finding_id:
@@ -125,6 +126,19 @@ def cost_tokens(cost: dict[str, Any]) -> int | None:
     """Total de tokens mesures d'un cout observe, None si non mesure."""
     t = cost.get("tokens")
     return int(t["total"]) if isinstance(t, dict) and isinstance(t.get("total"), int) else None
+
+
+def finding_cost_union(calls: Iterable[Call], findings: Iterable[Finding]) -> dict[str, Any]:
+    """Union des appels d'UNE session ; les alternatives et signalements ne sont pas additifs."""
+    refs = [key for f in findings for key in f.calls]
+    selected = set(refs)
+    unique = {c.key: c for c in calls if c.key in selected}
+    return {"basis": "unique_call_keys_within_session", "observed_cost": observed_cost(unique.values()),
+            "call_references": len(refs), "unique_calls": len(unique),
+            "overlapping_references": len(refs) - len(selected),
+            "unresolved_call_keys": sorted(selected - unique.keys()),
+            "savings_estimate": None,
+            "note": "Union des couts observes ; parts de tokens par appel deja allouees, aucune somme de gains de scenarios."}
 
 
 def refs(calls: Iterable[Call]) -> list[dict[str, Any]]:

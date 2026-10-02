@@ -35,6 +35,13 @@ pas seulement sur des appels identiques. La commande `trends` regroupe ensuite l
 signalements de toutes les sessions d'une fenetre par motif stable et compte dans combien
 de sessions, de projets et de clients chacun revient. Voir `docs/detectors.md`.
 
+Les rapports comparent aussi les **remplacements sous conditions** : reutilisation,
+regroupement, cadence, attente, capacite structuree et regle de projet. Chaque
+scenario expose son contrat, ses preuves, ses conditions inconnues ou refutees
+et la sensibilite de ses estimations. Aucune economie de tokens n'est deduite
+automatiquement d'un compteur d'appels plus faible. Voir
+[`docs/replacements.md`](docs/replacements.md).
+
 AgentWatch ne bloque rien, ne reecrit rien, ne renvoie rien au modele, n'execute jamais
 ce qu'il propose et ne quitte jamais la machine. Python 3.11+, bibliotheque standard.
 
@@ -64,6 +71,10 @@ python -m agentwatch report --latest --format markdown
 ```
 
 (`--session <id>` pour une session precise ; `--format json` pour l'export complet.)
+
+`--format json-refs` produit l'export **2.0** avec structures partagees et
+references de preuve conservees. Le JSON classique **1.1** reste disponible.
+Voir [formats et contrats d'attente](docs/replacements.md#export-json-avec-references).
 
 Sur plusieurs sessions (un signalement isole ne justifie rien ; ce qui justifie un script,
 une skill ou une regle de projet, c'est un motif qui revient) :

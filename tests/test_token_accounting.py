@@ -126,6 +126,19 @@ class TokenAccountingTests(unittest.TestCase):
         self.assertTrue(all(c.usage.get("emitter_input_tokens") == R1[0] for c in self.calls))
         self.assertEqual(G._context_reread(self.calls), R1[0])
 
+    def test_overlap_union_preserves_multicall_allocation_and_reimport_is_idempotent(self) -> None:
+        from tests.test_replacements import finding
+        from agentwatch.reports.trends import build_trends
+        fs = [finding(self.calls, rule) for rule in ("A.redundant_reads", "E.tool_gap", "G.repeated_calls")]
+        union = B.finding_cost_union(self.view.calls, fs)
+        self.assertEqual(union["observed_cost"]["tokens"]["total"], R1[2] + R2[0] - R2[1])
+        self.assertEqual(union["call_references"], 3 * len(self.calls))
+        before = build_trends(self.store, self.cfg, {}, days=0, min_sessions=1, now_ns=1800000000000000000)
+        paths = list((self.home.parent / "sessions").rglob("*.jsonl"))
+        R.import_rollouts(self.store, self.cfg, [str(p) for p in paths])
+        after = build_trends(self.store, self.cfg, {}, days=0, min_sessions=1, now_ns=1800000000000000000)
+        self.assertEqual(before, after)
+
 
 if __name__ == "__main__":
     unittest.main()

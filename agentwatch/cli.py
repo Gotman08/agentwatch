@@ -362,7 +362,7 @@ def _slice_bounds(args: argparse.Namespace) -> tuple[int | None, int | None]:
 
 
 def _analyse(home: Path, cfg: dict[str, Any], client: str, skey: str,
-             since: int | None = None, until: int | None = None) -> dict[str, Any]:
+             since: int | None = None, until: int | None = None, *, shared_json: bool = False) -> dict[str, Any]:
     from agentwatch.collector.store import EventStore
     from agentwatch.core.session import load_session
     from agentwatch.detectors import run_detectors
@@ -378,8 +378,11 @@ def _analyse(home: Path, cfg: dict[str, Any], client: str, skey: str,
         view = slice_view(view, since, until)
     findings = run_detectors(view, cfg)
     report = build_report(view, compute_stats(view, cfg), coverage_matrix(view), findings, cfg, load_feedback(home),
-                          _read_install_meta(home, client))
+                          _read_install_meta(home, client), copy_findings=not shared_json)
     report["collection_health"] = _health(home, cfg, store)
+    if shared_json:
+        from agentwatch.reports.shared_json import compact_report
+        return compact_report(report)
     return report
 
 
@@ -401,7 +404,7 @@ def cmd_report(args: argparse.Namespace) -> int:
         if not args.session:
             raise SystemExit("precisez --session <id> ou --latest")
         client, skey = _resolve_session(store, args.session, args.client)
-    report = _analyse(home, cfg, client, skey, *_slice_bounds(args))
+    report = _analyse(home, cfg, client, skey, *_slice_bounds(args), shared_json=args.format == "json-refs")
     fmt = args.format
     if fmt == "auto":
         # * Rich (optionnel) dans un terminal interactif, Markdown partout ailleurs (tubes, fichiers).
@@ -415,7 +418,7 @@ def cmd_report(args: argparse.Namespace) -> int:
             rich_view.render_to_terminal(report)
             return 0
         text = rich_view.export(report, "text" if fmt == "rich" else fmt, width=args.width)
-    elif fmt == "json":
+    elif fmt in ("json", "json-refs"):
         text = json.dumps(report, indent=2, ensure_ascii=False)
     else:
         text = render_markdown(report)
@@ -1171,8 +1174,8 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--session", help="identifiant (complet ou prefixe) ou cle de dossier")
     s.add_argument("--latest", action="store_true", help="derniere session enregistree (filtre --client possible)")
     s.add_argument("--client", choices=SUPPORTED_CLIENTS)
-    s.add_argument("--format", default="auto", choices=("auto", "markdown", "json", "rich", "html", "svg"),
-                   help="auto = rich dans un terminal si Rich est installe, sinon markdown ; html/svg = rendu Rich exporte")
+    s.add_argument("--format", default="auto", choices=("auto", "markdown", "json", "json-refs", "rich", "html", "svg"),
+                   help="auto = rich si disponible en terminal, sinon markdown ; json = 1.1, json-refs = 2.0 partage ; html/svg = Rich exporte")
     s.add_argument("--width", type=int, default=120, help="largeur du rendu Rich exporte (html/svg/rich vers fichier)")
     s.add_argument("--out", help="fichier de sortie (sinon stdout)")
     s.add_argument("--day", help="seulement ce jour (AAAA-MM-JJ, jour local)")

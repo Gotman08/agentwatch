@@ -19,10 +19,11 @@ from typing import Any, Callable
 
 from agentwatch import __version__
 from agentwatch.collector.store import EventStore
+from agentwatch.config import config_warnings
 from agentwatch.core import schema as S
 from agentwatch.core.session import load_session
 from agentwatch.detectors import run_detectors
-from agentwatch.detectors.base import Finding, cost_tokens
+from agentwatch.detectors.base import Finding, cost_tokens, finding_cost_union, observed_cost
 from agentwatch.reports.stats import session_tokens
 from agentwatch.detectors.tool_gap import mcp_servers_of, related_servers
 
@@ -131,6 +132,8 @@ def _collect_sessions(store: EventStore, cfg: dict[str, Any], client: str | None
             importer(c, skey)
             view = load_session(store, c, skey, cfg)
         findings = run_detectors(view, cfg)
+        from agentwatch.reports.replacements import attach_replacements
+        attach_replacements(view, findings, cfg)
         session_usage = session_tokens(view)
         rows.append({
             "client": c, "session_key": skey, "session_id": view.session_id or skey,
@@ -138,6 +141,7 @@ def _collect_sessions(store: EventStore, cfg: dict[str, Any], client: str | None
             "first_time": view.first_time, "last_time": view.last_time, "last_ns": view.last_ns or 0,
             "calls": len(view.calls), "errors": sum(1 for x in view.calls if x.status in _ERRORS),
             "findings": findings, "mcp_servers": mcp_servers_of(view.calls),
+            "call_index": {c.key: c for c in view.calls},
             "tokens": (session_usage["total_tokens"] if session_usage and
                        isinstance(session_usage.get("total_tokens"), int) and not isinstance(session_usage["total_tokens"], bool) else None),
         })
@@ -154,40 +158,25 @@ def _aggregate_patterns(rows: list[dict[str, Any]], feedback: dict[str, dict[str
             key, label = pattern_key(f)
             p = patterns.setdefault(key, {
                 "pattern_key": key, "label": label, "rule_id": f.rule_id, "kinds": set(),
-                "sessions": {}, "projects": set(), "clients": set(),
-                "occurrences": 0, "calls": 0, "output_bytes_sum": 0, "output_bytes_known_for": 0,
-                "tokens_sum": 0, "tokens_known_for": 0,
-                "confidence_counts": Counter(), "feedback": Counter(), "best": None, "examples": [],
+                "sessions": {}, "examples": [],
+                "active_findings": [], "rows": {},
             })
             p["kinds"].add(f.kind)
             false_positive = bool(f.feedback and f.feedback.get("mark") == "false-positive")
-            if f.feedback:
-                p["feedback"][f.feedback.get("mark")] += 1
-            sess = p["sessions"].setdefault(row["session_key"], {
+            identity = (row["client"], row["session_key"])
+            p["rows"][identity] = row
+            sess = p["sessions"].setdefault(identity, {
                 "session_id": row["session_id"], "client": row["client"], "project_dir": row["project_dir"],
                 "project_key": row["project_key"], "last_time": row["last_time"], "findings": 0, "active": False})
             sess["findings"] += 1
-            p["occurrences"] += 1
-            p["calls"] += len(f.calls)
-            cost = f.observed_cost or {}
-            if isinstance(cost.get("output_bytes_sum"), int):
-                p["output_bytes_sum"] += cost["output_bytes_sum"]
-                p["output_bytes_known_for"] += int(cost.get("output_bytes_known_for") or 0)
-            tok = cost_tokens(cost)
-            if tok is not None:
-                p["tokens_sum"] += tok
-                p["tokens_known_for"] += int((cost.get("tokens") or {}).get("known_for") or 0)
             p["examples"].append({"session_id": row["session_id"], "session_key": row["session_key"], "client": row["client"],
                                   "project_dir": row["project_dir"], "last_time": row["last_time"], "finding_id": f.finding_id,
-                                  "confidence": f.confidence, "title": f.title, "false_positive": false_positive})
+                                  "confidence": f.confidence, "title": f.title, "false_positive": false_positive,
+                                  "replacement_status_counts": (f.replacement_analysis or {}).get("status_counts", {})})
             if false_positive:
                 continue   # * un faux positif marque reste compte, mais ne porte ni confiance ni session active
             sess["active"] = True
-            p["projects"].add(row["project_key"])
-            p["clients"].add(row["client"])
-            p["confidence_counts"][f.confidence] += 1
-            if p["best"] is None or f.confidence_rank > p["best"].confidence_rank:
-                p["best"] = f
+            p["active_findings"].append((row["client"], row["session_key"], f))
     return patterns
 
 
@@ -210,29 +199,47 @@ def _active_sessions(p: dict[str, Any], *, project_key: str | None = None, clien
 
 
 def _rank_key(p: dict[str, Any], sessions: int) -> tuple[int, int, int, int, int, int]:
-    return (sessions, _CONF_RANK.get(_confidence_max(p) or "", 0), p["occurrences"], p["tokens_sum"], p["calls"], p["output_bytes_sum"])
+    return (sessions, _CONF_RANK.get(_confidence_max(p) or "", 0), p["occurrences"], p["tokens_sum"] or 0, p["calls"], p["output_bytes_sum"] or 0)
 
 
 def _pattern_row(p: dict[str, Any], sessions: list[dict[str, Any]], max_examples: int,
-                 servers: dict[str, set[str]]) -> dict[str, Any]:
-    best: Finding | None = p["best"]
+                 servers: dict[str, set[str]], *, project_key: str | None = None,
+                 client: str | None = None) -> dict[str, Any]:
+    local_rows = {key: r for key, r in p["rows"].items()
+                  if (project_key is None or r["project_key"] == project_key) and (client is None or r["client"] == client)}
+    entries = [(c, skey, f) for c, skey, f in p["active_findings"] if (c, skey) in local_rows]
+    local_findings = [f for _, _, f in entries]
+    # Les identifiants d'appel ne sont uniques qu'a l'interieur d'une session/client.
+    unique = {(c, skey, key): local_rows[(c, skey)]["call_index"][key]
+              for c, skey, f in entries for key in f.calls if key in local_rows[(c, skey)]["call_index"]}
+    cost = observed_cost(unique.values())
+    counts = Counter(f.confidence for f in local_findings)
+    best: Finding | None = max(local_findings, key=lambda f: f.confidence_rank, default=None)
     proposal = best.proposal.get("text") if best and isinstance(best.proposal, dict) else None
-    examples = sorted(p["examples"], key=lambda e: e["last_time"] or "", reverse=True)
+    examples = sorted((e for e in p["examples"] if (e["client"], e["session_key"]) in local_rows),
+                      key=lambda e: e["last_time"] or "", reverse=True)
+    feedback = Counter(f.feedback.get("mark") for r in local_rows.values() for f in r["findings"]
+                       if pattern_key(f)[0] == p["pattern_key"] and f.feedback)
     row = {
         "pattern_key": p["pattern_key"], "label": p["label"], "rule_id": p["rule_id"], "kinds": sorted(p["kinds"]),
         "sessions": len(sessions), "projects": len({s["project_key"] for s in sessions}),
         "project_dirs": sorted({s["project_dir"] or UNKNOWN_PROJECT for s in sessions}),
         "clients": sorted({s["client"] for s in sessions}),
-        "occurrences": p["occurrences"], "calls": p["calls"],
-        "output_bytes_sum": p["output_bytes_sum"] if p["output_bytes_known_for"] else None,
-        "output_bytes_known_for": p["output_bytes_known_for"],
-        "tokens_sum": p["tokens_sum"] if p["tokens_known_for"] else None, "tokens_known_for": p["tokens_known_for"],
-        "confidence_max": _confidence_max(p), "confidence_counts": dict(p["confidence_counts"]),
-        "feedback": dict(p["feedback"]), "proposal": proposal,
+        "occurrences": len(examples), "calls": len(unique),
+        "output_bytes_sum": cost["output_bytes_sum"], "output_bytes_known_for": cost["output_bytes_known_for"],
+        "tokens_sum": cost_tokens(cost),
+        "tokens_known_for": cost["tokens"].get("known_for", 0) if isinstance(cost["tokens"], dict) else 0,
+        "cost_basis": "union_of_active_calls_scoped_by_client_session_and_pattern",
+        "call_references": sum(len(f.calls) for f in local_findings),
+        "cost_note": "Appels distincts dans ce motif ; les couts de motifs differents ne s'additionnent pas.",
+        "confidence_max": _confidence_max({"confidence_counts": counts}), "confidence_counts": dict(counts),
+        "feedback": dict(feedback), "proposal": proposal,
+        "replacement_analysis_example": best.replacement_analysis if best else None,
+        "replacement_note": "Exemple lie a sa session ; preconditions non transferees aux autres sessions ; gains non additionnes.",
         "examples": examples[:max_examples], "examples_total": len(examples),
     }
     if p["pattern_key"].startswith("E|") and best is not None:
-        # * Un serveur MCP lie, vu dans n'importe quelle session de la fenetre : l'outil existe deja.
+        # * Un serveur apparente observe ne prouve pas une capacite equivalente.
         ev = best.evidence or {}
         row["mcp_available_in_window"] = related_servers(str(ev.get("family") or ""), str(ev.get("target") or ""), servers)
     return row
@@ -257,7 +264,9 @@ def _group_rows(rows: list[dict[str, Any]], patterns: dict[str, dict[str, Any]],
             if not sessions:
                 continue
             if len(sessions) >= min_sessions:
-                recurring.append((_rank_key(p, len(sessions)), _pattern_row(p, sessions, max_examples, servers)))
+                scoped = _pattern_row(p, sessions, max_examples, servers,
+                                      **({"project_key": gkey} if by == "project_key" else {"client": gkey}))
+                recurring.append((_rank_key(scoped, len(sessions)), scoped))
             else:
                 single += 1
         recurring.sort(key=lambda t: t[0], reverse=True)
@@ -307,7 +316,8 @@ def build_trends(store: EventStore, cfg: dict[str, Any], feedback: dict[str, dic
         if not sessions:
             false_only += 1
         elif len(sessions) >= min_sessions:
-            ranked.append((_rank_key(p, len(sessions)), _pattern_row(p, sessions, max_examples, servers)))
+            scoped = _pattern_row(p, sessions, max_examples, servers)
+            ranked.append((_rank_key(scoped, len(sessions)), scoped))
         else:
             single += 1
     ranked.sort(key=lambda t: t[0], reverse=True)
@@ -334,9 +344,21 @@ def build_trends(store: EventStore, cfg: dict[str, Any], feedback: dict[str, dic
             "recurring_patterns": len(shared), "recurring_labels": list(shared.values())[:3],
         })
     tokens_rows = [r["tokens"] for r in rows if isinstance(r["tokens"], int)]
+    unions = [{"client": r["client"], "session_key": r["session_key"],
+               **finding_cost_union(r["call_index"].values(), [f for f in r["findings"]
+                                    if not (f.feedback and f.feedback.get("mark") == "false-positive")])} for r in rows]
+    active_calls = []
+    for r in rows:
+        keys = {key for f in r["findings"] if not (f.feedback and f.feedback.get("mark") == "false-positive") for key in f.calls}
+        active_calls.extend(c for key, c in r["call_index"].items() if key in keys)
 
     return {
         "trends_version": TRENDS_VERSION, "agentwatch_version": __version__,
+        "config_warnings": config_warnings(cfg),
+        "finding_cost_union": {"observed_cost": observed_cost(active_calls), "by_session": unions,
+                               "savings_estimate": None,
+                               "basis": "union_of_active_calls_scoped_by_client_and_session",
+                               "note": "Chaque appel est compte une fois ; couts des motifs et scenarios alternatifs non additionnables."},
         "window": {"days": days, "since": S.now_iso(since_ns / 1e9) if since_ns is not None else None,
                    "until": S.now_iso(now_ns / 1e9), "client": client, "project": project, "min_sessions": min_sessions},
         "sessions_analysed": len(rows), "sessions_skipped": skipped,
@@ -418,6 +440,14 @@ def render_trends_markdown(report: dict[str, Any]) -> str:
              f"- Serveurs MCP observes dans la fenetre : {', '.join(report['mcp_servers_seen']) or 'aucun'}",
              f"- AgentWatch {report['agentwatch_version']} ; sessions ignorees : {report['sessions_skipped']}",
              ""]
+    for warning in report.get("config_warnings", []):
+        lines.extend(["Avertissement de configuration : " + warning, ""])
+    union = report.get("finding_cost_union")
+    if union:
+        cost = union["observed_cost"]
+        lines.extend([f"- Perimetre unique des signalements actifs : {cost['calls']} appels ; "
+                      f"{_n(cost['output_bytes_sum'])} octets ({cost['output_bytes_known_for']} appels renseignes) ; "
+                      f"{_n(cost_tokens(cost))} tokens repartis par calcul. {union['note']}", ""])
     if report.get("collection_health"):
         lines.append("Sante de la collecte : " + " ; ".join(f"{h['client']} : {h['message']}" for h in report["collection_health"]))
         lines.append("")
@@ -440,18 +470,22 @@ def render_trends_markdown(report: dict[str, Any]) -> str:
                       f"- Regle `{r['rule_id']}` ({', '.join(r['kinds'])}) ; {r['sessions']} session(s) sur {report['sessions_analysed']} ; "
                       f"{r['projects']} projet(s) : " + ", ".join(f"`{p}`" for p in r["project_dirs"]) + f" ; client(s) : {', '.join(r['clients'])}"]
             if r["tokens_sum"] is not None:
-                lines.append(f"- Cout mesure : {r['tokens_sum']} tokens sur {r['tokens_known_for']} appel(s) (transcripts ou rollouts) ; "
-                             "c'est ce qu'un outil ou une regle eviterait a chaque fois que le motif revient")
+                lines.append(f"- Cout attribue : {r['tokens_sum']} tokens sur {r['tokens_known_for']} appel(s) (transcripts ou rollouts) ; "
+                             "parts calculees du cout observe, pas une economie demontrable")
             ex = [e for e in r["examples"] if not e["false_positive"]]
             if ex:
                 lines.append("- Sessions les plus recentes : " + ", ".join(
                     f"`{e['session_id'][:12]}` ({_day(e['last_time'])}, {e['client']}, {e['confidence']})" for e in ex[:6])
                     + (f" ... ({r['examples_total']} signalements au total)" if r["examples_total"] > len(ex[:6]) else ""))
             if r.get("mcp_available_in_window"):
-                lines.append("- Outil deja disponible : serveur(s) MCP " + ", ".join(
+                lines.append("- Serveur(s) MCP apparente(s), equivalence a verifier : " + ", ".join(
                     f"`{m['server']}` ({m['basis']})" for m in r["mcp_available_in_window"]) + " observe(s) dans la fenetre")
             if r["proposal"]:
                 lines.append(f"- Proposition (du signalement le plus sur) : {r['proposal']}")
+            if r.get("replacement_analysis_example"):
+                from agentwatch.reports.replacements import summary_lines
+                lines.extend(summary_lines(r["replacement_analysis_example"]))
+                lines.append(r["replacement_note"])
             lines.append("- Signalements a marquer (`agentwatch feedback --finding <id> --mark relevant|false-positive`) : "
                          + ", ".join(f"`{e['finding_id']}`" for e in r["examples"][:6]))
             lines.append("")

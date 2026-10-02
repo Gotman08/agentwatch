@@ -2,21 +2,27 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict
+from dataclasses import asdict, fields
 from typing import Any
 
 from agentwatch import SCHEMA_VERSION, __version__
+from agentwatch.config import config_warnings
 from agentwatch.core.correlate import SessionView
-from agentwatch.detectors.base import Finding, rank_findings
+from agentwatch.detectors.base import Finding, finding_cost_union, rank_findings
 from agentwatch.reports.labels import agent_labels, provenance
 
-REPORT_VERSION = "1.0"
+REPORT_VERSION = "1.1"
 
 
 def build_report(view: SessionView, stats: dict[str, Any], coverage: list[dict[str, Any]],
                  findings: list[Finding], cfg: dict[str, Any], feedback: dict[str, dict[str, Any]],
-                 install_meta: dict[str, Any] | None) -> dict[str, Any]:
+                 install_meta: dict[str, Any] | None, *, copy_findings: bool = True) -> dict[str, Any]:
+    """Rapport classique. copy_findings=False emprunte les conteneurs seulement
+    pour un encodage partage immediat ; le rapport retourne ne doit pas etre mute.
+    """
     ranked = rank_findings(findings)
+    from agentwatch.reports.replacements import attach_replacements
+    graph = attach_replacements(view, ranked, cfg)
     for f in ranked:
         f.feedback = feedback.get(f.finding_id)
     max_top = int(cfg.get("report", {}).get("max_top_findings", 3))
@@ -42,6 +48,7 @@ def build_report(view: SessionView, stats: dict[str, Any], coverage: list[dict[s
         "report_version": REPORT_VERSION,
         "agentwatch_version": __version__,
         "schema_version": SCHEMA_VERSION,
+        "config_warnings": config_warnings(cfg),
         "session": {
             "client": view.client, "session_id": view.session_id, "model": view.model,
             "model_source": model_source,
@@ -60,7 +67,9 @@ def build_report(view: SessionView, stats: dict[str, Any], coverage: list[dict[s
         "top_findings": [f.finding_id for f in top],
         "max_listed_per_rule": int(cfg.get("report", {}).get("max_listed_per_rule", 15)),
         "repetitions_top": int(cfg.get("detectors", {}).get("repeated_calls", {}).get("report_top", 15)),
-        "findings": [f.to_dict() for f in ranked],
+        "findings": [f.to_dict() if copy_findings else {field.name: getattr(f, field.name) for field in fields(f)} for f in ranked],
+        "finding_cost_union": finding_cost_union(view.calls, [f for f in ranked if not (f.feedback and f.feedback.get("mark") == "false-positive")]),
+        "observed_dependency_graph": graph,
         "no_issue_statement": (None if top else
                                (f"Aucune opportunite demontree : {len(ranked)} signalement(s) a faible confiance seulement, listes ci-dessous."
                                 if low_only else "Aucun probleme demontre dans les donnees couvertes.")),

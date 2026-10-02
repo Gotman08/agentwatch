@@ -465,7 +465,7 @@ def _render_finding(f: Finding, detailed: bool) -> list[str]:
     if detailed:
         out.append("Preuve locale :")
         for k, v in f.evidence.items():
-            if k in ("pair_verdicts",):
+            if k in ("pair_verdicts", "cadence"):
                 continue
             out.append(f"- {k} : {_fmt(v) if not isinstance(v, (list, dict)) else v}")
         out.append("")
@@ -500,6 +500,10 @@ def _render_finding(f: Finding, detailed: bool) -> list[str]:
         out.append("- Tests : " + " ; ".join(r["tests"]))
         out.append("- Risques : " + " ; ".join(r["risks"]))
     out.append("")
+    from agentwatch.reports.replacements import summary_lines
+    out.extend(summary_lines(f.replacement_analysis))
+    if f.replacement_analysis:
+        out.append("")
     out.append("Protocole de validation :")
     out += [f"{i}. {s}" for i, s in enumerate(f.validation_protocol, 1)]
     out.append("")
@@ -530,6 +534,8 @@ def render_markdown(report: dict[str, Any]) -> str:
     if prov.get("text"):
         lines.append(f"- Source des evenements : {prov['text']}")
     lines.append("")
+    for warning in report.get("config_warnings", []):
+        lines.extend(["Avertissement de configuration : " + warning, ""])
     if s.get("warnings"):
         lines.append("Avertissements de lecture : " + " ; ".join(s["warnings"][:5]))
         lines.append("")
@@ -539,6 +545,11 @@ def render_markdown(report: dict[str, Any]) -> str:
     lines.append("## Opportunites prioritaires")
     lines.append("")
     lines.append("Classement : " + " > ".join(report["ranking_criteria"]) + ". Aucun score global.")
+    union = report.get("finding_cost_union")
+    if union:
+        lines.append(f"Perimetre unique des signalements actifs : {union['unique_calls']} appels "
+                     f"({union['call_references']} references, {union['overlapping_references']} recouvrements). "
+                     "Couts des signalements et scenarios alternatifs non additionnables.")
     lines.append("")
     cross = (report.get("stats") or {}).get("cross_agent") or {}
     if cross.get("agents", 0) > 1:

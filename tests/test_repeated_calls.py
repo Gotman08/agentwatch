@@ -352,8 +352,10 @@ class RepeatedCallsTests(unittest.TestCase):
     def test_markdown_explains_why(self) -> None:
         s = self._synth("render")
         s.response_gap_ms = 20_000
-        for i in range(8):
-            s.mcp("romeo", "job_status", {"job_id": 42}, json.dumps({"status": "RUNNING" if i < 7 else "COMPLETED"}))
+        # La derniere consultation differee est maintenant comptee ; 11 demandes
+        # donnent au moins 3 appels evites, seuil normal de ce test de rendu.
+        for i in range(11):
+            s.mcp("romeo", "job_status", {"job_id": 42}, json.dumps({"status": "RUNNING" if i < 10 else "COMPLETED"}))
         from agentwatch.detectors import run_detectors
         from agentwatch.reports.json_report import build_report
         from agentwatch.reports.stats import compute_stats, coverage_matrix
@@ -362,7 +364,7 @@ class RepeatedCallsTests(unittest.TestCase):
         report = build_report(view, compute_stats(view, cfg), coverage_matrix(view), run_detectors(view, cfg), cfg, {}, None)
         md = render_markdown(report)
         self.assertIn("## Appels repetes : pourquoi, a quel rythme", md)
-        self.assertIn("attente en cours 7", md)
+        self.assertIn("attente en cours 10", md)
         self.assertIn("Cadence simulee", md)
         self.assertIn("Rythme des outils", md)
         self.assertIn("G.repeated_calls", json.dumps(report["findings"]))

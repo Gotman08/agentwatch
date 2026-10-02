@@ -57,12 +57,15 @@ DEFAULTS: dict[str, Any] = {
         "tool_gap": {"enabled": True, "min_calls": 3, "strong_calls": 6},
         "repeated_guidance": {"enabled": True, "min_user_messages": 2, "min_instructions": 3, "min_chars": 80,
                               "max_findings": 10},
-        # * G : appels refaits a l'identique ; raison, rythme, verdict. Cadence simulee sur `cooldowns_s` ; retard de
-        #   detection tolere = max(min_tolerated_delay_s, tolerated_delay_ratio x attente typique).
+        # * G : politique choisie avant le rejeu, avec un budget fixe de retard.
         "repeated_calls": {"enabled": True, "min_calls": 3, "episode_gap_s": 1200, "min_avoidable_calls": 3,
                            "cooldowns_s": [10, 30, 60, 120, 300, 600], "min_tolerated_delay_s": 30,
-                           "tolerated_delay_ratio": 0.1, "rhythm_top": 15, "report_top": 15},
+                           "rhythm_top": 15, "report_top": 15},
     },
+    # * Couche de rapport uniquement. Catalogue explicite local, aucune decouverte reseau.
+    "replacements": {"enabled": True, "capabilities": [], "reaction_deadline_s": None,
+                     "reaction_deadline_kind": "result_received", "response_latency_bound_s": None,
+                     "scheduling_jitter_bound_s": None, "response_bound_includes_retries": None},
     # * `context` : section « Contexte » du rapport (debut de fenetre = N premieres reponses apres une compaction).
     "report": {"max_top_findings": 3, "max_listed_per_rule": 15,
                "context": {"recovery_responses": 8, "top_outputs": 10, "top_families": 12, "top_resources": 15},
@@ -123,7 +126,32 @@ def load_config(home: str | os.PathLike[str]) -> dict[str, Any]:
         cfg = _deep_merge(cfg, raw)
     except (OSError, ValueError) as exc:  # ! Ne jamais lever depuis un hook
         cfg["_config_warnings"].append(f"config.json ignore : {type(exc).__name__}: {exc}")
+    cfg["_config_warnings"] = config_warnings(cfg)
     return cfg
+
+
+def config_warnings(cfg: dict[str, Any]) -> list[str]:
+    """Avertissements aussi pour les configurations fournies directement aux rapports."""
+    warnings = list(cfg.get("_config_warnings") or [])
+    detectors = cfg.get("detectors")
+    d = detectors.get("repeated_calls") if isinstance(detectors, dict) else None
+    d = d if isinstance(d, dict) else {}
+    if "tolerated_delay_ratio" in d:
+        message = ("detectors.repeated_calls.tolerated_delay_ratio est ignore : "
+                   f"budget fixe applique = {fixed_delay_budget(d):g} s (min_tolerated_delay_s) ; "
+                   "politique fixed_configuration_before_replay, independante de l'issue de la trace. "
+                   "Ce budget concerne le lancement des consultations, pas la reception du resultat.")
+        if message not in warnings:
+            warnings.append(message)
+    return warnings
+
+
+def fixed_delay_budget(d: dict[str, Any]) -> float:
+    """Budget de lancement fixe de G, utilisable sans importer l'analyseur dans un hook."""
+    import math
+
+    budget = d.get("min_tolerated_delay_s", 30)
+    return float(budget) if type(budget) in (int, float) and math.isfinite(budget) and budget >= 0 else 30.0
 
 
 def write_default_config(home: str | os.PathLike[str]) -> str:

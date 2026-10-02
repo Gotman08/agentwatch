@@ -338,7 +338,7 @@ def build_session(events: list[dict[str, Any]], cfg: dict[str, Any]) -> SessionV
 
         meta = dict(ev.get("session_meta") or {})
         # * `source` : fichier, ligne et octet de la ligne du rollout qui a produit le marqueur (import Codex).
-        meta.update({k: v for k, v in (ev.get("evidence") or {}).items() if k in ("prompt_chars", "stop_hook_active", "source")})
+        meta.update({k: v for k, v in (ev.get("evidence") or {}).items() if k in ("prompt_chars", "stop_hook_active", "source", "source_identity")})
         if phase == S.PHASE_USAGE and isinstance(ev.get("usage"), dict):
             meta["usage"] = ev["usage"]   # * usage de session (import) : un marqueur, jamais un appel
         view.markers.append(Marker(phase=phase, ns=ns, time=ev.get("received_time"), agent_id=ev.get("agent_id"), meta=meta))
@@ -583,6 +583,8 @@ def _apply_tool_event(ev: dict[str, Any], phase: str, ns: int, agent: str, epoch
         call.start_ns, call.start_time = ns, ev.get("received_time")
         if src:
             call.evidence["source_start"] = src     # * ligne du rollout qui ouvre l'appel
+        if isinstance((ev.get("evidence") or {}).get("source_identity"), dict):
+            call.evidence["source_identity_start"] = ev["evidence"]["source_identity"]
         open_by_agent.setdefault(agent, []).append(call)
     elif phase in (S.PHASE_END, S.PHASE_FAILURE):
         if call.has_end:
@@ -631,7 +633,7 @@ def _apply_tool_event(ev: dict[str, Any], phase: str, ns: int, agent: str, epoch
         for k in ("result_count", "numLines", "totalLines", "stdout_chars", "stderr_chars", "status_basis", "exit_code_source", "error_hint",
                   "spawned_agent_id", "spawned_agent_type", "spawned_agent_model", "spawned_agent_status",
                   "spawned_agent_duration_ms", "spawned_agent_tool_calls", "spawned_agent_tool_stats",
-                  "state_fp", "result_phase", "timed_out", "exec_call_id", "read_only_hint",
+                  "state_fp", "result_phase", "timed_out", "exec_call_id", "read_only_hint", "call_identity_basis",
                   "rollout_item", "item_status", "web_action", "extension_action", "result_tools", "image_chars",
                   "collab_receivers", "collab_sender", "collab_status",
                   "delivered_chars", "original_token_count", "image_parts", "text_chars",
@@ -640,6 +642,8 @@ def _apply_tool_event(ev: dict[str, Any], phase: str, ns: int, agent: str, epoch
                 call.evidence[k] = ev["evidence"][k]
         if src:
             call.evidence["source_end"] = src       # * ligne du rollout qui ferme l'appel (resultat, statut, duree)
+        if isinstance((ev.get("evidence") or {}).get("source_identity"), dict):
+            call.evidence["source_identity_end"] = ev["evidence"]["source_identity"]
         if isinstance(ev.get("usage"), dict):
             call.usage = ev["usage"]
         lst = open_by_agent.get(agent, [])
@@ -655,7 +659,7 @@ def _apply_tool_event(ev: dict[str, Any], phase: str, ns: int, agent: str, epoch
             call.content_fingerprint = cf["value"]     # * ex. image vue : contenu lu dans la sortie de l'exec (rollout)
         evd = ev.get("evidence") or {}
         for k in ("collab_receivers", "collab_sender", "collab_status", "web_action", "web_results",
-                  "exec_delivered_chars", "exec_images", "exec_truncated_tokens"):
+                  "exec_delivered_chars", "exec_images", "exec_truncated_tokens", "allocation_correlation"):
             if k in evd and k not in call.evidence:
                 call.evidence[k] = evd[k]              # * element CollabAgentToolCall ou WebSearch : complete l'appel de fonction ;
                 #                                          livraison de l'exec entier (taille, images, coupe) : partagee par ses actions

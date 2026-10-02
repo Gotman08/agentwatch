@@ -50,7 +50,7 @@ from agentwatch.detectors import base as B
 from agentwatch.detectors.redundant_reads import _touches
 
 RULE_ID = "G.repeated_calls"
-RULE_VERSION = "1.0"
+RULE_VERSION = "1.2"
 CACHE_KEY = "repeated_calls"
 
 REASONS = ("same_response", "context_loss", "new_input", "after_change", "unavailable", "after_failure", "waiting",
@@ -87,6 +87,10 @@ def group_key(c: Call) -> str:
     #   comme quinze fois le meme appel).
     """
     parts = [c.agent_key, str(c.tool_name), str(c.target_key), c.params_key]
+    # Des actions importees (ex. web_search) ont une empreinte d'entree, mais
+    # aucun parametre expose. Le seul nom de l'outil ne prouve pas la repetition.
+    if not c.target_key and c.params_key in ("", "{}"):
+        parts.append("input=" + c.input_fingerprint if c.input_fingerprint else "unresolved=" + c.key)
     if _WAIT_NAME.search(c.mcp_tool or c.tool_name or ""):
         req = requested_delay_s(c)
         parts.append(f"delai={req:g}s" if req is not None else "delai=?")
@@ -310,51 +314,85 @@ def simulate_cooldown(calls: list[Call], phases: list[str], episodes: list[tuple
     #   ou consigne suivie par l'agent) ; les appels intermediaires disparaissent. Un changement vu par un appel
     #   evite l'est donc a la fin du delai : retard = dernier appel servi + delai - instant du changement (<= delai).
     """
-    cd = int(cooldown_s * 1e9)
-    kept = 0
-    avoided_rt = 0
+    import math
+    from bisect import bisect_left
+
+    if not math.isfinite(cooldown_s) or cooldown_s <= 0:
+        raise ValueError("cooldown_s must be finite and positive")
+    cd = max(1, int(cooldown_s * 1e9))
+    retained: list[int] = []
+    scheduled: list[int] = []
     delays: list[float] = []
     for a, b in episodes:
         last: int | None = None
         pending: int | None = None
+        episode_times: list[int] = []
         for k in range(a, b + 1):
             t = calls[k].order_ns
-            if k > a and phases[k] != phases[k - 1] and "unknown" not in (phases[k], phases[k - 1]) and pending is None:
-                pending = t
+            if pending is not None and last is not None and last + cd <= t:
+                last += cd
+                # Une demande exactement a l'echeance rejoint la consultation differee.
+                retained.append(k if last == t else pending)
+                scheduled.append(last)
+                episode_times.append(last)
+                pending = None
+                if last == t:
+                    continue
             if last is None or t - last >= cd:
-                kept += 1
                 last = t
-                if pending is not None:
-                    delays.append(max(0.0, (t - pending) / 1e9))
-                    pending = None
+                retained.append(k)
+                scheduled.append(t)
+                episode_times.append(t)
             else:
-                if round_trip is not None and round_trip[k]:
-                    avoided_rt += 1
-                if pending is not None:
-                    delays.append(max(0.0, (last + cd - pending) / 1e9))   # * servi a la fin du delai
-                    pending = None
+                pending = k
+        # ! La derniere demande differee (souvent le resultat terminal) coute un appel.
+        #   La supprimer du compteur tout en pretendant observer sa reponse etait incoherent.
+        if pending is not None and last is not None:
+            retained.append(pending)
+            scheduled.append(last + cd)
+            episode_times.append(last + cd)
+        for k in range(a + 1, b + 1):
+            if phases[k] != phases[k - 1] and "unknown" not in (phases[k], phases[k - 1]):
+                t = calls[k].order_ns
+                ix = bisect_left(episode_times, t)
+                if ix < len(episode_times):
+                    delays.append((episode_times[ix] - t) / 1e9)
+    kept_set = set(retained)
+    removed = [k for k in range(len(calls)) if k not in kept_set]
+    avoided_rt = sum(bool(round_trip[k]) for k in removed) if round_trip is not None else 0
     # * Sans changement de phase observe, le retard de detection n'est pas estimable : None, et non 0 ms, qui se
     #   lirait comme « aucun retard » (constate le 2026-09-21 sur `clock.sleep`, dont la phase ne change jamais).
-    return {"cooldown_s": cooldown_s, "calls": kept, "avoided": len(calls) - kept, "avoided_round_trips": avoided_rt,
+    return {"cooldown_s": cooldown_s, "calls": len(retained), "avoided": len(removed), "avoided_round_trips": avoided_rt,
+            "retained_indices": retained, "removed_indices": removed, "scheduled_times_ns": scheduled,
+            "model": "causal_throttle_with_deferred_final_request",
             "changes": len(delays),
             "max_delay_s": round(max(delays), 1) if delays else None,
             "mean_delay_s": round(sum(delays) / len(delays), 1) if delays else None}
 
 
 def _cadence(calls: list[Call], reps: list[dict[str, Any]], episodes: list[tuple[int, int]], d: dict[str, Any]) -> dict[str, Any]:
+    import math
+    from agentwatch.config import fixed_delay_budget
+
     phases = [phase_of(calls[0])] + [r["phase"] for r in reps]
     rts = [False] + [bool(r["round_trip"]) for r in reps]
-    sims = [simulate_cooldown(calls, phases, episodes, float(c), rts) for c in d.get("cooldowns_s", _DEFAULT_COOLDOWNS)]
+    candidates = d.get("cooldowns_s", _DEFAULT_COOLDOWNS)
+    candidates = candidates if isinstance(candidates, list) else _DEFAULT_COOLDOWNS
+    candidates = sorted({float(c) for c in candidates if isinstance(c, (int, float)) and not isinstance(c, bool)
+                         and math.isfinite(c) and c > 0})
+    sims = [simulate_cooldown(calls, phases, episodes, c, rts) for c in candidates]
     spans = [(calls[b].order_ns - calls[a].order_ns) / 1e9 for a, b in episodes if b > a]
     typical = median(spans) if spans else 0.0
-    tolerance = max(float(d.get("min_tolerated_delay_s", 30)), float(d.get("tolerated_delay_ratio", 0.1)) * typical)
-    ok = [s for s in sims if s["cooldown_s"] <= tolerance and s["avoided"] > 0]
+    tolerance = fixed_delay_budget(d)
+    # ! Ni la duree finale, ni les gains observes ne selectionnent la politique.
+    ok = [s for s in sims if s["cooldown_s"] <= tolerance]
     best = max(ok, key=lambda s: s["cooldown_s"]) if ok else None
     changes = max((s["changes"] for s in sims), default=0)
     return {"typical_wait_s": round(typical, 1), "tolerated_delay_s": round(tolerance, 1), "simulation": sims,
             "recommended": best, "phase_changes_seen": changes,
-            "basis": (f"retard tolere = max({d.get('min_tolerated_delay_s', 30)} s, "
-                      f"{int(float(d.get('tolerated_delay_ratio', 0.1)) * 100)} % de l'attente typique)"
+            "policy_selection": "fixed_configuration_before_replay",
+            "delay_measure": "poll_start_delay_not_result_receipt",
+            "basis": (f"budget fixe de retard = {tolerance:g} s ; cadence choisie independamment de l'issue de la trace"
                       + ("" if changes else " ; aucun changement de phase observe : retard de detection non estimable"))}
 
 
@@ -501,7 +539,7 @@ def analyse(view: SessionView, cfg: dict[str, Any]) -> dict[str, Any]:
     same_request_agents: dict[str, set[str]] = defaultdict(set)
     honored: dict[str, float] = {}
     for c in view.calls:
-        same_request_agents["\x1f".join((str(c.tool_name), str(c.target_key), c.params_key))].add(c.agent_key)
+        same_request_agents[group_key(c).split("\x1f", 1)[1]].add(c.agent_key)
         req = requested_delay_s(c)
         if req is not None and c.duration_ms is not None and c.duration_ms / 1000 >= 0.9 * req:
             honored[str(c.tool_name)] = max(honored.get(str(c.tool_name), 0.0), req)
@@ -599,7 +637,9 @@ def _summarise(gk: str, calls: list[Call], reps: list[dict[str, Any]], d: dict[s
             verdict, kind = "agent", "polling_instead_of_wait"
             why = (f"{reasons['waiting']} reprise(s) sur {n_rt} sondent un traitement en cours alors que "
                    f"`{wait_alt['tool']}` (attente du meme serveur) sert {wait_alt['calls']} fois dans la session")
-            suggestion = f"consigne : attendre avec `{wait_alt['tool']}` plutot que sonder" + (f" ; sinon {cad_txt}" if cad_txt else "")
+            suggestion = (f"candidat : attendre avec `{wait_alt['tool']}` si son contrat couvre le meme travail, "
+                          "les erreurs et le delai requis ; equivalence a verifier"
+                          + (f" ; autre scenario : {cad_txt}" if cad_txt else ""))
         elif is_wait_tool or timed_out:
             verdict, kind = by_tool_owner, "wait_timeout"
             used = _timeouts_used(calls)
@@ -719,8 +759,7 @@ def _summarise(gk: str, calls: list[Call], reps: list[dict[str, Any]], d: dict[s
         "context_reread_tokens": _context_reread(rt_calls), "observed_cost": B.observed_cost(rt_calls),
         "verdict": verdict, "verdict_label": VERDICT_LABELS[verdict], "kind": kind, "why": why, "suggestion": suggestion,
         "cadence": cadence, "wait_alternative": wait_alt, "timed_out": timed_out,
-        "other_agents": max(0, len(same_request_agents.get("\x1f".join((str(first.tool_name), str(first.target_key),
-                                                                        first.params_key)), set())) - 1),
+        "other_agents": max(0, len(same_request_agents.get(group_key(first).split("\x1f", 1)[1], set())) - 1),
         "confidence": confidence, "call_keys": [c.key for c in calls], "seqs": [c.seq for c in calls],
         "repeats": [{k: r[k] for k in ("seq", "reason", "reason_basis", "flags", "outcome", "phase", "value", "interval_s",
                                        "idle_s", "declared", "round_trip")} for r in reps],

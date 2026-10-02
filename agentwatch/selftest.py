@@ -350,8 +350,10 @@ def scenario_results(home: Path) -> list[dict[str, Any]]:
     s = Synth(home / "s12", session_id="s12")
     s.session_start(); s.user_prompt()
     s.response_gap_ms = 20_000
-    for i in range(10):
-        s.mcp("jobs", "job_status", {"job_id": 1}, json.dumps({"status": "RUNNING" if i < 9 else "COMPLETED"}))
+    # Avec la consultation differee finale comptee, garder une serie assez longue
+    # pour franchir le seuil de trois appels en moins du detecteur.
+    for i in range(14):
+        s.mcp("jobs", "job_status", {"job_id": 1}, json.dumps({"status": "RUNNING" if i < 13 else "COMPLETED"}))
     s.response_gap_ms = 3000
     for i in range(4):
         s.bash("git status --short", f" M f{i}.py"); s.edit(f"f{i}.py", "a", "b")
