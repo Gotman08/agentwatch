@@ -1,5 +1,7 @@
 # AgentWatch
 
+> **WIP — projet en cours de développement.** Les fonctionnalités, les formats de rapport et la documentation peuvent encore évoluer.
+
 _Comprendre où vos agents de code refont du travail, puis vérifier que vos corrections améliorent leurs sessions._
 
 **AgentWatch** est un observateur local et passif pour **Claude Code** et **Codex**. Il repère les relectures inutiles, les boucles d'erreurs, les attentes trop fréquentes et les procédures répétées qui pourraient être regroupées ou mieux outillées.
