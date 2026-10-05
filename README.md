@@ -1,25 +1,18 @@
 # AgentWatch
 
-> **WIP — projet en cours de développement.** Les fonctionnalités, les formats de rapport et la documentation peuvent encore évoluer.
+**Statut : WIP** — projet en cours de développement. Les fonctionnalités, les formats de rapport et la documentation peuvent encore évoluer.
 
-_Comprendre où vos agents de code refont du travail, puis vérifier que vos corrections améliorent leurs sessions._
+AgentWatch est un observateur local et passif pour Claude Code et Codex. Il analyse les appels d'outils pour repérer le travail répété, les boucles d'erreurs, les opérations regroupables et les procédures candidates à une automatisation.
 
-**AgentWatch** est un observateur local et passif pour **Claude Code** et **Codex**. Il repère les relectures inutiles, les boucles d'erreurs, les attentes trop fréquentes et les procédures répétées qui pourraient être regroupées ou mieux outillées.
+Les rapports associent chaque signalement à des preuves, à ses limites et à une correction proposée. L'objectif est de réduire les opérations qui consomment du temps, des tokens et du contexte sans apporter d'information nouvelle. AgentWatch n'applique pas les recommandations et n'interrompt pas les agents.
 
-L'objectif : préserver les tokens, le temps et le contexte du modèle en s'appuyant sur les traces réelles de ses sessions. Chaque signalement explique ce qui a été observé, ce qui pourrait le remplacer et ce qu'il faut vérifier avant de changer le fonctionnement.
+Python 3.11+ ; bibliothèque standard par défaut ; sept détecteurs déterministes ; rapports Markdown et JSON. Les rendus terminal, HTML et SVG sont disponibles avec l'option Rich.
 
-| Clients | Exécution | Analyse | Restitution |
-|---|---|---|---|
-| Claude Code · Codex | Python 3.11+ · locale | 7 détecteurs déterministes | Rapports Markdown / JSON |
-| Hooks et journaux natifs | Bibliothèque standard par défaut | Aucun second LLM | Terminal, HTML / SVG en option |
-
-> **À retenir :** AgentWatch aide à corriger les pratiques des agents. Il ne corrige pas le code du projet, n'interrompt pas les agents et n'applique aucune de ses recommandations automatiquement.
-
-[Problèmes et corrections](#-quels-problèmes-agentwatch-aide-à-corriger) · [Exemples visuels](#-voir-les-corrections-en-pratique) · [Démarrage](#-démarrer) · [Rapports](#-lire-les-rapports) · [Documentation](#-documentation)
+[Problèmes traités](#problèmes-traités) · [Fonctionnement](#fonctionnement) · [Exemples](#exemples-de-corrections) · [Installation](#installation-et-démarrage) · [Rapports](#rapports-et-analyse) · [Documentation](#documentation)
 
 ---
 
-## 🎯 Quels problèmes AgentWatch aide à corriger
+## Problèmes traités
 
 Un agent peut terminer une tâche tout en relisant les mêmes fichiers, en réessayant une commande qui échoue ou en réveillant le modèle uniquement pour constater qu'un calcul est encore en cours. Ces opérations ajoutent des commandes à construire et des sorties à relire, sans toujours apporter une information nouvelle.
 
@@ -27,19 +20,19 @@ AgentWatch rend ces motifs visibles et propose des corrections à valider :
 
 | Détecteur | Problème observé | Correction proposée |
 |---|---|---|
-| **A — Travail refait** | Même fichier relu via `Read`, `cat` ou `Get-Content` ; recherche, test ou build relancé sans changement observé | Réutiliser un résultat encore valide ; cibler une vérification nécessaire ; vérifier la justification d'une relance |
-| **B — Boucles d'erreurs** | Même échec répété sans correction observable, parfois malgré des entrées différentes | Diagnostiquer la cause avant de réessayer ; adapter la procédure ou la stratégie de reprise |
-| **C — Opérations regroupables** | Lectures de plusieurs cibles émises dans des réponses successives du modèle | Émettre ensemble les appels indépendants, ou utiliser un outil acceptant plusieurs cibles |
-| **D — Automatisation candidate** | Séquence récurrente dont certaines étapes sont mécaniques | Valider une recette de script, de skill ou d'outil ; conserver les étapes qui exigent un jugement |
-| **E — Capacité structurée manquante** | Service externe manipulé par plusieurs commandes `ssh`, SLURM, `curl`, `gh`, cloud ou Docker | Utiliser un outil MCP adapté, ou préciser la capacité à créer et son contrat |
-| **F — Consignes répétées** | Instructions redonnées manuellement par l'utilisateur ou l'orchestrateur dans les rollouts Codex | Envisager une règle de projet ou une skill réutilisable, sans en déduire une économie automatique |
-| **G — Répétitions et attentes** | Appels répétés pour attendre, réessayer ou relire un état inchangé | Ajuster la cadence, utiliser une attente bloquante ou allonger une attente existante lorsque son contrat le permet |
+| A — Travail refait | Même fichier relu via `Read`, `cat` ou `Get-Content` ; recherche, test ou build relancé sans changement observé | Réutiliser un résultat encore valide ; cibler une vérification nécessaire ; vérifier la justification d'une relance |
+| B — Boucles d'erreurs | Même échec répété sans correction observable, parfois malgré des entrées différentes | Diagnostiquer la cause avant de réessayer ; adapter la procédure ou la stratégie de reprise |
+| C — Opérations regroupables | Lectures de plusieurs cibles émises dans des réponses successives du modèle | Émettre ensemble les appels indépendants, ou utiliser un outil acceptant plusieurs cibles |
+| D — Automatisation candidate | Séquence récurrente dont certaines étapes sont mécaniques | Valider une recette de script, de skill ou d'outil ; conserver les étapes qui exigent un jugement |
+| E — Capacité structurée manquante | Service externe manipulé par plusieurs commandes `ssh`, SLURM, `curl`, `gh`, cloud ou Docker | Utiliser un outil MCP adapté, ou préciser la capacité à créer et son contrat |
+| F — Consignes répétées | Instructions redonnées manuellement par l'utilisateur ou l'orchestrateur dans les rollouts Codex | Envisager une règle de projet ou une skill réutilisable, sans en déduire une économie automatique |
+| G — Répétitions et attentes | Appels répétés pour attendre, réessayer ou relire un état inchangé | Ajuster la cadence, utiliser une attente bloquante ou allonger une attente existante lorsque son contrat le permet |
 
 Les détecteurs tiennent compte des changements, des erreurs, des agents et des compactions connus. Une relecture après modification, une pagination différente ou une information réellement nouvelle peuvent justifier un nouvel appel. Les règles, seuils et contre-exemples sont détaillés dans [le guide des détecteurs](docs/detectors.md).
 
-Le bénéfice recherché est du **contexte utile** : moins de résultats redondants à relire, moins de procédures à reconstruire et des interactions plus explicites avec les outils. Les économies effectives doivent ensuite être mesurées.
+Ces corrections visent à limiter les résultats redondants et les procédures reconstruites à chaque session. Les économies effectives doivent ensuite être mesurées.
 
-## 🔍 Comment cela fonctionne
+## Fonctionnement
 
 AgentWatch collecte des événements par les hooks des clients ou lit les journaux existants. Il les normalise, rapproche les débuts et fins d'appels, puis analyse les sessions localement.
 
@@ -53,21 +46,16 @@ flowchart TB
     collecte --> stockage[("Stockage local borné")]
     stockage --> analyse["Corréler les appels<br/>Détecteurs A à G"]
     analyse --> rapports["Rapports et tendances<br/>Preuves et conditions"]
-    rapports --> utilisateur["Vous examinez<br/>et choisissez la correction"]
-
-    classDef local fill:#dbeafe,stroke:#2563eb,stroke-width:2px,color:#1e3a5f
-    classDef decision fill:#dcfce7,stroke:#16a34a,stroke-width:2px,color:#14532d
-    class collecte,stockage,analyse,rapports local
-    class utilisateur decision
+    rapports --> utilisateur["Examiner les preuves<br/>et choisir la correction"]
 ```
 
 L'analyse reconnaît des **unités de travail**, pas seulement des commandes identiques. Par exemple, `Read src/a.py` et `cat src/a.py` peuvent correspondre à la même lecture. Une empreinte du résultat permet de constater une égalité de contenu sans conserver le fichier en clair dans la collecte standard.
 
 Les commandes non reconnues restent explicitement inconnues : AgentWatch ne prétend pas comprendre arbitrairement toutes les commandes shell. Voir [l'architecture](docs/architecture.md) et [le schéma des événements](docs/events.md).
 
-## 💡 Voir les corrections en pratique
+## Exemples de corrections
 
-Les schémas ci-dessous sont des **illustrations de recommandations**, pas des mesures de gains ni des corrections exécutées par AgentWatch.
+Les schémas illustrent les recommandations. Ils ne représentent pas des gains mesurés ni des corrections exécutées par AgentWatch.
 
 ### Regrouper des lectures indépendantes
 
@@ -113,9 +101,6 @@ flowchart TB
         outil_mcp["Outil MCP adapté"] --> resultat["Résultat structuré<br/>État, identifiant, erreurs"]
     end
     sortie -.->|"Recommandation D / E"| outil_mcp
-
-    classDef candidat fill:#fef9c3,stroke:#ca8a04,stroke-width:2px,color:#713f12
-    class outil_mcp,resultat candidat
 ```
 
 **Conditions :** mêmes opérations, droits, résultats, erreurs et effets. Un nom d'outil évocateur ne prouve ni sa disponibilité ni son équivalence. AgentWatch peut documenter un manque ; il ne construit pas le serveur MCP et n'exécute aucune commande proposée.
@@ -132,11 +117,11 @@ Le détecteur G distingue une attente, une indisponibilité, une modification, u
 
 Les délais de réaction, erreurs, annulations et états nécessaires doivent être préservés. Une réduction du nombre d'appels n'établit pas à elle seule une baisse des tokens. Voir [les contrats de remplacement et d'attente](docs/replacements.md).
 
-## 🚀 Démarrer
+## Installation et démarrage
 
 ### Prérequis et lancement
 
-Python **3.11 ou plus** et Claude Code et/ou Codex. Le fonctionnement de base utilise uniquement la bibliothèque standard, sans dépendance d'exécution à installer.
+Python 3.11 ou plus et Claude Code et/ou Codex. Le fonctionnement de base utilise uniquement la bibliothèque standard, sans dépendance d'exécution à installer.
 
 ```bash
 git clone https://github.com/Gotman08/agentwatch.git
@@ -192,7 +177,7 @@ python -m agentwatch report --latest --format markdown
 
 Utilisez `--session <id>` pour une session précise et `--client` pour éviter de sélectionner celle d'un autre client. Les portées utilisateur/projet, réglages et commandes de désinstallation sont décrits dans [le guide d'installation](docs/installation.md).
 
-## 📊 Lire les rapports
+## Rapports et analyse
 
 ### Un diagnostic avec des preuves
 
@@ -273,7 +258,7 @@ Contrairement à la collecte standard, les exports détaillés peuvent contenir 
 
 ---
 
-## 🔧 Passer du signalement à une correction vérifiée
+## Validation des corrections
 
 Une recommandation devient utile lorsqu'elle conduit à une modification concrète, puis à une comparaison sur des tâches comparables.
 
@@ -284,7 +269,7 @@ flowchart TB
 
     observer["Observer des sessions"] --> prioriser["Repérer un motif récurrent<br/>report et trends"]
     prioriser --> verifier["Vérifier preuves et conditions"]
-    verifier --> corriger["Appliquer votre correction<br/>Règle, skill, outil ou délai"]
+    verifier --> corriger["Appliquer la correction<br/>Règle, skill, outil ou délai"]
     corriger --> comparer["Comparer avant / après<br/>compare"]
     comparer --> observer
 ```
@@ -303,7 +288,7 @@ python -m agentwatch compare --at 2026-10-05T14:00 --client codex
 
 `compare` rapporte les mesures à l'activité et expose l'incertitude ; avec trop peu de données, il ne conclut pas à un gain démontré. Des tâches différentes peuvent expliquer un écart : la comparaison ne prouve pas à elle seule que votre correction en est la cause. Il est aussi possible d'enregistrer une référence (`--save-reference`) ou de comparer autour d'une version d'`AGENTS.md` (`--at agents-md:<empreinte>`). Voir [les commandes de comparaison](docs/installation.md#commandes).
 
-## 🔒 Confidentialité, limites et santé de la collecte
+## Confidentialité et limites
 
 - **Local :** AgentWatch n'envoie aucune donnée sur le réseau. Le stockage est borné et son dossier par défaut est `~/.agentwatch`, configurable via `AGENTWATCH_HOME` ou `--home`.
 - **Collecte limitée :** champs autorisés, commandes masquées et empreintes HMAC locales. Les contenus de fichiers, prompts et sorties complètes ne sont pas conservés en clair par défaut dans la collecte standard. L'inspection détaillée est une voie distincte, sur demande.
@@ -315,7 +300,7 @@ python -m agentwatch compare --at 2026-10-05T14:00 --client codex
 
 Le périmètre comprend sept détecteurs, des rapports par session et multi-sessions, les mesures de contexte et de coordination disponibles, l'inspection locale et la comparaison avant/après. Aucun second LLM, embedding ou profilage Unreal n'est utilisé. Voir [la confidentialité](docs/privacy.md) et [les preuves de compatibilité et de surcharge](docs/compatibility.md).
 
-## 🧪 Vérifier et contribuer
+## Vérification et contribution
 
 Depuis le dépôt :
 
@@ -328,7 +313,7 @@ python -m agentwatch self-test
 
 Pour signaler un problème, ouvrez une [issue](https://github.com/Gotman08/agentwatch/issues) avec le client, sa version et un cas reproductible expurgé de secrets. Les modifications peuvent être proposées par pull request.
 
-## 📚 Documentation
+## Documentation
 
 | Guide | Ce que vous y trouverez |
 |---|---|
