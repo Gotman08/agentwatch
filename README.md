@@ -145,13 +145,14 @@ est probablement cassee (Python des hooks desinstalle, depot deplace, entrees re
 client actif sans aucun evenement recu), a partir des seules dates de modification des
 journaux du client.
 
-## Connexion Agenttrail
+## Connexion AgentTrail Map
 
-`python -m agentwatch agenttrail --project-dir <projet> --follow` relaie les
-observations nouvelles vers l'API locale d'Agenttrail Kitchen: sessions,
-sous-agents, activite des outils, fichiers et etats. Les diagnostics et couts
-restent dans les rapports AgentWatch. Une Kitchen dediee peut utiliser AgentWatch
-comme seul flux d'observations. Installation et limites:
+`python -m agentwatch agenttrail --project-dir <projet> --port 5330 --follow`
+relaie les sessions Codex/Claude et les appels d'outils vers le tableau
+**AgentTrail Map**. `PLAN.md` decrit les composants et leurs dependances ; Map
+observe directement les modifications de fichiers. Les lectures ne sont pas
+transformees en ecritures, et les diagnostics et couts restent dans les rapports
+AgentWatch. Installation, lancement et limites :
 [docs/agenttrail.md](docs/agenttrail.md).
 
 ## Verification

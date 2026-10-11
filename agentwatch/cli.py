@@ -1260,13 +1260,13 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--reason", help="motif de l'arret demande, ecrit dans l'etat et le journal")
     s.set_defaults(func=cmd_import_rollouts)
 
-    s = sub.add_parser("agenttrail", help="relayer les observations nouvelles vers Agenttrail Kitchen (API locale)")
+    s = sub.add_parser("agenttrail", help="relayer les observations nouvelles vers AgentTrail Map (API locale)")
     s.add_argument("--project-dir", required=True, help="dossier du projet a observer")
-    s.add_argument("--state-dir", default=str(Path.home() / ".agent-office"), help="dossier --state-dir de Kitchen")
+    s.add_argument("--port", type=int, default=5330, help="port local du tableau Map (defaut 5330)")
     s.add_argument("--follow", action="store_true", help="suivre les nouveaux evenements; Ctrl+C pour arreter")
     s.add_argument("--interval", type=float, default=2.0, help="periode du relais en secondes (defaut 2, minimum 0.5)")
     s.add_argument("--recent-seconds", type=float, default=0.0, help="inclure explicitement des observations recentes (0 a 120 s)")
-    s.add_argument("--dry-run", action="store_true", help="export JSONL expurge, sans contacter Kitchen")
+    s.add_argument("--dry-run", action="store_true", help="export JSONL expurge, sans contacter Map")
     s.set_defaults(func=cmd_agenttrail)
 
     s = sub.add_parser("self-test", help="scenarios synthetiques + hook reel en sous-processus")

@@ -1,9 +1,8 @@
-"""Relais local AgentWatch -> Agenttrail Kitchen, sans nouvelle collecte.
+"""Relais local AgentWatch -> AgentTrail Map, sans nouvelle collecte.
 
-Le serveur Kitchen alpha.3 date les hooks a leur reception. On ne lui transmet
-donc que des observations recentes, jamais un historique presente comme actif.
-Les prompts, commandes, resultats, empreintes et tokens ne font pas partie du
-contrat de cette API. Ils restent dans les rapports AgentWatch.
+Map date les hooks a leur reception : seules les observations recentes sont
+transmises. Les commandes, prompts, resultats et tokens restent dans AgentWatch.
+Les cibles sont des details d'outil, jamais des modifications supposees.
 """
 
 from __future__ import annotations
@@ -13,6 +12,7 @@ import json
 import math
 import time
 from collections import deque
+from http.client import HTTPException
 from pathlib import Path
 from typing import Any
 from urllib import error, request
@@ -23,11 +23,11 @@ MAX_AGE_SECONDS = 120
 MAX_EVENT_BYTES = 2 * 1024 * 1024
 MAX_PENDING = 4000
 _PROVIDERS = {"codex": "codex", "claude-code": "claude"}
-_KINDS = {"start": "tool-start", "end": "tool-end", "failure": "tool-end",
-          "interrupt": "interrupted", "session_start": "session-start",
-          "session_end": "session-end", "turn_start": "turn-start",
-          "turn_end": "turn-end", "subagent_start": "session-start",
-          "subagent_stop": "turn-end"}
+_KINDS = {"start": "PreToolUse", "end": "PostToolUse", "failure": "PostToolUse",
+          "interrupt": "Stop", "session_start": "SessionStart",
+          "session_end": "SessionEnd", "turn_start": "SessionStart",
+          "turn_end": "Stop", "subagent_start": "SessionStart",
+          "subagent_stop": "Stop"}
 
 
 def _clean(value: Any, limit: int) -> str:
@@ -59,16 +59,16 @@ def _observed_ns(event: dict[str, Any]) -> int | None:
     return ns if isinstance(ns, int) and not isinstance(ns, bool) and ns > 0 else None
 
 
-def kitchen_events(event: dict[str, Any], project: Path) -> list[dict[str, Any]]:
-    """Projection par liste blanche. Aucune inference de todo ou de livraison."""
+def map_events(event: dict[str, Any], project: Path) -> list[dict[str, Any]]:
+    """Projection par liste blanche, sans todo ni activite de fichier inventee."""
     if S.validate_event(event):
         return []
     if not all(isinstance(event.get(key), str) for key in ("client", "phase", "event_id")):
         return []
     provider = _PROVIDERS.get(event.get("client"))
     kind = _KINDS.get(event.get("phase"))
-    parent = _clean(event.get("session_id"), 200)
-    child = _clean(event.get("agent_id"), 200)
+    parent = event.get("session_id") if isinstance(event.get("session_id"), str) else ""
+    child = event.get("agent_id") if isinstance(event.get("agent_id"), str) else ""
     if child in ("main", parent):
         child = ""
     if not provider or not kind or not parent:
@@ -77,33 +77,42 @@ def kitchen_events(event: dict[str, Any], project: Path) -> list[dict[str, Any]]
         return []  # Une identite manquante ne doit pas terminer le parent.
     cwd = event.get("cwd") or event.get("project_dir")
     cwd_path = _local_path(cwd)
-    if cwd_path is None or not _within(cwd_path, project):
-        return []
-    identity = "agentwatch:" + hashlib.sha256(
-        (provider + ":" + str(event["event_id"])).encode("utf-8")).hexdigest()
-    base: dict[str, Any] = {"id": identity, "provider": provider,
-                           "sessionId": child or parent, "cwd": str(cwd_path), "kind": kind}
-    if child and child != parent:
-        base["parentId"] = parent
-    for source, target, limit in (("turn_id", "turnId", 200), ("call_id", "toolId", 200),
-                                  ("tool_name", "tool", 80)):
-        value = _clean(event.get(source), limit)
-        if value:
-            base[target] = value
+    file = None
     if event.get("target_kind") == "path" and isinstance(event.get("target"), str):
         source_project = _local_path(event.get("project_dir")) or cwd_path
-        file = _local_path(event["target"], source_project)
-        if file is not None and _within(file, project):
-            base["file"] = str(file)
-    if kind == "tool-end":
-        status = event.get("status")
-        base["error"] = event.get("phase") == "failure" or status in ("error", "denied", "timeout")
-        if status not in ("success", "error", "denied", "timeout") and event.get("phase") != "failure":
-            # Fermer l'appel, puis conserver un etat inconnu/interrompu dans Kitchen.
-            uncertain = dict(base, id=identity + ":state",
-                             kind="interrupted" if status == "interrupted" else "unknown")
-            uncertain.pop("error", None)
-            return [base, uncertain]
+        target = _local_path(event["target"], source_project)
+        if target is not None and _within(target, project):
+            file = target
+    if cwd_path is not None and _within(cwd_path, project):
+        # Le daemon compare des chaines sensibles a la casse, meme sous Windows.
+        cwd_path = project / cwd_path.relative_to(project)
+    elif file is not None:
+        # Un outil peut agir dans le depot depuis une session ouverte ailleurs.
+        cwd_path = project
+    else:
+        return []
+    identity = json.dumps([provider, parent, child], ensure_ascii=False)
+    base: dict[str, Any] = {"agent": provider, "cwd": str(cwd_path),
+                           "session_id": "agentwatch-" + provider + "-" + hashlib.sha256(identity.encode()).hexdigest(),
+                           "hook_event_name": kind}
+    if kind in ("PreToolUse", "PostToolUse"):
+        tool = _clean(event.get("tool_name"), 80)
+        if not tool:
+            return []
+        base["tool_name"] = tool
+        detail = "AgentWatch: tool-start"
+        if file is not None:
+            detail = "target=" + file.relative_to(project).as_posix()
+        if kind == "PostToolUse":
+            status = event.get("status")
+            status = "error" if event.get("phase") == "failure" else status
+            if status not in ("success", "error", "denied", "timeout", "interrupted"):
+                status = "unknown"
+            detail = "result=" + status + ("; " + detail if file is not None else "")
+        # Map chauffe les fichiers de TOUT PostToolUse contenant file_path,
+        # y compris Read. Ne pas fournir ce champ : fs.watch reste la preuve
+        # des modifications. pattern est uniquement une ligne de metadonnees.
+        base["tool_input"] = {"pattern": _clean(detail, 240)}
     return [base]
 
 
@@ -198,7 +207,11 @@ class EventTail:
 
 
 class ConnectorError(RuntimeError):
-    """Erreur locale expurgée : ne jamais exposer la cle ni le corps HTTP."""
+    """Erreur locale expurgee : ne jamais exposer le corps HTTP."""
+
+
+class DeliveryUncertain(ConnectorError):
+    """Un POST a pu etre traite : Map n'a pas de cle de dedoublonnage."""
 
 
 class _NoRedirect(request.HTTPRedirectHandler):
@@ -207,66 +220,58 @@ class _NoRedirect(request.HTTPRedirectHandler):
         return None
 
 
-class KitchenClient:
-    def __init__(self, state_dir: Path, project: Path) -> None:
-        self.state_dir, self.project = state_dir, project
-        self.registration: tuple[int, str] | None = None
+class MapClient:
+    def __init__(self, port: int, project: Path) -> None:
+        if not isinstance(port, int) or isinstance(port, bool) or not 1024 <= port <= 65535:
+            raise ValueError("--port doit etre compris entre 1024 et 65535")
+        self.port, self.project = port, project
+        self.connected = False
+        self.server_project: Path | None = None
         self.opener = request.build_opener(request.ProxyHandler({}), _NoRedirect())
 
-    def _http(self, port: int, route: str, data: dict[str, Any] | None = None,
-              token: str | None = None) -> dict[str, Any]:
+    def _http(self, route: str, data: dict[str, Any] | None = None) -> dict[str, Any]:
         headers = {"Content-Type": "application/json"}
-        if token:
-            headers["Authorization"] = "Bearer " + token
         body = json.dumps(data, ensure_ascii=False).encode("utf-8") if data is not None else None
-        req = request.Request(f"http://127.0.0.1:{port}{route}", data=body, headers=headers)
+        req = request.Request(f"http://127.0.0.1:{self.port}{route}", data=body, headers=headers)
         try:
             with self.opener.open(req, timeout=2) as response:
                 raw = response.read(2 * 1024 * 1024 + 1)
                 if len(raw) > 2 * 1024 * 1024:
-                    raise ConnectorError("reponse Kitchen trop volumineuse")
-                result = json.loads(raw)
+                    raise ValueError
+                result = json.loads(raw) if raw else {}
                 if not isinstance(result, dict):
                     raise ValueError
                 return result
         except error.HTTPError as exc:
-            raise ConnectorError(f"Kitchen a refuse la requete (HTTP {exc.code})") from None
-        except (error.URLError, OSError, ValueError):
-            raise ConnectorError("Kitchen est indisponible ou sa reponse est invalide") from None
+            cls = DeliveryUncertain if data is not None else ConnectorError
+            raise cls(f"Map a refuse la requete (HTTP {exc.code})") from None
+        except (error.URLError, OSError, ValueError, HTTPException):
+            cls = DeliveryUncertain if data is not None else ConnectorError
+            raise cls("Map est indisponible ou sa reponse est invalide") from None
 
     def connect(self) -> str:
-        try:
-            with (self.state_dir / "server.json").open("rb") as stream:
-                raw = stream.read(16_385)
-            if len(raw) > 16_384:
-                raise ValueError
-            config = json.loads(raw)
-            port, token = config["port"], config["hookToken"]
-            if (not isinstance(port, int) or isinstance(port, bool) or not 1024 <= port <= 65535
-                    or not isinstance(token, str) or len(token) != 48
-                    or any(c not in "0123456789abcdef" for c in token)):
-                raise ValueError
-        except (OSError, ValueError, TypeError, KeyError):
-            raise ConnectorError("demarrez Kitchen avec le meme --state-dir (server.json absent ou invalide)") from None
-        registration = (port, token)
-        if registration != self.registration:
-            state = self._http(port, "/api/state")
-            if state.get("app") != "agenttrail-kitchen" or state.get("version") != 2:
-                raise ConnectorError("le service enregistre n'est pas une Kitchen compatible (API version 2)")
-            attached = self._http(port, "/api/attach", {"projects": [str(self.project)]}, token)
-            if attached.get("app") != "agenttrail-kitchen" or str(self.project) not in attached.get("projects", []):
-                raise ConnectorError("Kitchen n'a pas confirme le dossier de projet")
-            self.registration = registration
-        return f"http://127.0.0.1:{port}"
+        self.connected = False
+        identity = self._http("/whoami")
+        if _local_path(identity.get("repoPath")) != self.project or identity.get("port") != self.port:
+            raise ConnectorError("ce port Map ne correspond pas au --project-dir demande")
+        model = self._http("/model")
+        if not isinstance(model.get("runs"), list) or not isinstance(model.get("hasPlan"), bool):
+            raise ConnectorError("ce service ne fournit pas le modele AgentTrail Map")
+        self.server_project = Path(identity["repoPath"])
+        self.connected = True
+        return f"http://127.0.0.1:{self.port}"
 
     def send(self, event: dict[str, Any]) -> bool:
-        if self.registration is None:
-            raise ConnectorError("Kitchen n'est pas connectee")
-        port, token = self.registration
-        result = self._http(port, "/api/hook", event, token)
-        if not isinstance(result.get("accepted"), bool):
-            raise ConnectorError("Kitchen n'a pas accuse reception de l'evenement")
-        return result["accepted"]
+        if not self.connected or self.server_project is None:
+            raise ConnectorError("Map n'est pas connecte")
+        cwd = _local_path(event.get("cwd"))
+        if cwd is None or not _within(cwd, self.project):
+            raise ConnectorError("evenement hors du projet Map")
+        # Conserver l'orthographe de /whoami : le daemon compare des chaines,
+        # meme lorsque Windows accepte une autre casse ou un alias du dossier.
+        payload = dict(event, cwd=str(self.server_project / cwd.relative_to(self.project)))
+        self._http("/hook", payload)
+        return True  # HTTP 200 est une transmission, pas un accusé d'acceptation.
 
 
 def run_bridge(args: Any, home: Path, out: Any = print, err: Any = print) -> int:
@@ -277,28 +282,28 @@ def run_bridge(args: Any, home: Path, out: Any = print, err: Any = print) -> int
             or not math.isfinite(args.recent_seconds) or not 0 <= args.recent_seconds <= MAX_AGE_SECONDS):
         raise ValueError("--interval >= 0.5 s et --recent-seconds entre 0 et 120 s")
     tail = EventTail(home, time.time_ns() - int(args.recent_seconds * 1_000_000_000))
-    client = KitchenClient(Path(args.state_dir).expanduser().resolve(), project)
+    client = MapClient(args.port, project)
     pending: deque[tuple[int, dict[str, Any]]] = deque()
-    sent = duplicates = expired = 0
+    sent = uncertain = expired = 0
     previous_error = None
     connected_url = None
     if not args.dry_run:
-        out("AgentWatch -> Agenttrail Kitchen : lecture locale; seuls les evenements nouveaux sont relayes"
-            if not args.recent_seconds else f"AgentWatch -> Kitchen : observations des {args.recent_seconds:g} dernieres secondes")
+        out("AgentWatch -> AgentTrail Map : lecture locale; seuls les evenements nouveaux sont relayes"
+            if not args.recent_seconds else f"AgentWatch -> Map : observations des {args.recent_seconds:g} dernieres secondes")
     try:
         while True:
             for row in tail.poll():
-                for event in kitchen_events(row, project):
+                for event in map_events(row, project):
                     pending.append((_observed_ns(row) or 0, event))
                     if len(pending) > MAX_PENDING:
-                        raise ConnectorError("file de relais pleine; arretez puis relancez Kitchen et le connecteur")
+                        raise ConnectorError("file de relais pleine; arretez puis relancez Map et le connecteur")
             for warning in sorted(set(tail.warnings)):
                 err("! " + warning)
             try:
                 if not args.dry_run:
                     url = client.connect()
                     if url != connected_url or previous_error:
-                        out("Kitchen connectee : " + url)
+                        out("Map connecte : " + url)
                     connected_url = url
                 while pending:
                     ns, event = pending[0]
@@ -306,10 +311,18 @@ def run_bridge(args: Any, home: Path, out: Any = print, err: Any = print) -> int
                         expired += 1
                     elif args.dry_run:
                         out(json.dumps(event, ensure_ascii=False))
-                    elif client.send(event):
-                        sent += 1
                     else:
-                        duplicates += 1  # API : deja vu ou refuse; jamais un succes suppose.
+                        try:
+                            client.send(event)
+                            sent += 1
+                        except DeliveryUncertain:
+                            # Un nouvel essai pourrait creer une seconde ligne d'outil.
+                            pending.popleft()
+                            uncertain += 1
+                            err("! transmission non confirmee; evenement non rejoue (Map ne dedoublonne pas les hooks)")
+                            if not args.follow:
+                                return 2
+                            continue
                     pending.popleft()
                 previous_error = None
             except ConnectorError as exc:
@@ -322,10 +335,10 @@ def run_bridge(args: Any, home: Path, out: Any = print, err: Any = print) -> int
                 previous_error = message
             if not args.follow:
                 if not args.dry_run:
-                    out(f"relais : {sent} accepte(s), {duplicates} deja vu(s) ou refuse(s), {expired} expire(s)")
+                    out(f"relais : {sent} transmis, {uncertain} non confirme(s), {expired} expire(s)")
                 return 0
             time.sleep(args.interval)
     except KeyboardInterrupt:
         if not args.dry_run:
-            out(f"relais arrete : {sent} accepte(s), {duplicates} deja vu(s) ou refuse(s), {expired} expire(s)")
+            out(f"relais arrete : {sent} transmis, {uncertain} non confirme(s), {expired} expire(s)")
         return 0
