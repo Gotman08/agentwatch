@@ -42,8 +42,33 @@ et la sensibilite de ses estimations. Aucune economie de tokens n'est deduite
 automatiquement d'un compteur d'appels plus faible. Voir
 [`docs/replacements.md`](docs/replacements.md).
 
-AgentWatch ne bloque rien, ne reecrit rien, ne renvoie rien au modele, n'execute jamais
-ce qu'il propose et ne quitte jamais la machine. Python 3.11+, bibliotheque standard.
+La collecte et l'analyse sont passives : elles ne bloquent pas l'agent et n'executent
+jamais les commandes observees ou proposees. Les traces restent locales. Python 3.11+,
+bibliotheque standard.
+
+## Console par projet
+
+```bash
+python -m agentwatch console
+```
+
+Ouvrez `http://127.0.0.1:5330/`, puis choisissez le **dossier racine du travail**.
+Chaque dossier est un projet : son historique, ses rapports et ses conversations restent
+dans son propre `.agentwatch/`, exclu de Git. Plusieurs dossiers peuvent etre suivis
+simultanement ; le selecteur change seulement la vue.
+
+La navigation propose **Map**, **Timeline**, **Analyses** et **Chat**. La carte reprend
+AgentTrail **Map** sous licence MIT. La chronologie expose les MCP, outils, agents,
+resultats, tailles de sortie et durees avec leur provenance ; elle se rejoue au pas choisi.
+Les sept detecteurs, tendances et comparaisons existants sont consultables dans Analyses.
+
+Le chat consulte **Codex ou Claude** avec leurs CLI installees. L'utilisateur choisit et
+previsualise le contexte de ce projet avant l'envoi ; le contexte exact est conserve avec
+la conversation. Cet envoi explicite utilise le fournisseur choisi. Le chat fonctionne
+en consultation, sans outils d'execution ni ecriture dans le projet.
+
+Node.js 20+ est requis pour Map ; les autres vues utilisent Python seul.
+Voir [la console, son stockage et ses limites](docs/console.md).
 
 ## Demarrage
 

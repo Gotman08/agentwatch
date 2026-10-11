@@ -914,6 +914,11 @@ def cmd_agenttrail(args: argparse.Namespace) -> int:
     return run_bridge(args, home_dir(args.home), _out, _err)
 
 
+def cmd_console(args: argparse.Namespace) -> int:
+    from agentwatch.console.server import run_console
+    return run_console(args)
+
+
 def cmd_self_test(args: argparse.Namespace) -> int:
     from agentwatch.selftest import run_selftest
     ok, lines = run_selftest(runs=args.runs)
@@ -1259,6 +1264,12 @@ def build_parser() -> argparse.ArgumentParser:
                    help="demander au suivi continu de s'arreter apres son cycle (arret consigne, verrou rendu) ; ne lit rien")
     s.add_argument("--reason", help="motif de l'arret demande, ecrit dans l'etat et le journal")
     s.set_defaults(func=cmd_import_rollouts)
+
+    s = sub.add_parser("console", help="console par projet : Map, Timeline, analyses et chat Codex/Claude")
+    s.add_argument("--state-dir", default=str(Path.home() / ".agentwatch-console"), help="registry locale des projets")
+    s.add_argument("--project-dir", help="dossier de travail a enregistrer au lancement (facultatif)")
+    s.add_argument("--port", type=int, default=5330, help="port loopback de la console")
+    s.set_defaults(func=cmd_console)
 
     s = sub.add_parser("agenttrail", help="relayer les observations nouvelles vers AgentTrail Map (API locale)")
     s.add_argument("--project-dir", required=True, help="dossier du projet a observer")
