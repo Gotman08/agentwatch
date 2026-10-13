@@ -23,6 +23,9 @@ class RichViewTests(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
         self.home = Path(self.tmp.name)
+        # These rendering fixtures must not import the workstation's native
+        # Codex history, including in subprocesses inheriting the environment.
+        (self.home / "config.json").write_text(json.dumps({"rollouts": {"auto_import": False}}), encoding="utf-8")
         s = Synth(self.home, session_id="rich")
         s.session_start(); s.user_prompt()
         s.read("a.py", "x"); s.read("a.py", "x")
@@ -42,7 +45,7 @@ class RichViewTests(unittest.TestCase):
 
     @unittest.skipUnless(HAS_RICH, "rich non installe")
     def test_html_svg_and_text_exports(self) -> None:
-        (self.home / "config.json").write_text(json.dumps({"detectors": {"repeated_calls": {
+        (self.home / "config.json").write_text(json.dumps({"rollouts": {"auto_import": False}, "detectors": {"repeated_calls": {
             "tolerated_delay_ratio": 0.1, "min_tolerated_delay_s": 17}}}), encoding="utf-8")
         html_path = self.home / "r.html"
         self._run("report", "--session", "rich", "--format", "html", "--out", str(html_path))
@@ -105,6 +108,12 @@ class RichViewTests(unittest.TestCase):
                 self.assertEqual(json.loads(text)["session"]["session_id"], "rich")
             else:
                 self.assertTrue(text.startswith("# AgentWatch - rapport de session"))
+
+    def test_rendering_fixtures_never_import_workstation_rollouts(self) -> None:
+        from unittest import mock
+        with mock.patch.object(cli, "_import_rollouts", side_effect=AssertionError("native history imported")):
+            report = json.loads(self._run("report", "--session", "rich", "--format", "json"))
+        self.assertEqual(report["session"]["session_id"], "rich")
 
     def test_hook_never_imports_rich(self) -> None:
         r = subprocess.run([sys.executable, "-X", "importtime", "-I", str(ENTRY), "ingest", "--client", "codex", "--home", str(self.home)],

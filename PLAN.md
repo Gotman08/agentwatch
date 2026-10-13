@@ -79,6 +79,10 @@ links: [afficher, verifier]
   by: codex
   from: agent
   tech: agentwatch/console/chat.py
+- [x] Mesurer les outils MCP et suivre la chronologie en direct {#console-mcp-direct}
+  by: codex
+  from: agent
+  tech: agentwatch/console/mcp.py, agentwatch/console/static/mcp.js, agentwatch/console/static/timeline.js
 
 ## Verifier et documenter les comportements {#verifier}
 tech: tests/, docs/, agentwatch/selftest.py

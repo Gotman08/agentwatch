@@ -351,6 +351,20 @@ class HttpTests(Fixture):
         with self.request('/app.js') as response:self.assertIn(b'prepareContext',response.read())
         d=json.load(self.request('/api/bootstrap'));self.assertEqual(len(d['projects']),2)
 
+    def test_mcp_metrics_and_export_follow_the_project_and_exact_tool(self):
+        self.put(); self.put(phase='end',status='success',received_time_ns=self.ns+500_000_000)
+        self.reader.step(); self.analysed()
+        path=f'/api/projects/{self.pa.id}/mcp?tool=mcp__example__lookup'
+        result=json.load(self.request(path))
+        self.assertEqual(result['total']['median_ms'],500)
+        self.assertEqual(result['total']['calls'],1)
+        self.assertEqual(json.load(self.request(f'/api/projects/{self.pb.id}/mcp'))['total']['calls'],0)
+        with self.request(path+'&format=json') as response:
+            self.assertIn('attachment',response.headers['Content-Disposition'])
+            self.assertEqual(json.load(response)['total']['calls'],1)
+        for module in ['mcp.js','timeline.js']:
+            self.assertEqual(self.request('/'+module).status,200)
+
     def test_shutdown_requires_local_token_and_returns_before_stopping(self):
         with self.assertRaises(urllib.error.HTTPError) as exc:self.request('/api/shutdown',{})
         self.assertEqual(exc.exception.code,403)

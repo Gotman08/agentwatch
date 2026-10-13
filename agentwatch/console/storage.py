@@ -146,7 +146,8 @@ class Project:
 
     def info(self) -> dict[str, Any]:
         with self.db() as db:
-            s = db.execute("SELECT COUNT(*) n,COALESCE(SUM(event_count),0) events,MAX(last_ns) last_ns "
+            s = db.execute("SELECT COUNT(*) n,COALESCE(SUM(event_count),0) events,MAX(last_ns) last_ns,"
+                           "COALESCE(SUM(analysed_revision),0) analysis_revision "
                            "FROM sessions").fetchone()
             c = db.execute("SELECT COUNT(*) n, SUM(status IN ('error','timeout','denied','failure')) failures,COUNT(DISTINCT mcp) mcp "
                            "FROM calls").fetchone()
@@ -154,7 +155,7 @@ class Project:
         return {"id": self.id, "name": self.root.name, "root": str(self.root), "storage": str(self.home),
                 "sessions": s["n"], "events": s["events"], "last_ns": s["last_ns"], "calls": c["n"],
                 "failures": c["failures"] or 0, "mcp_servers": c["mcp"], "pending_analysis": pending,
-                "git": self.ignore_note}
+                "analysis_revision": s["analysis_revision"], "git": self.ignore_note}
 
     def append(self, event: dict[str, Any], route: str) -> bool:
         client = str(event.get("client") or "unknown")

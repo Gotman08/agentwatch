@@ -71,7 +71,7 @@ def pending(project: Project, limit: int = 2) -> list[str]:
 
 def filters(query: dict[str, str]) -> tuple[str, list[Any]]:
     clauses, args = [], []
-    for field, col in (("session", "session"), ("client", "client"), ("status", "status"), ("mcp", "mcp")):
+    for field, col in (("session", "session"), ("client", "client"), ("status", "status"), ("mcp", "mcp"), ("tool", "tool")):
         if query.get(field):
             if field == "status" and query[field] == "failure":
                 clauses.append("status IN ('error','timeout','denied','failure')")
@@ -132,7 +132,8 @@ def summary(project: Project) -> dict[str, Any]:
         reports = db.execute("SELECT id,json_extract(report,'$.findings') findings FROM sessions "
                              "WHERE report IS NOT NULL ORDER BY last_ns DESC LIMIT 100").fetchall()
         changes = db.execute("SELECT path,at_ns FROM changes ORDER BY at_ns DESC LIMIT 10").fetchall()
-        bounds = db.execute("SELECT MIN(at_ns),MAX(COALESCE(end_ns,at_ns)) FROM calls").fetchone()
+        bounds = db.execute("SELECT MIN(CASE WHEN at_ns>0 THEN at_ns END),"
+                            "MAX(CASE WHEN at_ns>0 THEN MAX(at_ns,COALESCE(end_ns,at_ns)) END) FROM calls").fetchone()
     findings = []
     for row in reports:
         for f in json.loads(row["findings"] or '[]'):
@@ -156,10 +157,12 @@ def timeline(project: Project, query: dict[str, str]) -> dict[str, Any]:
     where, args = filters({k: v for k, v in query.items() if k not in ("since", "until")})
     width = min(604800, max(1, int(query.get("seconds", 10)))) * 1_000_000_000
     with project.db() as db:
-        bounds = db.execute(f"SELECT MIN(at_ns),MAX(COALESCE(end_ns,at_ns)) FROM calls WHERE {where}", args).fetchone()
+        bounds = db.execute("SELECT MIN(CASE WHEN at_ns>0 THEN at_ns END),"
+                            "MAX(CASE WHEN at_ns>0 THEN MAX(at_ns,COALESCE(end_ns,at_ns)) END),"
+                            f"COUNT(CASE WHEN at_ns<=0 THEN 1 END) FROM calls WHERE {where}", args).fetchone()
         if bounds[0] is None:
-            return {"buckets": [], "seconds": width // 1_000_000_000, "bounds": [None, None], "calls": 0}
-        # Default recent hour; never silently compress the entire history into arbitrary bins.
+            return {"buckets": [], "seconds": width // 1_000_000_000, "bounds": [None, None], "calls": 0,
+                    "undated_calls": bounds[2]}
         end = int(query.get("until") or bounds[1])
         start = int(query.get("since") or max(bounds[0], end - 3600_000_000_000))
         if start >= end:
@@ -167,33 +170,44 @@ def timeline(project: Project, query: dict[str, str]) -> dict[str, Any]:
         bins = (end - start + width - 1) // width
         if bins > 720:
             raise ValueError("Cette plage depasse 720 intervalles. Augmentez le pas ou reduisez la plage.")
-        # Intersection with the window, not just start timestamps: long calls cross multiple bins.
-        rows = db.execute(f"SELECT data FROM calls WHERE {where} AND at_ns<? "
-                          "AND COALESCE(end_ns,at_ns)>=? ORDER BY at_ns", args + [end, start]).fetchall()
-    buckets = [{"at_ns": start + i * width, "until_ns": min(end, start + (i + 1) * width),
-                "starts": 0, "failures": 0, "mcp": 0, "unknown_duration": 0,
-                "tool_ms": 0.0, "active_ms": 0.0, "intervals": []} for i in range(bins)]
-    for row in rows:
-        c = json.loads(row[0])
-        a, b = c.get("start_ns") or c.get("end_ns") or 0, c.get("end_ns")
-        index = (a - start) // width
-        if 0 <= index < bins:
-            bucket = buckets[index]
-            bucket["starts"] += 1
-            bucket["failures"] += c.get("status") in ("error", "timeout", "denied", "failure")
-            bucket["mcp"] += bool(c.get("mcp_server"))
-            bucket["unknown_duration"] += c.get("duration_ms") is None
-        # Unknown, open or untrustworthy timestamps cannot be made into measured busy time.
-        if b is None or b < a or c.get("duration_ms") is None or c.get("timeline_reliable") is False:
-            continue
-        for i in range(max(0, (a - start) // width), min(bins, (b - start) // width + 1)):
-            lo, hi = max(a, buckets[i]["at_ns"]), min(b, buckets[i]["until_ns"])
-            if hi > lo:
-                buckets[i]["intervals"].append((lo, hi))
-                buckets[i]["tool_ms"] += (hi - lo) / 1e6
+        buckets = [{"at_ns": start + i * width, "until_ns": min(end, start + (i + 1) * width),
+                    "starts": 0, "failures": 0, "mcp": 0, "unknown_duration": 0, "unplaced_time": 0,
+                    "tool_ms": 0.0, "active_ms": 0.0, "active_until_ns": -1} for i in range(bins)]
+        # at_ns is the persisted start timestamp (or end when no start was
+        # observed). Ordered streaming allows an exact interval union per bin
+        # with constant memory, without parsing native parameters or outputs.
+        rows = db.execute(f"SELECT at_ns,end_ns,status,mcp,"
+                          "CASE WHEN COALESCE(json_extract(data,'$.duration_reliable'),1) "
+                          "AND json_type(data,'$.duration_ms') IN ('integer','real') "
+                          "AND json_extract(data,'$.duration_ms')>=0 "
+                          "THEN json_extract(data,'$.duration_ms') END duration_ms,"
+                          "COALESCE(json_extract(data,'$.timeline_reliable'),1) reliable "
+                          f"FROM calls WHERE {where} AND at_ns>0 AND at_ns<? "
+                          "AND COALESCE(end_ns,at_ns)>=? ORDER BY at_ns", args + [end, start])
+        count = 0
+        for c in rows:
+            count += 1
+            a, b = c["at_ns"], c["end_ns"]
+            index = (a - start) // width
+            if 0 <= index < bins:
+                bucket = buckets[index]
+                bucket["starts"] += 1
+                bucket["failures"] += c["status"] in ("error", "timeout", "denied", "failure")
+                bucket["mcp"] += bool(c["mcp"])
+                bucket["unknown_duration"] += c["duration_ms"] is None
+                bucket["unplaced_time"] += not c["reliable"]
+            if b is None or b < a or c["duration_ms"] is None or not c["reliable"]:
+                continue
+            for i in range(max(0, (a - start) // width), min(bins, (b - start) // width + 1)):
+                bucket = buckets[i]
+                lo, hi = max(a, bucket["at_ns"]), min(b, bucket["until_ns"])
+                if hi > lo:
+                    bucket["tool_ms"] += (hi - lo) / 1e6
+                    bucket["active_ms"] += max(0, hi - max(lo, bucket["active_until_ns"])) / 1e6
+                    bucket["active_until_ns"] = max(hi, bucket["active_until_ns"])
     for bucket in buckets:
-        bucket["active_ms"] = union_ns(bucket.pop("intervals")) / 1e6
+        bucket.pop("active_until_ns")
     return {"buckets": buckets, "seconds": width // 1_000_000_000, "since": start, "until": end,
-            "bounds": list(bounds), "calls": len(rows),
+            "bounds": list(bounds[:2]), "calls": count, "undated_calls": bounds[2],
             "note": "Temps actif = union des intervalles observes ; temps outils = somme, avec le parallelisme. "
-                    "Les durees inconnues et les appels ouverts ne sont pas mesures."}
+                    "Les durees inconnues, les appels ouverts et les horaires non fiables ne sont pas mesures."}

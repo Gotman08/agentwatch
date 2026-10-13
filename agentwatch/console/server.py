@@ -226,7 +226,7 @@ class Handler(BaseHTTPRequestHandler):
             self._send({"stopping": True})
             threading.Thread(target=self.server.shutdown, daemon=True).start()
             return
-        if not mutation and url.path in ("/app.js", "/history.js", "/messages.js", "/app.css"):
+        if not mutation and url.path in ("/app.js", "/history.js", "/messages.js", "/mcp.js", "/timeline.js", "/app.css"):
             filename = url.path[1:]
             return self._send((STATIC / filename).read_bytes(), kind="text/javascript; charset=utf-8" if filename.endswith("js") else "text/css; charset=utf-8")
         if not mutation and url.path == "/api/bootstrap":
@@ -257,6 +257,12 @@ class Handler(BaseHTTPRequestHandler):
                     return self._send(analysis.summary(project))
                 if action == "sessions":
                     return self._send(analysis.sessions(project))
+                if action == "mcp":
+                    from .mcp import overview
+                    result = overview(project, query)
+                    if query.get("format") == "json":
+                        return self._send(result, Content_Disposition='attachment; filename="agentwatch-mcp.json"')
+                    return self._send(result)
                 if action == "history" and len(parts) == 5:
                     try:
                         job = app.history.get(project.id, parts[4])

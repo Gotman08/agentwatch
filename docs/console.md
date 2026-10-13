@@ -63,18 +63,43 @@ Ajouter de nouveau la meme racine retrouve l'historique. Il n'y a pas de purge a
 Au demarrage, une racine temporairement indisponible est signalee dans le suivi et reste enregistree,
 meme si un autre projet est ajoute pendant son absence.
 
-## Map, Timeline et Analyses
+## Map, MCP, Timeline et Analyses
 
 Map associe le `PLAN.md` du projet aux changements observes et presente les derniers
 appels ainsi que les MCP utilises. Les APIs de setup, hooks, lancement d'agents et
 decouverte de projets voisins du fork Map sont desactivees. Sans `PLAN.md`, l'arbre et
 les appels restent disponibles. Aucun plan ou fichier AGENTS/CLAUDE n'est genere au demarrage.
 
-Timeline filtre par session, client, resultat, MCP, texte et dates. Le pas peut aller
+La page **MCP** presente tous les serveurs et outils observes dans la racine, avec
+filtrage par periode, session, client, resultat, serveur et texte. Elle donne le nombre
+d'appels, les resultats, le temps outils, la mediane, le P95, les tailles de sortie,
+les troncatures et la couverture des mesures. La mediane est calculee exactement ;
+le P95 utilise le rang `ceil(0.95*n)` des durees fiables observees, erreurs incluses.
+Les quantiles d'un serveur sont calcules sur ses appels, pas a partir des quantiles
+de ses outils. Le taux d'echec utilise seulement les reussites et echecs connus ;
+les appels ouverts ou de statut inconnu restent distincts. Une absence de mesure
+ne devient pas un zero. Les cartes et la liste sont actualisees lorsque l'analyse
+avance ; les outils sont affiches par groupes de 50, avec tri et export JSON de la
+selection. **Appels** ouvre la timeline sur le serveur et l'outil exacts.
+Les appels sans horaire sont conserves et comptes, mais ne fixent pas les bornes
+de la timeline. Ils ne sont pas artificiellement places a l'epoque Unix (1970).
+
+Timeline filtre par session, client, resultat, MCP, outil exact, texte et dates. Le pas peut aller
 d'une seconde a une semaine. Lire/Pause et la vitesse rejouent les intervalles : **Cet
 intervalle** montre les appels qui le traversent, **Cumul depuis le debut** montre
 l'accumulation. Le curseur et **Tous les appels** permettent de revenir a la plage complete.
 Une duree conserve sa source ; la taille de sortie est en octets, pas en tokens.
+
+**Suivre en direct** transforme la plage affichee en une fenetre glissante de meme
+duree, actualisee toutes les trois secondes tant que l'onglet est visible. Elle
+conserve les filtres et indique l'heure du dernier calcul. Les observations restent
+soumises au delai du collecteur et de l'analyse. Choisir un intervalle, lancer la
+lecture, changer de page ou arreter le direct fige la selection pour l'inspection.
+Ouvrir un detail arrete le direct pour figer ses preuves. Une reponse de requete
+ancienne ne peut pas remplacer les filtres plus recents ou les donnees d'une autre racine.
+Le calcul de la timeline lit les colonnes utiles en flux et calcule l'union de temps
+sans conserver une liste d'intervalles par appel ; ses structures Python sont bornees
+par le nombre de cases. Le tri et l'extraction des colonnes restent executes par SQLite.
 
 Le **temps actif** est l'union des intervalles observes. Le **temps outils** est leur
 somme et peut etre plus grand a cause du parallelisme. Les appels ouverts, les durees
@@ -102,6 +127,10 @@ d'outils vide. Les traces sont traitees comme des preuves, pas comme des instruc
 
 Choisir les sections de contexte, la plage et le nombre d'appels. Depuis Analyses, la
 session affichee sert de perimetre ; depuis Timeline, les filtres de la page sont repris.
+Depuis MCP, les filtres de la selection peuvent aussi etre repris. La section MCP du
+contexte joint contient les mesures et leur methode sur ce perimetre ; la synthese
+generale conserve explicitement son perimetre de projet entier. Au plus 100 serveurs
+et 100 outils sont joints dans cette section, avec les omissions indiquees.
 **Preparer le contexte** montre le JSON exact, le budget, les omissions et son empreinte.
 Envoyer conserve cet instantane immuable avec le message. **Voir le contexte** sur un
 ancien message retrouve ce qui a ete transmis a ce moment-la, meme si de nouvelles

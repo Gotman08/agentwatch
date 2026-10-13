@@ -57,7 +57,7 @@ Chaque dossier est un projet : son historique, ses rapports et ses conversations
 dans son propre `.agentwatch/`, exclu de Git. Plusieurs dossiers peuvent etre suivis
 simultanement ; le selecteur change seulement la vue.
 
-La navigation propose **Map**, **Timeline**, **Analyses** et **Chat**. La carte reprend
+La navigation propose **Map**, **MCP**, **Timeline**, **Analyses** et **Chat**. La carte reprend
 AgentTrail **Map** sous licence MIT. La chronologie expose les MCP, outils, agents,
 resultats, tailles de sortie et durees avec leur provenance ; elle se rejoue au pas choisi.
 Les sept detecteurs, tendances et comparaisons existants sont consultables dans Analyses.

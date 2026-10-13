@@ -36,6 +36,20 @@ const S = {
   scope: {},
   polling: false,
   contextTicket: 0,
+  mcpQuery: {},
+  mcpPeriod: 0,
+  mcpData: null,
+  mcpTicket: 0,
+  mcpShown: 50,
+  mcpLoading: false,
+  mcpRevision: null,
+  mcpLastUpdated: 0,
+  followLive: false,
+  liveWindowNs: 3600e9,
+  timelineSeconds: 10,
+  timelineTicket: 0,
+  timelineLoading: false,
+  timelineAppliedQuery: null,
 };
 const labels = {
   success: "Réussi",
@@ -216,6 +230,7 @@ function welcome() {
 }
 async function selectProject(pid) {
   stopPlay();
+  stopTimelineLive();
   S.pid = pid;
   S.reportSession = "";
   S.conversation = "";
@@ -225,7 +240,12 @@ async function selectProject(pid) {
   S.scope = {};
   S.playIndex = null;
   S.time = null;
+  S.timelineAppliedQuery = null;
   S.summary = null;
+  S.mcpQuery = {};
+  S.mcpPeriod = 0;
+  S.mcpData = null;
+  S.timelineSeconds = 10;
   renderProjects();
   $("project-dialog").close();
   await navigate("map");
@@ -235,8 +255,10 @@ async function navigate(view) {
     S.originView = S.view;
     if (S.view === "analysis" && S.reportSession)
       S.scope = { session: S.reportSession };
+    if (S.view === "mcp") S.scope = { ...(S.mcpData?.selection || S.mcpQuery) };
   }
   stopPlay();
+  if (view !== "timeline") stopTimelineLive();
   S.view = view;
   const epoch = ++S.epoch;
   document
@@ -264,6 +286,7 @@ async function navigate(view) {
     S.summary = d;
     S.sessions = s;
     if (view === "map") renderMap(d);
+    if (view === "mcp") await renderMCP(epoch);
     if (view === "timeline") await renderTimeline(d, epoch);
     if (view === "analysis") await renderAnalysis(epoch);
     if (view === "chat") await renderChat(epoch);
@@ -312,7 +335,7 @@ function renderMap(d) {
     ) +
     pendingBanner() +
     metrics(d) +
-    `<div class="map-layout"><section class="panel"><div class="panel-header"><h3>Carte des composants</h3><div class="legend"><span><i></i> Activité observée</span><span><i></i> Statut du plan</span></div></div><iframe class="map-frame" id="map-frame" title="Carte AgentTrail du projet sélectionné" src="/p/${esc(S.pid)}/map" sandbox="allow-scripts allow-same-origin allow-popups"></iframe><div class="panel-foot" id="map-note">Carte issue d’AgentTrail Map, adaptée pour AgentWatch · Les coches du plan n’attestent pas la réussite des opérations.</div></section><aside class="side-stack"><section class="panel"><div class="panel-header"><h3>Dernières opérations</h3><button class="text-button" data-go="timeline">Tout voir</button></div><div class="activity-list" id="recent-calls">${recentCalls(d.recent)}</div></section><section class="panel"><div class="panel-header"><h3>MCP utilisés</h3><span class="badge-count">${fmt(d.project.mcp_servers)} serveurs</span></div><div class="mcp-list" id="map-mcp">${mcpList(d.mcp.slice(0, 6))}</div></section></aside></div>` +
+    `<div class="map-layout"><section class="panel"><div class="panel-header"><h3>Carte des composants</h3><div class="legend"><span><i></i> Activité observée</span><span><i></i> Statut du plan</span></div></div><iframe class="map-frame" id="map-frame" title="Carte AgentTrail du projet sélectionné" src="/p/${esc(S.pid)}/map" sandbox="allow-scripts allow-same-origin allow-popups"></iframe><div class="panel-foot" id="map-note">Carte issue d’AgentTrail Map, adaptée pour AgentWatch · Les coches du plan n’attestent pas la réussite des opérations.</div></section><aside class="side-stack"><section class="panel"><div class="panel-header"><h3>Dernières opérations</h3><button class="text-button" data-go="timeline">Tout voir</button></div><div class="activity-list" id="recent-calls">${recentCalls(d.recent)}</div></section><section class="panel"><div class="panel-header"><h3>MCP utilisés</h3><button class="text-button" data-go="mcp">Tout voir ↗</button></div><div class="mcp-list" id="map-mcp">${mcpList(d.mcp.slice(0, 6))}</div></section></aside></div>` +
     storageLine();
   updateMapNote();
 }
@@ -369,6 +392,7 @@ function readFilters() {
     client: $("client-filter")?.value || "",
     status: $("status-filter")?.value || "",
     mcp: $("mcp-filter")?.value || "",
+    tool: $("tool-filter")?.value || "",
     search: $("search-filter")?.value || "",
     since: timeValue("since-filter"),
     until: timeValue("until-filter"),
@@ -385,23 +409,26 @@ async function renderTimeline(d, epoch) {
     header(
       "Timeline",
       "Rejouez les opérations. Chaque durée garde sa source et ses limites.",
-      `<button class="secondary" id="timeline-reset">Tout l’historique</button>`,
+      `<button class="secondary" id="timeline-live" aria-pressed="false">Suivre en direct</button><button class="secondary" id="timeline-reset">Tout l’historique</button>`,
     ) +
     pendingBanner() +
-    `<section class="panel"><div class="panel-header"><h3>Chronologie des outils</h3><span class="muted" style="font-size:10px">Heure locale · ${esc(Intl.DateTimeFormat().resolvedOptions().timeZone)}</span></div><div class="filters"><div class="filter"><label for="since-filter">Début</label><input type="datetime-local" step="1" id="since-filter"></div><div class="filter"><label for="until-filter">Fin</label><input type="datetime-local" step="1" id="until-filter"></div><div class="filter"><label for="step-filter">Un intervalle de</label><select id="step-filter">${[1, 5, 10, 30, 60, 300, 900, 3600, 14400, 86400, 604800].map((n) => `<option value="${n}" ${n === 10 ? "selected" : ""}>${n < 60 ? n + " secondes" : n < 3600 ? n / 60 + " minutes" : n < 86400 ? n / 3600 + " heures" : n / 86400 + " jours"}</option>`).join("")}</select></div><button class="secondary" id="timeline-apply">Appliquer</button></div><div class="chart" id="timeline-chart"></div><div class="timeline-controls"><button class="secondary" id="play-toggle">▶ Lire</button><input type="range" id="play-range" min="0" max="0" value="0" aria-label="Position dans la chronologie"><span id="play-time" class="time-readout">Historique complet</span><select id="play-speed" aria-label="Vitesse de lecture"><option value="1">1×</option><option value="2">2×</option><option value="5">5×</option><option value="10">10×</option></select><select id="play-mode" aria-label="Mode de la chronologie"><option value="interval">Cet intervalle</option><option value="cumulative">Cumul depuis le début</option></select><button class="text-button" id="play-all">Tous les appels</button></div><div class="timeline-summary" id="timeline-summary"></div><div class="panel-foot" id="timeline-note"></div></section><section class="panel" style="margin-top:20px"><div class="filters"><div class="filter"><label for="session-filter">Session</label><select id="session-filter"><option value="">Toutes les sessions</option>${choices}</select></div><div class="filter"><label for="client-filter">Client</label><select id="client-filter"><option value="">Tous les clients</option><option value="codex">Codex</option><option value="claude-code">Claude Code</option></select></div><div class="filter"><label for="status-filter">Résultat</label><select id="status-filter"><option value="">Tous les résultats</option><option value="success">Réussis</option><option value="failure">Échecs</option><option value="open">Ouverts</option><option value="unknown">Inconnus</option></select></div><div class="filter"><label for="mcp-filter">MCP</label><select id="mcp-filter"><option value="">Tous les outils</option>${[...new Set(d.mcp.map((m) => m.mcp))].map((m) => `<option>${esc(m)}</option>`).join("")}</select></div><div class="filter search"><label for="search-filter">Rechercher</label><input id="search-filter" placeholder="Outil, fichier, commande, agent…"></div></div><div class="table-wrap"><table><thead><tr><th>Début / fin</th><th>Agent / client</th><th>Outil et cible</th><th>Résultat</th><th>Durée</th><th>Sortie</th></tr></thead><tbody id="calls-body"></tbody></table></div><div class="table-footer"><span id="calls-count"></span><button class="secondary" id="calls-more" hidden>Charger la suite</button></div></section>` +
+    `<section class="panel"><div class="panel-header"><h3>Chronologie des outils</h3><span class="muted" style="font-size:10px">Heure locale · ${esc(Intl.DateTimeFormat().resolvedOptions().timeZone)}</span></div><div class="filters"><div class="filter"><label for="since-filter">Début</label><input type="datetime-local" step="1" id="since-filter"></div><div class="filter"><label for="until-filter">Fin</label><input type="datetime-local" step="1" id="until-filter"></div><div class="filter"><label for="step-filter">Un intervalle de</label><select id="step-filter">${AgentWatchTimeline.steps.map((n) => `<option value="${n}" ${n === S.timelineSeconds ? "selected" : ""}>${AgentWatchTimeline.stepLabel(n)}</option>`).join("")}</select></div><button class="secondary" id="timeline-apply">Appliquer</button></div><div class="chart" id="timeline-chart"></div><div class="timeline-controls"><button class="secondary" id="play-toggle">▶ Lire</button><input type="range" id="play-range" min="0" max="0" value="0" aria-label="Position dans la chronologie"><span id="play-time" class="time-readout">Historique complet</span><select id="play-speed" aria-label="Vitesse de lecture"><option value="1">1×</option><option value="2">2×</option><option value="5">5×</option><option value="10">10×</option></select><select id="play-mode" aria-label="Mode de la chronologie"><option value="interval">Cet intervalle</option><option value="cumulative">Cumul depuis le début</option></select><button class="text-button" id="play-all">Tous les appels</button></div><div class="timeline-summary" id="timeline-summary"></div><div class="panel-foot"><span id="timeline-update" role="status"></span><br><span id="timeline-note"></span></div></section><section class="panel" style="margin-top:20px"><div class="filters"><div class="filter"><label for="session-filter">Session</label><select id="session-filter"><option value="">Toutes les sessions</option>${choices}</select></div><div class="filter"><label for="client-filter">Client</label><select id="client-filter"><option value="">Tous les clients</option><option value="codex">Codex</option><option value="claude-code">Claude Code</option></select></div><div class="filter"><label for="status-filter">Résultat</label><select id="status-filter"><option value="">Tous les résultats</option><option value="success">Réussis</option><option value="failure">Échecs</option><option value="open">Ouverts</option><option value="unknown">Inconnus</option></select></div><div class="filter"><label for="mcp-filter">MCP</label><select id="mcp-filter"><option value="">Tous les outils</option>${[...new Set(d.mcp.map((m) => m.mcp))].map((m) => `<option>${esc(m)}</option>`).join("")}</select></div><div class="filter"><label for="tool-filter">Outil MCP</label><select id="tool-filter"><option value="">Tous les outils MCP</option>${[...new Set(d.mcp.map((m) => m.tool))].map((tool) => `<option>${esc(tool)}</option>`).join("")}</select></div><div class="filter search"><label for="search-filter">Rechercher</label><input id="search-filter" placeholder="Outil, fichier, commande, agent…"></div></div><div class="table-wrap"><table><thead><tr><th>Début / fin</th><th>Agent / client</th><th>Outil et cible</th><th>Résultat</th><th>Durée</th><th>Sortie</th></tr></thead><tbody id="calls-body"></tbody></table></div><div class="table-footer"><span id="calls-count"></span><button class="secondary" id="calls-more" hidden>Charger la suite</button></div></section>` +
     storageLine();
   for (const [key, id] of [
     ["session", "session-filter"],
     ["client", "client-filter"],
     ["status", "status-filter"],
     ["mcp", "mcp-filter"],
+    ["tool", "tool-filter"],
     ["search", "search-filter"],
   ])
     $(id).value = S.query[key] || "";
   if (S.query.since) $("since-filter").value = localInput(S.query.since);
   if (S.query.until) $("until-filter").value = localInput(S.query.until);
   $("timeline-apply").onclick = () => refreshTimeline();
+  $("timeline-live").onclick = toggleTimelineLive;
   $("timeline-reset").onclick = () => {
+    stopTimelineLive();
     const since = d.first_ns,
       until = d.last_ns;
     const sec = Math.ceil((until - since) / 1e9 / 700);
@@ -413,9 +440,13 @@ async function renderTimeline(d, epoch) {
     $("until-filter").value = localInput(until);
     refreshTimeline();
   };
-  ["session-filter", "client-filter", "status-filter", "mcp-filter"].forEach(
-    (id) => ($(id).onchange = () => refreshTimeline()),
-  );
+  [
+    "session-filter",
+    "client-filter",
+    "status-filter",
+    "mcp-filter",
+    "tool-filter",
+  ].forEach((id) => ($(id).onchange = () => refreshTimeline()));
   let searchTimer;
   $("search-filter").oninput = () => {
     clearTimeout(searchTimer);
@@ -440,28 +471,58 @@ async function renderTimeline(d, epoch) {
   await refreshTimeline(epoch);
 }
 async function refreshTimeline(epoch = S.epoch) {
+  const ticket = ++S.timelineTicket,
+    pid = S.pid;
   stopPlay();
   S.query = readFilters();
-  S.scope = { ...S.query };
+  S.timelineSeconds = Number($("step-filter").value);
+  if (S.followLive)
+    Object.assign(S.query, AgentWatchTimeline.liveRange(S.liveWindowNs));
+  const q = { ...S.query };
   S.playIndex = null;
+  S.timelineLoading = true;
   try {
     const result = await api(
-      base() +
+      base(pid) +
         "/timeline?" +
-        queryString({ ...S.query, seconds: $("step-filter").value }),
+        queryString({ ...q, seconds: S.timelineSeconds }),
     );
-    if (epoch !== S.epoch) return;
+    if (epoch !== S.epoch || ticket !== S.timelineTicket) return;
     S.time = result;
-    if (!S.query.since) $("since-filter").value = localInput(result.since);
-    if (!S.query.until) $("until-filter").value = localInput(result.until);
+    S.timelineAppliedQuery = {
+      ...q,
+      since: result.since || q.since,
+      until: result.until || q.until,
+    };
+    S.scope = { ...S.timelineAppliedQuery };
+    if (S.followLive || !q.since)
+      $("since-filter").value = localInput(result.since);
+    if (S.followLive || !q.until)
+      $("until-filter").value = localInput(result.until);
     $("play-range").max = Math.max(0, result.buckets.length - 1);
     $("play-range").value = 0;
     $("timeline-note").textContent =
-      result.note || "Aucun appel dans cette sélection.";
+      (result.note || "Aucun appel dans cette sélection.") +
+      (result.undated_calls
+        ? " " +
+          fmt(result.undated_calls) +
+          " appels sans horaire conservés, non placés sur la timeline."
+        : "");
+    $("timeline-update").textContent =
+      "Actualisé à " +
+      clock(Date.now() * 1e6) +
+      (S.followLive
+        ? " · fenêtre glissante, aux arrivées du collecteur"
+        : " · plage fixe");
     drawChart();
     await loadCalls(false, epoch);
   } catch (e) {
-    if (epoch === S.epoch) notify(e.message, true);
+    if (epoch === S.epoch && ticket === S.timelineTicket) {
+      stopTimelineLive();
+      notify(e.message, true);
+    }
+  } finally {
+    if (ticket === S.timelineTicket) S.timelineLoading = false;
   }
 }
 function drawChart() {
@@ -501,7 +562,7 @@ function drawChart() {
         ? [bins[selected]]
         : bins.slice(0, selected + 1);
   $("timeline-summary").innerHTML =
-    `<span><b>${fmt(subset.reduce((n, b) => n + b.starts, 0))}</b> appels commencés</span><span>Temps actif <b>${ms(subset.reduce((n, b) => n + b.active_ms, 0))}</b></span><span>Temps outils <b>${ms(subset.reduce((n, b) => n + b.tool_ms, 0))}</b></span><span><b>${fmt(subset.reduce((n, b) => n + b.unknown_duration, 0))}</b> durées inconnues</span>`;
+    `<span><b>${fmt(subset.reduce((n, b) => n + b.starts, 0))}</b> appels commencés</span><span>Temps actif <b>${ms(subset.reduce((n, b) => n + b.active_ms, 0))}</b></span><span>Temps outils <b>${ms(subset.reduce((n, b) => n + b.tool_ms, 0))}</b></span><span><b>${fmt(subset.reduce((n, b) => n + b.unknown_duration, 0))}</b> durées inconnues</span><span><b>${fmt(subset.reduce((n, b) => n + (b.unplaced_time || 0), 0))}</b> horaires non fiables</span>`;
   $("play-time").textContent =
     selected == null ? "Plage complète" : clock(bins[selected].until_ns);
   $("timeline-chart")
@@ -515,6 +576,7 @@ function drawChart() {
     );
 }
 function selectBucket(index) {
+  stopTimelineLive();
   S.playIndex = index;
   $("play-range").value = index;
   drawChart();
@@ -526,6 +588,7 @@ function togglePlay() {
     return;
   }
   if (!S.time?.buckets.length) return;
+  stopTimelineLive();
   if (S.playIndex == null || S.playIndex >= S.time.buckets.length - 1)
     S.playIndex = -1;
   $("play-toggle").textContent = "Ⅱ Pause";
@@ -620,6 +683,8 @@ function structured(value, depth = 0) {
   );
 }
 async function showCall(id) {
+  stopTimelineLive();
+  stopPlay();
   const pid = S.pid;
   try {
     const d = await api(base(pid) + "/calls/" + encodeURIComponent(id));
@@ -812,7 +877,7 @@ async function renderChat(epoch) {
       )
       .join(
         "",
-      )}<label class="check"><input type="checkbox" id="context-scope" ${Object.keys(S.scope).length ? "checked" : ""}>Utiliser les filtres de la timeline</label><div class="input-group"><div><label for="context-limit">Appels récents (max.)</label><input type="number" id="context-limit" min="1" max="200" value="100"></div><div><label for="context-budget">Budget en caractères</label><input type="number" id="context-budget" min="8000" max="240000" step="8000" value="80000"></div></div><button id="context-prepare" class="secondary" style="margin-top:17px;width:100%">Préparer / actualiser le contexte</button></div><div class="context-summary" id="context-summary">Le contexte sera visible ici avant l’envoi.</div><details><summary style="padding:12px 20px;font-size:11px;cursor:pointer">Aperçu exact du contexte joint</summary><pre class="context-preview" id="context-preview"></pre></details></aside></div>` +
+      )}<label class="check"><input type="checkbox" id="context-scope" ${Object.keys(S.scope).length ? "checked" : ""}>Utiliser le périmètre de la vue précédente</label><div class="input-group"><div><label for="context-limit">Appels récents (max.)</label><input type="number" id="context-limit" min="1" max="200" value="100"></div><div><label for="context-budget">Budget en caractères</label><input type="number" id="context-budget" min="8000" max="240000" step="8000" value="80000"></div></div><button id="context-prepare" class="secondary" style="margin-top:17px;width:100%">Préparer / actualiser le contexte</button></div><div class="context-summary" id="context-summary">Le contexte sera visible ici avant l’envoi.</div><details><summary style="padding:12px 20px;font-size:11px;cursor:pointer">Aperçu exact du contexte joint</summary><pre class="context-preview" id="context-preview"></pre></details></aside></div>` +
     storageLine();
   $("conversation-select").value = S.conversation;
   $("conversation-select").onchange = () => {
@@ -882,7 +947,7 @@ async function prepareContext(epoch = S.epoch) {
     S.context = d;
     $("context-preview").textContent = JSON.stringify(d.bundle, null, 2);
     $("context-summary").innerHTML =
-      `<b>${fmt(d.chars)}</b> caractères · ~${fmt(d.estimated_tokens)} tokens estimés<br>${Object.keys(d.bundle.sections).length} sections · ${d.bundle.omissions.length ? esc(d.bundle.omissions.map((o) => (o.items ? o.section + " : " + o.items + " éléments écartés" : o.section + " omise")).join(", ")) : "aucune section omise"}<br>Appels limités à ${options.call_limit}. Synthèse et MCP : historique du projet.<br>Empreinte <code>${esc(d.digest.slice(0, 12))}</code>`;
+      `<b>${fmt(d.chars)}</b> caractères · ~${fmt(d.estimated_tokens)} tokens estimés<br>${Object.keys(d.bundle.sections).length} sections · ${d.bundle.omissions.length ? esc(d.bundle.omissions.map((o) => (o.items ? o.section + " : " + o.items + " éléments écartés" : o.section + " omise")).join(", ")) : "aucune section omise"}<br>Appels limités à ${options.call_limit}. Synthèse : historique du projet. MCP : ${esc(d.bundle.sections.mcp?.scope || "section non jointe")}.<br>Empreinte <code>${esc(d.digest.slice(0, 12))}</code>`;
     $("chat-send").disabled = Boolean(S.job);
     $("context-prepare").disabled = false;
   } catch (e) {
@@ -1032,6 +1097,20 @@ async function poll() {
       }
     }
     if (S.view === "chat" && S.conversation) await loadMessages(epoch);
+    if (
+      S.view === "timeline" &&
+      S.followLive &&
+      !S.timelineLoading &&
+      !$("detail-dialog").open
+    )
+      await refreshTimeline(epoch);
+    if (
+      S.view === "mcp" &&
+      !S.mcpLoading &&
+      (S.mcpRevision !== project()?.analysis_revision ||
+        Date.now() - S.mcpLastUpdated > 60000)
+    )
+      await refreshMCP(epoch, true);
     if (S.view === "analysis" && S.report?.pending) await loadReport(epoch);
   } catch (e) {
     $("live-label").textContent = "Connexion interrompue";

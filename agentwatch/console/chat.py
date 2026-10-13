@@ -78,7 +78,7 @@ def prepare_context(project: Project, options: dict[str, Any]) -> dict[str, Any]
     if not isinstance(requested, list) or any(s not in SECTIONS for s in requested):
         raise ValueError("Sections de contexte invalides.")
     budget = min(240000, max(8000, int(options.get("budget_chars", 80000))))
-    query = {key: str(options[key]) for key in ("since", "until", "session", "client", "mcp", "status", "search", "overlap") if options.get(key)}
+    query = {key: str(options[key]) for key in ("since", "until", "session", "client", "mcp", "tool", "status", "search", "overlap") if options.get(key)}
     count = min(200, max(1, int(options.get("call_limit", 100))))
     bundle: dict[str, Any] = {"project": {"id": project.id, "root": str(project.root)},
                               "prepared_ns": time.time_ns(), "page": str(options.get("page") or "chat")[:80],
@@ -108,7 +108,12 @@ def prepare_context(project: Project, options: dict[str, Any]) -> dict[str, Any]
         else:
             candidates["plan"] = {"available": False}
     if "mcp" in requested:
-        candidates["mcp"] = {"scope": "Tout l'historique du projet", "tools": overview["mcp"][:100]}
+        from .mcp import overview as mcp_overview
+        details = mcp_overview(project, query)
+        candidates["mcp"] = {"scope": details["scope"], "selection": query, "total": details["total"],
+                             "servers": details["servers"][:100], "tools": details["tools"][:100],
+                             "omitted_tools": max(0, len(details["tools"]) - 100),
+                             "omitted_servers": max(0, len(details["servers"]) - 100), "method": details["method"]}
     if "calls" in requested:
         result = calls_page(project, {**query, "limit": str(count)})
         candidates["calls"] = {"scope": query, "items": result["items"], "total": result["total"],
@@ -127,9 +132,9 @@ def prepare_context(project: Project, options: dict[str, Any]) -> dict[str, Any]
             if query.get("client"):
                 sql += " AND e.client=?"
                 args.append(query["client"])
-            if any(query.get(k) for k in ("mcp", "status", "search")):
+            if any(query.get(k) for k in ("mcp", "tool", "status", "search")):
                 from .analysis import filters
-                where, call_args = filters({k: query[k] for k in ("mcp", "status", "search") if query.get(k)})
+                where, call_args = filters({k: query[k] for k in ("mcp", "tool", "status", "search") if query.get(k)})
                 sql += " AND EXISTS(SELECT 1 FROM calls c JOIN json_each(c.data,'$.event_ids') j " \
                        "WHERE c.client=e.client AND j.value=e.event_id AND " + where + ")"
                 args.extend(call_args)
