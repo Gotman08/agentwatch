@@ -177,6 +177,16 @@ python -m agentwatch report --latest --format markdown
 
 Utilisez `--session <id>` pour une session précise et `--client` pour éviter de sélectionner celle d'un autre client. Les portées utilisateur/projet, réglages et commandes de désinstallation sont décrits dans [le guide d'installation](docs/installation.md).
 
+## Connexion AgentTrail Map
+
+`python -m agentwatch agenttrail --project-dir <projet> --port 5330 --follow`
+relaie les sessions Codex/Claude et les appels d'outils vers le tableau
+**AgentTrail Map**. `PLAN.md` decrit les composants et leurs dependances ; Map
+observe directement les modifications de fichiers. Les lectures ne sont pas
+transformees en ecritures, et les diagnostics et couts restent dans les rapports
+AgentWatch. Installation, lancement et limites :
+[docs/agenttrail.md](docs/agenttrail.md).
+
 ## Rapports et analyse
 
 ### Un diagnostic avec des preuves
@@ -290,7 +300,7 @@ python -m agentwatch compare --at 2026-10-05T14:00 --client codex
 
 ## Confidentialité et limites
 
-- **Local :** AgentWatch n'envoie aucune donnée sur le réseau. Le stockage est borné et son dossier par défaut est `~/.agentwatch`, configurable via `AGENTWATCH_HOME` ou `--home`.
+- **Local :** la collecte et l'analyse restent sur la machine. Le relais AgentTrail Map communique uniquement avec son tableau sur `127.0.0.1`. Le stockage de collecte est borné et son dossier par défaut est `~/.agentwatch`, configurable via `AGENTWATCH_HOME` ou `--home`.
 - **Collecte limitée :** champs autorisés, commandes masquées et empreintes HMAC locales. Les contenus de fichiers, prompts et sorties complètes ne sont pas conservés en clair par défaut dans la collecte standard. L'inspection détaillée est une voie distincte, sur demande.
 - **Passif :** aucune modification des appels, aucun blocage, aucun retour automatique au modèle et aucune exécution des recommandations. Les hooks ajoutent néanmoins une surcharge mesurable ; la voie rollouts lit les journaux locaux.
 - **Incertitudes explicites :** journaux incomplets, modifications externes et disponibilité réelle d'un résultat dans le contexte peuvent rester inconnus. Un appel répété n'est pas automatiquement inutile.
@@ -317,6 +327,7 @@ Pour signaler un problème, ouvrez une [issue](https://github.com/Gotman08/agent
 
 | Guide | Ce que vous y trouverez |
 |---|---|
+| [AgentTrail Map](docs/agenttrail.md) | Raccordement local, lancement, attribution et limites |
 | [Installation](docs/installation.md) | Commandes, portées, réglages et désinstallation |
 | [Détecteurs](docs/detectors.md) | Règles A–G, seuils, confiance, exemples et contre-exemples |
 | [Remplacements](docs/replacements.md) | Contrats, préconditions, attentes, sensibilité et exports JSON |

@@ -909,6 +909,11 @@ def _follow(home: Path, args: argparse.Namespace, once: Any, show: Any, digest: 
             pass
 
 
+def cmd_agenttrail(args: argparse.Namespace) -> int:
+    from agentwatch.connectors.agenttrail import run_bridge
+    return run_bridge(args, home_dir(args.home), _out, _err)
+
+
 def cmd_self_test(args: argparse.Namespace) -> int:
     from agentwatch.selftest import run_selftest
     ok, lines = run_selftest(runs=args.runs)
@@ -1254,6 +1259,15 @@ def build_parser() -> argparse.ArgumentParser:
                    help="demander au suivi continu de s'arreter apres son cycle (arret consigne, verrou rendu) ; ne lit rien")
     s.add_argument("--reason", help="motif de l'arret demande, ecrit dans l'etat et le journal")
     s.set_defaults(func=cmd_import_rollouts)
+
+    s = sub.add_parser("agenttrail", help="relayer les observations nouvelles vers AgentTrail Map (API locale)")
+    s.add_argument("--project-dir", required=True, help="dossier du projet a observer")
+    s.add_argument("--port", type=int, default=5330, help="port local du tableau Map (defaut 5330)")
+    s.add_argument("--follow", action="store_true", help="suivre les nouveaux evenements; Ctrl+C pour arreter")
+    s.add_argument("--interval", type=float, default=2.0, help="periode du relais en secondes (defaut 2, minimum 0.5)")
+    s.add_argument("--recent-seconds", type=float, default=0.0, help="inclure explicitement des observations recentes (0 a 120 s)")
+    s.add_argument("--dry-run", action="store_true", help="export JSONL expurge, sans contacter Map")
+    s.set_defaults(func=cmd_agenttrail)
 
     s = sub.add_parser("self-test", help="scenarios synthetiques + hook reel en sous-processus")
     s.add_argument("--runs", type=int, default=5)
