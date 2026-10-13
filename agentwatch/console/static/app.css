@@ -389,6 +389,46 @@ main {
 .activity-list {
   padding: 0 17px;
 }
+#recent-calls {
+  --activity-row-height: 96px;
+  display: grid;
+  max-height: calc(3 * var(--activity-row-height));
+  overflow-y: auto;
+  overscroll-behavior-y: contain;
+  scrollbar-gutter: stable;
+}
+#recent-calls .activity-item {
+  min-width: 0;
+  min-height: 0;
+  height: var(--activity-row-height);
+  padding: 10px 0;
+}
+#recent-calls .activity-meta {
+  gap: 8px;
+  margin-bottom: 4px;
+}
+#recent-calls .activity-status {
+  margin: 6px 0 0;
+}
+#recent-calls .activity-meta > :last-child {
+  flex-shrink: 0;
+}
+#recent-calls .provider,
+#recent-calls .tool-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+#recent-calls .tool-name {
+  display: block;
+}
+#map-mcp {
+  max-height: 216px;
+  overflow-y: auto;
+  overscroll-behavior-y: contain;
+  scrollbar-gutter: stable;
+}
 .activity-item {
   display: block;
   width: 100%;
@@ -1211,6 +1251,9 @@ dialog::backdrop {
   }
   .side-stack {
     grid-template-columns: 1fr 1fr;
+  }
+  .map-layout .side-stack {
+    grid-row: 1;
   }
   .analysis-sections {
     position: static;
