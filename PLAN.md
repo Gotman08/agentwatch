@@ -62,6 +62,28 @@ links: [expliquer, verifier]
   from: agent
   tech: tests/test_agenttrail.py, tests/test_agenttrail_integration.py
 
+## Consulter chaque projet dans la console {#consulter}
+tech: agentwatch/console/
+files: [agentwatch/console/**, docs/console.md, examples/console.ps1]
+needs: [collecter, expliquer]
+links: [afficher, verifier]
+- [x] Conserver les traces et les analyses dans chaque racine de travail {#historiques-projet}
+  by: codex
+  from: agent
+  tech: agentwatch/console/storage.py, agentwatch/console/ingest.py
+- [x] Explorer les MCP et rejouer la chronologie des appels {#console-timeline}
+  by: codex
+  from: agent
+  tech: agentwatch/console/static/, agentwatch/console/analysis.py
+- [x] Consulter Codex ou Claude avec le contexte choisi du projet {#console-chat}
+  by: codex
+  from: agent
+  tech: agentwatch/console/chat.py
+- [x] Mesurer les outils MCP et suivre la chronologie en direct {#console-mcp-direct}
+  by: codex
+  from: agent
+  tech: agentwatch/console/mcp.py, agentwatch/console/static/mcp.js, agentwatch/console/static/timeline.js
+
 ## Verifier et documenter les comportements {#verifier}
 tech: tests/, docs/, agentwatch/selftest.py
 files: [tests/**, docs/architecture.md, docs/events.md, docs/compatibility.md, docs/detectors.md, docs/privacy.md, docs/installation.md, docs/run-inspection.md, docs/replacements.md, docs/claude-context.md, agentwatch/selftest.py, examples/replacement_replay.py, examples/development_usage.py, examples/claude_spec_replay.py, examples/claude_run_replay.py, examples/demo/**, examples/reports/**]
@@ -70,5 +92,7 @@ links: [collecter, relier, detecter, expliquer, installer, afficher]
   tech: tests/test_adapters_contract.py, tests/test_store_concurrency.py, agentwatch/selftest.py
 
 ## decisions
+- 2026-10-11 : console implementee et testee sur deux racines, avec stockage, chronologie, sorties natives, rapports et contexte immuable. Le chat Codex a repondu en reel ; l'adaptateur Claude est livre, sa connexion locale OAuth doit etre renouvelee. Les bornes de la carte, de l'analyse et du contexte sont documentees ; les coches ne constituent pas une qualification de taille arbitraire ni une acceptation utilisateur.
+- 2026-10-11 : ajouter une console par projet, partie durable qui possede agentwatch/console/. Elle depend des rapports et de la collecte, conserve les observations dans chaque racine .agentwatch/, suit plusieurs racines simultanement et fournit un chat Codex/Claude de consultation avec contexte choisi. La carte open source AgentTrail est reprise sous licence MIT ; ses ecritures de setup sont desactivees dans la console.
 - 2026-10-11 : carte reconstruite depuis les modules presents. Les coches indiquent une implementation identifiable dans les fichiers cites ; elles ne prouvent ni acceptation utilisateur ni gain mesure.
 - 2026-10-11 : connecter AgentWatch au tableau AgentTrail Map, a la demande du proprietaire. Les appels d'outils ne doivent pas etre transformes en taches terminees, ni les lectures en modifications de fichiers. La collecte existante et ses journaux sont conserves.

@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="fr">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>AgentWatch — Projets</title>
+    <link rel="stylesheet" href="/app.css" />
+    <script src="/messages.js" defer></script>
+    <script src="/app.js" defer></script>
+    <script src="/mcp.js" defer></script>
+    <script src="/timeline.js" defer></script>
+    <script src="/history.js" defer></script>
+  </head>
+  <body>
+    <header class="topbar">
+      <button class="brand" id="home" aria-label="Choisir un projet">
+        <span class="brand-mark">a<span>•</span></span
+        >AgentWatch
+      </button>
+      <div class="project-switch">
+        <span class="divider"></span
+        ><select id="project-select" aria-label="Projet actif">
+          <option value="">Choisir un projet</option></select
+        ><button
+          class="icon-button"
+          id="add-project"
+          title="Ajouter un dossier de travail"
+          aria-label="Ajouter un projet"
+        >
+          ＋
+        </button>
+      </div>
+      <nav aria-label="Navigation du projet">
+        <button data-view="map" class="active">Map</button
+        ><button data-view="mcp">MCP</button
+        ><button data-view="timeline">Timeline</button
+        ><button data-view="analysis">Analyses</button
+        ><button data-view="chat">Chat</button>
+      </nav>
+      <button class="live-status" id="health-button">
+        <span class="live-dot"></span><span id="live-label">Connexion…</span>
+      </button>
+    </header>
+    <main id="main">
+      <div class="boot-state">Connexion à votre espace de travail…</div>
+    </main>
+    <div class="toast" id="toast" role="status" hidden></div>
+    <dialog id="project-dialog">
+      <div class="dialog-header">
+        <div>
+          <span class="eyebrow">ESPACE DE TRAVAIL</span>
+          <h2>Choisir un projet</h2>
+        </div>
+        <button class="icon-button" id="close-project" aria-label="Fermer">
+          ×
+        </button>
+      </div>
+      <p class="muted">
+        Un dossier de travail est un projet. Son historique reste dans son
+        propre dossier <code>.agentwatch</code>.
+      </p>
+      <div id="project-list" class="project-list"></div>
+      <form id="project-form">
+        <label for="project-path">Dossier racine du projet</label>
+        <div class="input-group">
+          <input
+            id="project-path"
+            autocomplete="off"
+            spellcheck="false"
+            placeholder="C:\Projets\mon-projet"
+            required
+          /><button type="button" id="browse-project" class="secondary">
+            Parcourir
+          </button>
+        </div>
+        <div id="folder-browser" hidden></div>
+        <p id="project-error" class="error" role="alert"></p>
+        <button class="primary" type="submit">
+          Ouvrir et suivre ce projet <span>↗</span>
+        </button>
+      </form>
+      <p class="fineprint">
+        Les autres projets enregistrés restent suivis en parallèle. Les traces
+        existantes sont importées sans lancer leurs commandes.
+      </p>
+    </dialog>
+    <dialog id="detail-dialog" class="detail-dialog">
+      <div class="dialog-header">
+        <h2>Détail de l’appel</h2>
+        <button
+          class="icon-button"
+          id="close-detail"
+          aria-label="Fermer le détail"
+        >
+          ×
+        </button>
+      </div>
+      <div id="detail-content"></div>
+    </dialog>
+  </body>
+</html>

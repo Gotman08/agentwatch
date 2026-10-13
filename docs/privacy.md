@@ -2,7 +2,9 @@
 
 ## Principes
 
-- Tout reste local : aucun export reseau, aucun appel a un service.
+- La collecte et les analyses passives restent locales. La console propose aussi un chat
+  explicite : le contexte choisi est transmis au fournisseur selectionne lors de l'envoi
+  (voir la section Console ci-dessous).
 - Liste de champs autorises : seuls les parametres enumeres par outil sont conserves en
   clair (voir `docs/events.md`). Les autres cles ne sont gardees que sous forme
   `nom + empreinte de la valeur`.
@@ -51,6 +53,30 @@ rapports avant de les partager.
 
 `mask_home_dir` (defaut : vrai) remplace le prefixe du dossier utilisateur par `~` dans
 les chemins conserves. Les chemins relatifs au projet sont stockes relatifs.
+
+## Console par projet et chat explicite
+
+La console conserve les observations attribuees dans le `.agentwatch/` de la racine du
+travail, exclu de Git. Ces copies reprennent les empreintes deja calculees par le collecteur
+source ; elles ne les recalculent pas avec une nouvelle cle. Le registre central conserve
+les racines et les references de lecture/attribution, pas les observations des projets.
+
+Sur **Lire et conserver la sortie**, la source native est relue en lecture seule et son
+identite est verifiee. Un extrait borne, avec ses motifs connus de secrets masques, est
+conserve dans la base du projet. Ce stockage explicite est distinct de la collecte
+normalisee qui ne conserve pas les sorties par defaut.
+
+Le **Chat** conserve les messages saisis, les reponses et le contexte exact joint dans ce
+meme projet. Le contexte peut contenir le plan, les observations, les rapports, les appels
+et les extraits choisis. Sa previsualisation indique les sections, reductions et omissions.
+Il est transmis au fournisseur Codex ou Claude choisi, via sa CLI et son authentification
+existantes, uniquement lors de l'envoi. Le prompt n'est pas ecrit dans le journal du serveur.
+
+Les donnees de projet sont traitees comme des preuves, pas comme des instructions.
+Les outils d'execution, MCP, hooks et personnalisations du projet sont desactives dans
+le chat de consultation ; il ne peut pas modifier les fichiers du projet. Le masquage
+reste heuristique et n'est pas une garantie de detection de tout contenu sensible.
+Voir [le fonctionnement et les bornes de la console](console.md).
 
 ## Journaux natifs des clients
 

@@ -20,3 +20,6 @@ agentwatch = "agentwatch.cli:main"
 
 [tool.setuptools.packages.find]
 include = ["agentwatch*"]
+
+[tool.setuptools.package-data]
+"agentwatch.console" = ["static/*", "vendor/agenttrail/LICENSE", "vendor/agenttrail/UPSTREAM.md", "vendor/agenttrail/bin/*.mjs", "vendor/agenttrail/public/*.html"]

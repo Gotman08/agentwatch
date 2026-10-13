@@ -8,9 +8,35 @@ Les rapports associent chaque signalement à des preuves, à ses limites et à u
 
 Python 3.11+ ; bibliothèque standard par défaut ; sept détecteurs déterministes ; rapports Markdown et JSON. Les rendus terminal, HTML et SVG sont disponibles avec l'option Rich.
 
-[Problèmes traités](#problèmes-traités) · [Fonctionnement](#fonctionnement) · [Exemples](#exemples-de-corrections) · [Installation](#installation-et-démarrage) · [Rapports](#rapports-et-analyse) · [Documentation](#documentation)
+[Console](#console-par-projet) · [Problèmes traités](#problèmes-traités) · [Fonctionnement](#fonctionnement) · [Exemples](#exemples-de-corrections) · [Installation](#installation-et-démarrage) · [Rapports](#rapports-et-analyse) · [Documentation](#documentation)
 
 ---
+
+## Console par projet
+
+```bash
+python -m agentwatch console
+```
+
+Ouvrez `http://127.0.0.1:5330/`, puis choisissez le **dossier racine du travail**.
+Chaque dossier est un projet : son historique, ses rapports et ses conversations restent
+dans son propre `.agentwatch/`, exclu de Git. Plusieurs dossiers peuvent etre suivis
+simultanement ; le selecteur change seulement la vue.
+
+Map affiche trois opérations récentes à la fois, avec défilement interne, et un aperçu compact des MCP utilisés. Les boutons **Tout voir** ouvrent la Timeline et la page MCP complète.
+
+La navigation propose **Map**, **MCP**, **Timeline**, **Analyses** et **Chat**. La carte reprend
+AgentTrail **Map** sous licence MIT. La chronologie expose les MCP, outils, agents,
+resultats, tailles de sortie et durees avec leur provenance ; elle se rejoue au pas choisi.
+Les sept detecteurs, tendances et comparaisons existants sont consultables dans Analyses.
+
+Le chat consulte **Codex ou Claude** avec leurs CLI installees. L'utilisateur choisit et
+previsualise le contexte de ce projet avant l'envoi ; le contexte exact est conserve avec
+la conversation. Cet envoi explicite utilise le fournisseur choisi. Le chat fonctionne
+en consultation, sans outils d'execution ni ecriture dans le projet.
+
+Node.js 20+ est requis pour Map ; les autres vues utilisent Python seul.
+Voir [la console, son stockage et ses limites](docs/console.md).
 
 ## Problèmes traités
 
@@ -225,7 +251,7 @@ python -m agentwatch report --latest --format html --out rapport.html
 python -m agentwatch report --latest --format svg --out rapport.svg
 ```
 
-Ces exports sont des restitutions du rapport local ; le projet n'inclut pas d'interface web interactive.
+Ces exports restituent le rapport local. La [console par projet](#console-par-projet) fournit une vue interactive des traces et des analyses.
 
 ### Trouver les motifs qui reviennent
 
@@ -300,7 +326,8 @@ python -m agentwatch compare --at 2026-10-05T14:00 --client codex
 
 ## Confidentialité et limites
 
-- **Local :** la collecte et l'analyse restent sur la machine. Le relais AgentTrail Map communique uniquement avec son tableau sur `127.0.0.1`. Le stockage de collecte est borné et son dossier par défaut est `~/.agentwatch`, configurable via `AGENTWATCH_HOME` ou `--home`.
+- **Local :** la collecte et l'analyse restent sur la machine. Le relais AgentTrail Map et la console communiquent avec leurs interfaces sur `127.0.0.1`. Le stockage source de collecte est borné et son dossier par défaut est `~/.agentwatch`, configurable via `AGENTWATCH_HOME` ou `--home`. La console conserve séparément l'historique de chaque projet dans son `.agentwatch/`, sans purge automatique.
+- **Chat :** poser une question transmet au fournisseur Codex ou Claude le message, la conversation et le contexte sélectionné. L'aperçu permet de vérifier les informations jointes ; le contexte exact est conservé avec la conversation.
 - **Collecte limitée :** champs autorisés, commandes masquées et empreintes HMAC locales. Les contenus de fichiers, prompts et sorties complètes ne sont pas conservés en clair par défaut dans la collecte standard. L'inspection détaillée est une voie distincte, sur demande.
 - **Passif :** aucune modification des appels, aucun blocage, aucun retour automatique au modèle et aucune exécution des recommandations. Les hooks ajoutent néanmoins une surcharge mesurable ; la voie rollouts lit les journaux locaux.
 - **Incertitudes explicites :** journaux incomplets, modifications externes et disponibilité réelle d'un résultat dans le contexte peuvent rester inconnus. Un appel répété n'est pas automatiquement inutile.
@@ -308,7 +335,7 @@ python -m agentwatch compare --at 2026-10-05T14:00 --client codex
 
 `doctor`, `sessions`, `report` et `trends` avertissent lorsque la collecte paraît cassée : interpréteur disparu, dépôt déplacé, hooks retirés ou activité du client sans événement reçu. Après avoir déplacé le dépôt ou changé d'interpréteur, relancez `configure` pour mettre à jour les chemins des hooks.
 
-Le périmètre comprend sept détecteurs, des rapports par session et multi-sessions, les mesures de contexte et de coordination disponibles, l'inspection locale et la comparaison avant/après. Aucun second LLM, embedding ou profilage Unreal n'est utilisé. Voir [la confidentialité](docs/privacy.md) et [les preuves de compatibilité et de surcharge](docs/compatibility.md).
+Le périmètre comprend sept détecteurs, des rapports par session et multi-sessions, les mesures de contexte et de coordination disponibles, l'inspection locale et la comparaison avant/après. Les détecteurs utilisent des règles déterministes. La console ajoute la carte, les vues MCP et Timeline et le chat de consultation au contexte choisi. Voir [la confidentialité](docs/privacy.md) et [les preuves de compatibilité et de surcharge](docs/compatibility.md).
 
 ## Vérification et contribution
 
@@ -327,6 +354,7 @@ Pour signaler un problème, ouvrez une [issue](https://github.com/Gotman08/agent
 
 | Guide | Ce que vous y trouverez |
 |---|---|
+| [Console par projet](docs/console.md) | Map, MCP, Timeline, analyses, chat, stockage et limites |
 | [AgentTrail Map](docs/agenttrail.md) | Raccordement local, lancement, attribution et limites |
 | [Installation](docs/installation.md) | Commandes, portées, réglages et désinstallation |
 | [Détecteurs](docs/detectors.md) | Règles A–G, seuils, confiance, exemples et contre-exemples |
